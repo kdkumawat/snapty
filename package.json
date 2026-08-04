@@ -6,10 +6,10 @@
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
     "build": "next build",
-    "cf:build": "npx @opennextjs/cloudflare build",
-    "cf:preview": "npx @opennextjs/cloudflare preview",
-    "cf:deploy": "npx @opennextjs/cloudflare deploy",
-    "cf:upload": "npx @opennextjs/cloudflare upload",
+    "export": "next build && next export",
+    "cf:build": "npm run build",
+    "cf:preview": "npm run cf:build && npx wrangler pages dev out",
+    "cf:deploy": "npm run cf:build && npx wrangler pages deploy out",
     "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "start": "NODE_ENV=production node .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
@@ -90,6 +90,7 @@
     "zustand": "^5.0.6"
   },
   "devDependencies": {
+    "@cloudflare/next-on-pages": "^1.0.0",
     "@opennextjs/cloudflare": "^1.20.2",
     "@tailwindcss/postcss": "^4",
     "@types/react": "^19",

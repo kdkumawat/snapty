@@ -15,7 +15,8 @@ SnapKit is deployed to Cloudflare Pages with the OpenNext Cloudflare adapter.
 In Cloudflare Pages, use these values:
 
 - **Build command:** `npm run cf:build`
-- **Build output directory:** `.open-next/assets`
+- **Build output directory:** `out`
+- **Important:** the app is now built as a static Pages export, so Cloudflare Pages must publish the generated `out` directory.
 - **Node.js version:** `20`
 - **Environment variable:** `NODE_VERSION=20`
 
