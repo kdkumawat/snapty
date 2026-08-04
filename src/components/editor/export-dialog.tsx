@@ -267,30 +267,49 @@ async function exportImage(format: ExportFormat, quality: number): Promise<Blob 
 }
 
 async function copyToClipboard() {
-  const config = getStageConfig();
-  if (!config) return;
-
-  setupStageForExport(config);
-  try {
-    const st = useEditorStore.getState();
-    const canvasStyle = st.canvasStyle;
-    const hasStyle = canvasStyle.padding > 0 || canvasStyle.borderRadius > 0 ||
-      canvasStyle.shadowEnabled || canvasStyle.bgStyle !== 'none' || canvasStyle.deviceFrame !== 'none';
-
-    let dataURL: string;
-    if (hasStyle) {
-      const stageDataURL = config.stage.toDataURL({ pixelRatio: 1, mimeType: 'image/png' });
-      dataURL = renderWithCanvasStyle(stageDataURL, canvasStyle, config.imageSize.width, config.imageSize.height);
-    } else {
-      dataURL = config.stage.toDataURL({ pixelRatio: 1, mimeType: 'image/png' });
+    console.log('copyToClipboard function called');
+    const config = getStageConfig();
+    if (!config) {
+      console.error('No stage configuration available for copying');
+      throw new Error('No stage configuration available for copying');
     }
-    const res = await fetch(dataURL);
-    const blob = await res.blob();
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-  } finally {
-    restoreStage(config);
+
+    try {
+      console.log('Setting up stage for export');
+      setupStageForExport(config);
+      const st = useEditorStore.getState();
+      const canvasStyle = st.canvasStyle;
+      const hasStyle = canvasStyle.padding > 0 || canvasStyle.borderRadius > 0 ||
+        canvasStyle.shadowEnabled || canvasStyle.bgStyle !== 'none' || canvasStyle.deviceFrame !== 'none';
+
+      console.log('Has style:', hasStyle);
+
+      let dataURL: string;
+      if (hasStyle) {
+        console.log('Rendering with canvas style');
+        const stageDataURL = config.stage.toDataURL({ pixelRatio: 1, mimeType: 'image/png' });
+        dataURL = renderWithCanvasStyle(stageDataURL, canvasStyle, config.imageSize.width, config.imageSize.height);
+      } else {
+        console.log('Getting raw stage data URL');
+        dataURL = config.stage.toDataURL({ pixelRatio: 1, mimeType: 'image/png' });
+      }
+      console.log('Fetching data URL:', dataURL.substring(0, 100) + '...');
+      const res = await fetch(dataURL);
+      if (!res.ok) {
+        throw new Error(`Failed to fetch image data: ${res.status} ${res.statusText}`);
+      }
+      const blob = await res.blob();
+      console.log('Got blob of size:', blob.size);
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      console.log('Successfully copied to clipboard');
+    } catch (error) {
+      console.error('Error copying to clipboard:', error);
+      throw error; // Re-throw so callers can handle it
+    } finally {
+      console.log('Restoring stage');
+      restoreStage(config);
+    }
   }
-}
 
 const ExportDialog: React.FC = () => {
   const showExportDialog = useEditorStore((s) => s.showExportDialog);
@@ -338,7 +357,13 @@ const ExportDialog: React.FC = () => {
       setProgress(100);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {} finally { setTimeout(() => { setExporting(false); setProgress(0); }, 300); }
+    } catch (error) {
+      console.error('Failed to copy image to clipboard:', error);
+      // Show error state briefly
+      setCopied(false);
+      setProgress(0);
+      // Optionally show a toast notification here
+    } finally { setTimeout(() => { setExporting(false); setProgress(0); }, 300); }
   };
 
   return (

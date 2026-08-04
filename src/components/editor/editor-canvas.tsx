@@ -90,6 +90,7 @@ const EditorCanvas: React.FC = () => {
   const [isErasing, setIsErasing] = useState(false);
   const [eraserStart, setEraserStart] = useState<{ x: number; y: number } | null>(null);
   const [eraserEnd, setEraserEnd] = useState<{ x: number; y: number } | null>(null);
+  const [spotlightOverlayImage, setSpotlightOverlayImage] = useState<HTMLImageElement | null>(null);
 
   // Use ref for textInput visibility to avoid stale closures in event handlers
   const textInputRef = useRef(textInput);
@@ -153,6 +154,68 @@ const EditorCanvas: React.FC = () => {
       return () => clearTimeout(timer);
     }
   }, [backgroundImage, resetView]);
+
+  // Calculate if there are any spotlights
+  const hasSpotlights = elements.some(el => el.type === 'spotlight');
+
+  useEffect(() => {
+    if (!backgroundImage || !hasSpotlights) {
+      const empty = document.createElement('canvas');
+      empty.width = backgroundImage?.width ?? 1;
+      empty.height = backgroundImage?.height ?? 1;
+      const emptyCtx = empty.getContext('2d');
+      if (emptyCtx && backgroundImage) {
+        emptyCtx.drawImage(backgroundImage, 0, 0);
+      }
+      const overlay = new window.Image();
+      overlay.src = empty.toDataURL('image/png');
+      overlay.onload = () => {
+        setSpotlightOverlayImage(overlay);
+      };
+      return;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = backgroundImage.width;
+    canvas.height = backgroundImage.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.drawImage(backgroundImage, 0, 0);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const spotlightElements = elements.filter((el): el is ShapeElement & { imageDataURL?: string } => {
+      return el.type === 'spotlight' && Boolean((el as ShapeElement & { imageDataURL?: string }).imageDataURL);
+    });
+
+    const loadImages = spotlightElements.map((el) => {
+      return new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new window.Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = (el as ShapeElement & { imageDataURL?: string }).imageDataURL!;
+      });
+    });
+
+    if (!loadImages.length) {
+      const overlay = new window.Image();
+      overlay.onload = () => setSpotlightOverlayImage(overlay);
+      overlay.src = canvas.toDataURL('image/png');
+      return;
+    }
+
+    Promise.all(loadImages)
+      .then((images) => {
+        images.forEach((img) => {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        });
+        const overlay = new window.Image();
+        overlay.onload = () => setSpotlightOverlayImage(overlay);
+        overlay.src = canvas.toDataURL('image/png');
+      })
+      .catch(() => setSpotlightOverlayImage(null));
+  }, [backgroundImage, elements, hasSpotlights]);
 
   // Register stage globally for export
   useEffect(() => {
@@ -298,7 +361,7 @@ const EditorCanvas: React.FC = () => {
     });
   }
 
-  // Create a spotlight image: darken everything except the selected area
+  // Create a spotlight image: show only the selected area at full brightness, transparent elsewhere
   function createSpotlightImage(
     x: number, y: number, w: number, h: number
   ): Promise<string> {
@@ -320,12 +383,10 @@ const EditorCanvas: React.FC = () => {
       offscreen.height = ih;
       const ctx = offscreen.getContext('2d')!;
 
-      ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      ctx.fillRect(0, 0, iw, ih);
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.fillStyle = 'rgba(0,0,0,1)';
-      ctx.fillRect(cx, cy, cw, ch);
-      ctx.globalCompositeOperation = 'source-over';
+      // Clear the canvas to transparent
+      ctx.clearRect(0, 0, iw, ih);
+      // Draw the spotlight area from the original image
+      ctx.drawImage(s.backgroundImage, cx, cy, cw, ch, cx, cy, cw, ch);
 
       resolve(offscreen.toDataURL('image/png'));
     });
@@ -460,6 +521,7 @@ const EditorCanvas: React.FC = () => {
       } as CircleElement);
     } else {
       // rectangle, rounded-rect, blur, pixelate, spotlight
+      // Allow multiple spotlights - don't remove existing ones
       setDrawingElement({
         ...base,
         type: s.activeTool as ShapeElement['type'],
@@ -697,6 +759,14 @@ const EditorCanvas: React.FC = () => {
 
   // --- Element rendering ---
 
+  const handleElementTransformEnd = useCallback((id: string) => {
+    requestAnimationFrame(() => {
+      const stage = stageRef.current;
+      const node = stage?.findOne(`#${id}`);
+      if (node) handleTransform(id, node);
+    });
+  }, []);
+
   function renderElement(el: EditorElement, isDraft = false) {
     const s = useEditorStore.getState();
     const draggable = !isDraft && s.activeTool === 'select';
@@ -712,10 +782,7 @@ const EditorCanvas: React.FC = () => {
       onClick: (e: Konva.KonvaEventObject<MouseEvent>) => handleSelect(el.id, e),
       onTap: (e: Konva.KonvaEventObject<MouseEvent>) => handleSelect(el.id, e),
       onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
-      onTransformEnd: () => {
-        const node = stageRef.current?.findOne(`#${el.id}`);
-        if (node) handleTransform(el.id, node);
-      },
+      onTransformEnd: () => handleElementTransformEnd(el.id),
     };
 
     switch (el.type) {
@@ -750,18 +817,6 @@ const EditorCanvas: React.FC = () => {
       }
 
       case 'spotlight': {
-        const shape = el as ShapeElement;
-        if (shape.imageDataURL) {
-          return (
-            <KonvaImage
-              key={shape.id}
-              {...baseProps}
-              image={(() => { const img = new window.Image(); img.src = shape.imageDataURL!; return img; })()}
-              width={shape.width}
-              height={shape.height}
-            />
-          );
-        }
         return null;
       }
 
@@ -1028,14 +1083,27 @@ const EditorCanvas: React.FC = () => {
             id="grid-bg"
           />
           {backgroundImage && (
-            <KonvaImage
-              image={backgroundImage}
-              x={0}
-              y={0}
-              width={imageSize.width}
-              height={imageSize.height}
-              name="background"
-            />
+            <>
+              {hasSpotlights && spotlightOverlayImage ? (
+                <KonvaImage
+                  image={spotlightOverlayImage}
+                  x={0}
+                  y={0}
+                  width={imageSize.width}
+                  height={imageSize.height}
+                  name="background-darkened"
+                />
+              ) : (
+                <KonvaImage
+                  image={backgroundImage}
+                  x={0}
+                  y={0}
+                  width={imageSize.width}
+                  height={imageSize.height}
+                  name="background"
+                />
+              )}
+            </>
           )}
         </Layer>
 

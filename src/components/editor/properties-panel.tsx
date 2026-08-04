@@ -5,7 +5,6 @@ import { useEditorStore, generateId } from '@/store/editor-store';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { Separator } from '@/components/ui/separator';
-import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { DEFAULT_COLORS } from '@/types/editor';
 import type { BgStyle, DeviceFrame } from '@/types/editor';
@@ -52,7 +51,6 @@ const PropertiesPanel: React.FC = () => {
   const fontSize = useEditorStore((s) => s.fontSize);
   const opacity = useEditorStore((s) => s.opacity);
   const cornerRadius = useEditorStore((s) => s.cornerRadius);
-  const canvasStyle = useEditorStore((s) => s.canvasStyle);
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
   const elements = useEditorStore((s) => s.elements);
   const stepRadius = useEditorStore((s) => s.stepRadius);
@@ -63,7 +61,6 @@ const PropertiesPanel: React.FC = () => {
   const setFontSize = useEditorStore((s) => s.setFontSize);
   const setOpacity = useEditorStore((s) => s.setOpacity);
   const setCornerRadius = useEditorStore((s) => s.setCornerRadius);
-  const setCanvasStyle = useEditorStore((s) => s.setCanvasStyle);
   const removeElements = useEditorStore((s) => s.removeElements);
   const clearElements = useEditorStore((s) => s.clearElements);
   const bringForward = useEditorStore((s) => s.bringForward);
@@ -190,76 +187,6 @@ const PropertiesPanel: React.FC = () => {
             </div>
           </Section>
         )}
-
-        <Separator className="bg-border" />
-
-        <Section title="Canvas Style" icon={<Frame className="w-3 h-3" />} defaultOpen={false}>
-          <div className="flex items-center justify-between">
-            <Label className="text-[10px] text-muted-foreground">Grid Background</Label>
-            <Switch checked={canvasStyle.gridEnabled} onCheckedChange={(v) => setCanvasStyle({ gridEnabled: v })} />
-          </div>
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <Label className="text-[10px] text-muted-foreground">Padding</Label>
-              <span className="text-[10px] text-muted-foreground">{canvasStyle.padding}px</span>
-            </div>
-            <Slider value={[canvasStyle.padding]} onValueChange={([v]) => setCanvasStyle({ padding: v })} min={0} max={100} step={5} />
-          </div>
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <Label className="text-[10px] text-muted-foreground">Border Radius</Label>
-              <span className="text-[10px] text-muted-foreground">{canvasStyle.borderRadius}px</span>
-            </div>
-            <Slider value={[canvasStyle.borderRadius]} onValueChange={([v]) => setCanvasStyle({ borderRadius: v })} min={0} max={40} step={2} />
-          </div>
-          <div className="flex items-center justify-between">
-            <Label className="text-[10px] text-muted-foreground">Drop Shadow</Label>
-            <Switch checked={canvasStyle.shadowEnabled} onCheckedChange={(v) => setCanvasStyle({ shadowEnabled: v })} />
-          </div>
-          {canvasStyle.shadowEnabled && (
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <Label className="text-[10px] text-muted-foreground">Shadow Blur</Label>
-                <span className="text-[10px] text-muted-foreground">{canvasStyle.shadowBlur}px</span>
-              </div>
-              <Slider value={[canvasStyle.shadowBlur]} onValueChange={([v]) => setCanvasStyle({ shadowBlur: v })} min={0} max={60} step={2} />
-            </div>
-          )}
-          <div className="space-y-1">
-            <Label className="text-[10px] text-muted-foreground">Background</Label>
-            <div className="grid grid-cols-2 gap-1">
-              {(['none', 'solid', 'gradient', 'glass'] as BgStyle[]).map((s) => (
-                <button key={s} className={cn('px-2 py-1 rounded text-[10px] capitalize transition-all cursor-pointer', canvasStyle.bgStyle === s ? 'bg-accent text-accent-foreground border border-accent' : 'bg-secondary text-muted-foreground border border-border hover:border-muted-foreground')} onClick={() => setCanvasStyle({ bgStyle: s })}>{s}</button>
-              ))}
-            </div>
-          </div>
-          {canvasStyle.bgStyle === 'solid' && (
-            <div className="flex items-center gap-2">
-              <Label className="text-[10px] text-muted-foreground">Color</Label>
-              <input type="color" value={canvasStyle.bgColor} onChange={(e) => setCanvasStyle({ bgColor: e.target.value })} className="w-6 h-6 rounded cursor-pointer bg-transparent border-0" />
-            </div>
-          )}
-          {canvasStyle.bgStyle === 'gradient' && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <Label className="text-[10px] text-muted-foreground">Start</Label>
-                <input type="color" value={canvasStyle.bgGradientStart} onChange={(e) => setCanvasStyle({ bgGradientStart: e.target.value })} className="w-6 h-6 rounded cursor-pointer bg-transparent border-0" />
-              </div>
-              <div className="flex items-center gap-2">
-                <Label className="text-[10px] text-muted-foreground">End</Label>
-                <input type="color" value={canvasStyle.bgGradientEnd} onChange={(e) => setCanvasStyle({ bgGradientEnd: e.target.value })} className="w-6 h-6 rounded cursor-pointer bg-transparent border-0" />
-              </div>
-            </div>
-          )}
-          <div className="space-y-1">
-            <Label className="text-[10px] text-muted-foreground">Device Frame</Label>
-            <div className="grid grid-cols-2 gap-1">
-              {(['none', 'browser', 'iphone', 'macbook'] as DeviceFrame[]).map((f) => (
-                <button key={f} className={cn('px-2 py-1 rounded text-[10px] capitalize transition-all cursor-pointer', canvasStyle.deviceFrame === f ? 'bg-accent text-accent-foreground border border-accent' : 'bg-secondary text-muted-foreground border border-border hover:border-muted-foreground')} onClick={() => setCanvasStyle({ deviceFrame: f })}>{f === 'none' ? 'None' : f}</button>
-              ))}
-            </div>
-          </div>
-        </Section>
 
         <Separator className="bg-border" />
 

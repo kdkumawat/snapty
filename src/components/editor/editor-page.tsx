@@ -40,7 +40,7 @@ const docsSections = [
       { title: 'Open an Image', desc: 'Drag and drop, paste from clipboard (Ctrl+V), browse files, or paste a URL.', icon: <ImageIcon className="w-4 h-4" /> },
       { title: 'Navigate Canvas', desc: 'Use the Hand tool (H or Space) to pan. Scroll to zoom in/out. Double-click zoom to fit.', icon: <Move className="w-4 h-4" /> },
       { title: 'Select and Move', desc: 'Press V for the Select tool. Click elements to select, Shift+click for multi-select. Drag to move.', icon: <MousePointer2 className="w-4 h-4" /> },
-      { title: 'Direct Bookmark', desc: 'Bookmark the URL with #editor to go directly to the tool, skipping the landing page.', icon: <Link2 className="w-4 h-4" /> },
+      { title: 'Direct Bookmark', desc: 'Bookmark the /editor URL to open the tool directly, skipping the landing page.', icon: <Link2 className="w-4 h-4" /> },
     ],
   },
   {

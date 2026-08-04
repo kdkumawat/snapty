@@ -49,7 +49,12 @@ export function useKeyboardShortcuts() {
       if (isCtrl && e.key.toLowerCase() === 'a' && !isShift) { e.preventDefault(); const { elements, setSelectedElementIds } = useEditorStore.getState(); setSelectedElementIds(elements.map(el => el.id)); return; }
       if (isCtrl && e.key.toLowerCase() === 'c' && !isShift) {
         const st = useEditorStore.getState();
-        if (st.backgroundImage) { e.preventDefault(); copyToClipboard().catch(() => {}); }
+        if (st.backgroundImage) {
+          e.preventDefault();
+          void copyToClipboard().catch((error) => {
+            console.error('Failed to copy image to clipboard via keyboard shortcut:', error);
+          });
+        }
         return;
       }
       if (e.key === '?' && !isCtrl) { e.preventDefault(); useEditorStore.getState().setShowHelpDialog(true); return; }

@@ -105,9 +105,21 @@ const defaults: Record<PersistKey, any> = {
 };
 
 const persisted = loadPersisted();
+const editorPath = '/editor';
 
-// Auto-launch editor if URL has #editor hash (for direct bookmarking)
-const shouldAutoLaunch = typeof window !== 'undefined' && window.location.hash === '#editor';
+function syncEditorRoute(launched: boolean) {
+  if (typeof window === 'undefined') return;
+  const nextPath = launched ? editorPath : '/';
+  const samePath = window.location.pathname === nextPath;
+  const hasLegacyHash = window.location.hash === '#editor';
+  if (!samePath || hasLegacyHash) {
+    const method = hasLegacyHash && window.location.pathname === '/' ? 'replaceState' : 'pushState';
+    window.history[method]({}, '', nextPath);
+  }
+}
+
+// Auto-launch editor if URL is the dedicated editor path or the legacy hash bookmark
+const shouldAutoLaunch = typeof window !== 'undefined' && (window.location.pathname === editorPath || window.location.hash === '#editor');
 
 const generateId = () => Math.random().toString(36).substring(2, 11);
 const cloneElements = (els: EditorElement[]) => JSON.parse(JSON.stringify(els));
@@ -139,11 +151,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   showHelpDialog: false,
 
   launchEditor: () => {
+    syncEditorRoute(true);
     set({ isEditorLaunched: true });
   },
 
   setBackgroundImage: (img) => {
     const start = get().stepStartNumber;
+    syncEditorRoute(true);
     set({
       backgroundImage: img,
       imageSize: { width: img.naturalWidth, height: img.naturalHeight },
@@ -153,27 +167,33 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
 
-  clearImage: () => set({
-    backgroundImage: null,
-    imageSize: { width: 0, height: 0 },
-    elements: [], selectedElementIds: [],
-    _history: [[]], _historyIndex: 0,
-    stepCounter: get().stepStartNumber,
-    zoom: 1, stagePosition: { x: 0, y: 0 },
-    canvasStyle: { ...initialCanvasStyle },
-    isEditorLaunched: false,
-  }),
+  clearImage: () => {
+    syncEditorRoute(false);
+    return set({
+      backgroundImage: null,
+      imageSize: { width: 0, height: 0 },
+      elements: [], selectedElementIds: [],
+      _history: [[]], _historyIndex: 0,
+      stepCounter: get().stepStartNumber,
+      zoom: 1, stagePosition: { x: 0, y: 0 },
+      canvasStyle: { ...initialCanvasStyle },
+      isEditorLaunched: false,
+    });
+  },
 
-  replaceImage: () => set({
-    backgroundImage: null,
-    imageSize: { width: 0, height: 0 },
-    elements: [], selectedElementIds: [],
-    _history: [[]], _historyIndex: 0,
-    stepCounter: get().stepStartNumber,
-    zoom: 1, stagePosition: { x: 0, y: 0 },
-    canvasStyle: { ...initialCanvasStyle },
-    activeTool: 'select',
-  }),
+  replaceImage: () => {
+    syncEditorRoute(true);
+    return set({
+      backgroundImage: null,
+      imageSize: { width: 0, height: 0 },
+      elements: [], selectedElementIds: [],
+      _history: [[]], _historyIndex: 0,
+      stepCounter: get().stepStartNumber,
+      zoom: 1, stagePosition: { x: 0, y: 0 },
+      canvasStyle: { ...initialCanvasStyle },
+      activeTool: 'select',
+    });
+  },
 
   setZoom: (zoom) => set({ zoom: Math.max(0.1, Math.min(5, zoom)) }),
   setStagePosition: (pos) => set({ stagePosition: pos }),
@@ -257,6 +277,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   goToLanding: () => {
+    syncEditorRoute(false);
     set({ isEditorLaunched: false, backgroundImage: null });
   },
 }));

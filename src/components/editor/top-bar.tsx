@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { useEditorStore } from '@/store/editor-store';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip';
-import { Undo2, Redo2, ZoomIn, ZoomOut, Maximize, Download, Copy, Check, HelpCircle, Monitor, Sun, Moon, Trash2, Clipboard, RotateCcw, Link } from 'lucide-react';
+import { Undo2, Redo2, ZoomIn, ZoomOut, Maximize, Download, Copy, Check, HelpCircle, Monitor, Sun, Moon, Trash2, Clipboard, RotateCcw } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { copyToClipboard } from './export-dialog';
 import { modKey } from '@/hooks/use-keyboard-shortcuts';
@@ -59,17 +59,19 @@ const TopBar: React.FC = () => {
   };
 
   const handleCopy = async () => {
+    console.log('handleCopy function called via button click');
     try {
       await copyToClipboard();
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // silently fail
+    } catch (error) {
+      console.error('Failed to copy image to clipboard:', error);
+      // Optionally show error toast here
     }
   };
 
   const handleCopyDirectLink = () => {
-    const url = window.location.origin + window.location.pathname + '#editor';
+    const url = new URL('/editor', window.location.origin).toString();
     navigator.clipboard.writeText(url).catch(() => {});
   };
 
@@ -198,7 +200,7 @@ const TopBar: React.FC = () => {
             {/* Copy Image */}
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5 px-3 min-w-[108px] justify-center" onClick={handleCopy}>
+                <Button id="copy-image-button" variant="outline" size="sm" className="h-8 text-xs gap-1.5 px-3 min-w-[108px] justify-center" onClick={handleCopy}>
                   {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}{copied ? 'Copied' : 'Copy Image'}
                 </Button>
               </TooltipTrigger>
