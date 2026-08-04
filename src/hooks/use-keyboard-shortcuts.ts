@@ -91,8 +91,6 @@ export function useKeyboardShortcuts() {
 }
 
 export function useClipboardPaste() {
-  const setBackgroundImage = useEditorStore((s) => s.setBackgroundImage);
-
   useEffect(() => {
     const handler = async (e: ClipboardEvent) => {
       const tgt = e.target as HTMLElement;
@@ -103,7 +101,12 @@ export function useClipboardPaste() {
           e.preventDefault();
           const file = item.getAsFile(); if (!file) continue;
           const reader = new FileReader();
-          reader.onload = () => { const img = new Image(); img.onload = () => setBackgroundImage(img); img.src = reader.result as string; };
+          reader.onload = () => {
+            const img = new Image();
+            // Replaces image + clears annotations but keeps tool/settings
+            img.onload = () => useEditorStore.getState().setBackgroundImage(img);
+            img.src = reader.result as string;
+          };
           reader.readAsDataURL(file);
           return;
         }
@@ -111,5 +114,5 @@ export function useClipboardPaste() {
     };
     document.addEventListener('paste', handler);
     return () => document.removeEventListener('paste', handler);
-  }, [setBackgroundImage]);
+  }, []);
 }

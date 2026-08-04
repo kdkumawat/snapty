@@ -6,59 +6,161 @@ import {
   Image as KonvaImage, Circle, Transformer,
 } from 'react-konva';
 import Konva from 'konva';
-import { useEditorStore, generateId } from '@/store/editor-store';
+import { useEditorStore, generateId, getImageToolScale } from '@/store/editor-store';
 import type {
   EditorElement, ShapeElement, ArrowElement, LineElement,
   PencilElement, CircleElement, TextElement, StepElement,
   ToolType,
 } from '@/types/editor';
 
-// SVG cursor definitions for each tool
-function toolCursorSVG(tool: ToolType): string {
-  const size = 24;
+/**
+ * Tool cursors: high-contrast SVG (white halo + solid color) encoded as base64
+ * so browsers don't drop them (raw # + encodeURIComponent double-encoding was invisible).
+ */
+type CursorOpts = { color?: string; stepNumber?: number };
+
+function sanitizeHexColor(c?: string): string {
+  if (!c || c === 'transparent') return '#ef4444';
+  if (/^#[0-9a-fA-F]{3,8}$/.test(c)) return c;
+  if (/^[0-9a-fA-F]{6}$/.test(c)) return `#${c}`;
+  return '#ef4444';
+}
+
+function toolCursorSVG(tool: ToolType, opts: CursorOpts = {}): string {
+  const size = 32;
   const half = size / 2;
+  const color = sanitizeHexColor(opts.color);
+  // Halo makes the glyph visible on both light and dark screenshots
+  const halo = '#ffffff';
+  const ink = '#111111';
+
   switch (tool) {
-    case 'select': return '';
-    case 'hand': return '';
-    case 'eraser':
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><rect x='${half-6}' y='${half-6}' width='12' height='12' rx='2' fill='none' stroke='%23ef4444' stroke-width='1.5'/><line x1='${half-3}' y1='${half-3}' x2='${half+3}' y2='${half+3}' stroke='%23ef4444' stroke-width='1.5'/><line x1='${half+3}' y1='${half-3}' x2='${half-3}' y2='${half+3}' stroke='%23ef4444' stroke-width='1.5'/></svg>`;
-    case 'text':
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><text x='${half}' y='${half+4}' text-anchor='middle' font-size='14' font-family='sans-serif' font-weight='bold' fill='%23ef4444'>T</text></svg>`;
+    case 'select':
+    case 'hand':
+      return '';
     case 'arrow':
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><line x1='4' y1='${half+4}' x2='${size-4}' y2='${half-4}' stroke='%23ef4444' stroke-width='2'/><polyline points='${size-8},${half-4} ${size-4},${half-4} ${size-4},${half}' fill='none' stroke='%23ef4444' stroke-width='2'/></svg>`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <line x1="5" y1="27" x2="24" y2="8" stroke="${halo}" stroke-width="5" stroke-linecap="round"/>
+        <polyline points="14,7 25,7 25,18" fill="none" stroke="${halo}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="5" y1="27" x2="24" y2="8" stroke="${color}" stroke-width="2.5" stroke-linecap="round"/>
+        <polyline points="14,7 25,7 25,18" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
     case 'rectangle':
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <rect x="5" y="7" width="22" height="18" fill="none" stroke="${halo}" stroke-width="4"/>
+        <rect x="5" y="7" width="22" height="18" fill="none" stroke="${color}" stroke-width="2"/>
+      </svg>`;
     case 'rounded-rect':
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><rect x='4' y='4' width='${size-8}' height='${size-8}' rx='${tool === 'rounded-rect' ? 3 : 0}' fill='none' stroke='%23ef4444' stroke-width='1.5'/></svg>`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <rect x="5" y="7" width="22" height="18" rx="5" fill="none" stroke="${halo}" stroke-width="4"/>
+        <rect x="5" y="7" width="22" height="18" rx="5" fill="none" stroke="${color}" stroke-width="2"/>
+      </svg>`;
     case 'circle':
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><ellipse cx='${half}' cy='${half}' rx='${half-4}' ry='${half-4}' fill='none' stroke='%23ef4444' stroke-width='1.5'/></svg>`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <circle cx="${half}" cy="${half}" r="11" fill="none" stroke="${halo}" stroke-width="4"/>
+        <circle cx="${half}" cy="${half}" r="11" fill="none" stroke="${color}" stroke-width="2"/>
+      </svg>`;
     case 'line':
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><line x1='4' y1='${size-4}' x2='${size-4}' y2='4' stroke='%23ef4444' stroke-width='2'/></svg>`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <line x1="5" y1="27" x2="27" y2="5" stroke="${halo}" stroke-width="5" stroke-linecap="round"/>
+        <line x1="5" y1="27" x2="27" y2="5" stroke="${color}" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>`;
     case 'pencil':
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><path d='M${size-6} 4 L${size-4} 6 L8 ${size-4} L6 ${size-6} Z' fill='%23ef4444'/><path d='M6 ${size-6} L4 ${size-4}' stroke='%23ef4444' stroke-width='1.5'/></svg>`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <path d="M20 3l9 9L12 29l-9 2 2-9L20 3z" fill="${halo}"/>
+        <path d="M20 3l9 9L12 29l-9 2 2-9L20 3z" fill="${color}"/>
+        <path d="M17 7l8 8" stroke="${halo}" stroke-width="1.5"/>
+        <path d="M3 31l6-2" stroke="${ink}" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>`;
     case 'highlighter':
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><rect x='4' y='${size-7}' width='${size-8}' height='5' rx='1.5' fill='%23f59e0b' opacity='0.7'/></svg>`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <rect x="3" y="17" width="26" height="10" rx="2" fill="${halo}"/>
+        <rect x="4" y="18" width="24" height="8" rx="2" fill="#f59e0b" opacity="0.9"/>
+        <path d="M8 18V9l4-4h8l4 4v9" fill="none" stroke="${ink}" stroke-width="1.5"/>
+      </svg>`;
+    case 'text':
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <path d="M5 5h22M16 5v22" stroke="${halo}" stroke-width="5" stroke-linecap="round"/>
+        <path d="M8 27h16" stroke="${halo}" stroke-width="4" stroke-linecap="round"/>
+        <path d="M5 5h22M16 5v22" stroke="${color}" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M8 27h16" stroke="${color}" stroke-width="2" stroke-linecap="round"/>
+      </svg>`;
+    case 'step': {
+      const n = Math.max(1, Math.min(999, opts.stepNumber ?? 1));
+      const label = String(n);
+      const fs = label.length >= 3 ? 9 : label.length === 2 ? 11 : 14;
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <circle cx="${half}" cy="${half}" r="13" fill="${halo}"/>
+        <circle cx="${half}" cy="${half}" r="11" fill="${color}"/>
+        <text x="${half}" y="${half + fs * 0.35}" text-anchor="middle" font-size="${fs}" fill="#ffffff" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">${label}</text>
+      </svg>`;
+    }
     case 'blur':
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <rect x="5" y="5" width="22" height="22" rx="3" fill="none" stroke="${halo}" stroke-width="4"/>
+        <rect x="5" y="5" width="22" height="22" rx="3" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="3 2"/>
+        <circle cx="12" cy="14" r="2.5" fill="${color}" opacity="0.45"/>
+        <circle cx="19" cy="17" r="3.5" fill="${color}" opacity="0.4"/>
+      </svg>`;
     case 'pixelate':
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><rect x='4' y='4' width='${size-8}' height='${size-8}' rx='2' fill='none' stroke='%23ef4444' stroke-width='1.5' stroke-dasharray='3 2'/><text x='${half}' y='${half+3}' text-anchor='middle' font-size='8' fill='%23ef4444'>${tool === 'blur' ? '~' : '#'}</text></svg>`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <rect x="5" y="5" width="22" height="22" fill="none" stroke="${halo}" stroke-width="4"/>
+        <rect x="5" y="5" width="22" height="22" fill="none" stroke="${color}" stroke-width="2"/>
+        <rect x="8" y="8" width="6" height="6" fill="${color}" opacity="0.85"/>
+        <rect x="18" y="8" width="6" height="6" fill="${color}" opacity="0.45"/>
+        <rect x="8" y="18" width="6" height="6" fill="${color}" opacity="0.55"/>
+        <rect x="18" y="18" width="6" height="6" fill="${color}" opacity="0.9"/>
+      </svg>`;
     case 'spotlight':
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><circle cx='${half}' cy='${half}' r='${half-3}' fill='none' stroke='%23facc15' stroke-width='1.5'/><circle cx='${half}' cy='${half}' r='2' fill='%23facc15'/></svg>`;
-    case 'step':
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><circle cx='${half}' cy='${half}' r='${half-3}' fill='%23ef4444'/><text x='${half}' y='${half+4}' text-anchor='middle' font-size='11' fill='white' font-weight='bold'>1</text></svg>`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <circle cx="${half}" cy="${half}" r="12" fill="none" stroke="${halo}" stroke-width="4"/>
+        <circle cx="${half}" cy="${half}" r="12" fill="none" stroke="#eab308" stroke-width="2"/>
+        <circle cx="${half}" cy="${half}" r="3" fill="#eab308"/>
+      </svg>`;
+    case 'eraser':
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <rect x="7" y="9" width="16" height="14" rx="2" transform="rotate(-28 15 16)" fill="${halo}"/>
+        <rect x="8" y="10" width="14" height="12" rx="2" transform="rotate(-28 15 16)" fill="#f87171"/>
+        <rect x="10" y="12" width="10" height="5" rx="1" transform="rotate(-28 15 16)" fill="#fecaca"/>
+      </svg>`;
     default:
-      return `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><line x1='${half-4}' y1='0' x2='${half-4}' y2='${size}' stroke='%23999' stroke-width='0.5'/><line x1='0' y1='${half-4}' x2='${size}' y2='${half-4}' stroke='%23999' stroke-width='0.5'/></svg>`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <line x1="${half}" y1="4" x2="${half}" y2="28" stroke="${halo}" stroke-width="3"/>
+        <line x1="4" y1="${half}" x2="28" y2="${half}" stroke="${halo}" stroke-width="3"/>
+        <line x1="${half}" y1="4" x2="${half}" y2="28" stroke="${color}" stroke-width="1.5"/>
+        <line x1="4" y1="${half}" x2="28" y2="${half}" stroke="${color}" stroke-width="1.5"/>
+      </svg>`;
   }
 }
 
-function getToolCursorCSS(tool: ToolType, isDragging: boolean): string {
+function svgToCursor(svg: string, hotspot: string): string {
+  // base64 is the most reliable custom-cursor transport across Chromium / Firefox / Safari
+  const base64 =
+    typeof btoa === 'function'
+      ? btoa(unescape(encodeURIComponent(svg)))
+      : '';
+  if (!base64) {
+    return `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}") ${hotspot}, crosshair`;
+  }
+  return `url("data:image/svg+xml;base64,${base64}") ${hotspot}, crosshair`;
+}
+
+function getToolCursorCSS(tool: ToolType, isDragging: boolean, opts: CursorOpts = {}): string {
   switch (tool) {
-    case 'select': return 'default';
-    case 'hand': return isDragging ? 'grabbing' : 'grab';
+    case 'select':
+      return 'default';
+    case 'hand':
+      return isDragging ? 'grabbing' : 'grab';
     default: {
-      const svg = toolCursorSVG(tool);
+      const svg = toolCursorSVG(tool, opts);
       if (!svg) return 'crosshair';
-      const encoded = encodeURIComponent(svg.replace(/'/g, "\\'"));
-      const hotspot = tool === 'text' ? '4 14' : '12 12';
-      return `url("data:image/svg+xml,${encoded}") ${hotspot}, crosshair`;
+      const hotspot =
+        tool === 'pencil' || tool === 'highlighter' ? '4 28'
+        : tool === 'text' ? '6 6'
+        : tool === 'arrow' || tool === 'line' ? '5 27'
+        : tool === 'step' ? '16 16'
+        : '16 16';
+      return svgToCursor(svg, hotspot);
     }
   }
 }
@@ -84,8 +186,9 @@ const EditorCanvas: React.FC = () => {
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawingElement, setDrawingElement] = useState<EditorElement | null>(null);
-  const [textInput, setTextInput] = useState<{ x: number; y: number; visible: boolean }>({ x: 0, y: 0, visible: false });
+  const [textInput, setTextInput] = useState<{ x: number; y: number; visible: boolean; editId?: string; initialText?: string }>({ x: 0, y: 0, visible: false });
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
+  const [dragOver, setDragOver] = useState(false);
   const [isHandDragging, setIsHandDragging] = useState(false);
   const [isErasing, setIsErasing] = useState(false);
   const [eraserStart, setEraserStart] = useState<{ x: number; y: number } | null>(null);
@@ -111,7 +214,7 @@ const EditorCanvas: React.FC = () => {
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
   const canvasStyle = useEditorStore((s) => s.canvasStyle);
   const gridEnabled = useEditorStore((s) => s.canvasStyle.gridEnabled);
-  const stepRadius = useEditorStore((s) => s.stepRadius);
+  const stepCounter = useEditorStore((s) => s.stepCounter);
   const addElement = useEditorStore((s) => s.addElement);
   const updateElement = useEditorStore((s) => s.updateElement);
   const removeElements = useEditorStore((s) => s.removeElements);
@@ -120,32 +223,50 @@ const EditorCanvas: React.FC = () => {
   const setStagePosition = useEditorStore((s) => s.setStagePosition);
   const resetView = useEditorStore((s) => s.resetView);
 
-  // Cursor based on tool
-  const cursorCSS = useMemo(() => getToolCursorCSS(activeTool, isHandDragging), [activeTool, isHandDragging]);
+  // Cursor based on tool (+ next step number for the stepper tool)
+  const cursorCSS = useMemo(
+    () => getToolCursorCSS(activeTool, isHandDragging, {
+      color: strokeColor,
+      stepNumber: stepCounter,
+    }),
+    [activeTool, isHandDragging, strokeColor, stepCounter],
+  );
+
+  // Apply cursor on container + every Konva canvas layer (they override parent cursor)
+  useEffect(() => {
+    const apply = () => {
+      const root = containerRef.current;
+      if (root) root.style.cursor = cursorCSS;
+      const st = stageRef.current;
+      if (!st) return;
+      const container = st.container();
+      container.style.cursor = cursorCSS;
+      container.querySelectorAll('canvas').forEach((c) => {
+        (c as HTMLCanvasElement).style.cursor = cursorCSS;
+      });
+    };
+    apply();
+    // Konva may recreate canvases after resize / image load
+    const t = window.setTimeout(apply, 50);
+    return () => window.clearTimeout(t);
+  }, [cursorCSS, dimensions, backgroundImage, activeTool]);
 
   // Grid pattern (created once)
   const gridPattern = useMemo(() => createGridPattern(), []);
 
-  // Resize observer for container dimensions with debounced resetView
+  // Resize observer for container dimensions — update stage size without auto-resetting zoom
+  // (auto resetView on every resize felt jumpy; fit-to-screen remains available on toolbar)
   useEffect(() => {
     const c = containerRef.current;
     if (!c) return;
-    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const update = () => {
       setDimensions({ width: c.offsetWidth, height: c.offsetHeight });
-      if (resizeTimer) clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        resetView();
-      }, 150);
     };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(c);
-    return () => {
-      observer.disconnect();
-      if (resizeTimer) clearTimeout(resizeTimer);
-    };
-  }, [resetView]);
+    return () => observer.disconnect();
+  }, []);
 
   // Reset view when background image changes
   useEffect(() => {
@@ -256,27 +377,39 @@ const EditorCanvas: React.FC = () => {
       requestAnimationFrame(() => {
         if (textAreaRef.current) {
           textAreaRef.current.focus();
-          textAreaRef.current.value = '';
+          textAreaRef.current.value = textInput.initialText ?? '';
+          if (textInput.editId) {
+            // Select all when editing existing
+            textAreaRef.current.select();
+          }
         }
       });
     }
-  }, [textInput.visible]);
+  }, [textInput.visible, textInput.initialText, textInput.editId]);
 
   // --- Text input ---
 
   const commitText = useCallback(() => {
     if (!textAreaRef.current) return;
     const text = textAreaRef.current.value;
-    if (text.trim()) {
-      const st = useEditorStore.getState();
-      const ti = textInputRef.current;
+    const st = useEditorStore.getState();
+    const ti = textInputRef.current;
+    if (ti.editId) {
+      // Update existing text annotation
+      if (text.trim()) {
+        st.updateElement(ti.editId, { text: text.trim() } as Partial<TextElement>);
+      } else {
+        st.removeElements([ti.editId]);
+      }
+    } else if (text.trim()) {
+      const scale = getImageToolScale(st.imageSize.width, st.imageSize.height);
       st.addElement({
         id: generateId(),
         type: 'text',
         x: ti.x,
         y: ti.y,
         text: text.trim(),
-        fontSize: st.fontSize,
+        fontSize: Math.round(st.fontSize * scale),
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         fill: st.strokeColor,
         opacity: st.opacity,
@@ -338,6 +471,7 @@ const EditorCanvas: React.FC = () => {
       const s = useEditorStore.getState();
       if (!s.backgroundImage) { resolve(''); return; }
       const imgSize = s.imageSize;
+      const scale = getImageToolScale(imgSize.width, imgSize.height);
       const ax = Math.max(0, Math.round(x));
       const ay = Math.max(0, Math.round(y));
       const aw = Math.min(Math.round(w), imgSize.width - ax);
@@ -350,12 +484,13 @@ const EditorCanvas: React.FC = () => {
       const ctx = offscreen.getContext('2d')!;
 
       if (type === 'blur') {
-        ctx.filter = 'blur(12px)';
+        const radius = Math.round((s.blurRadius || 12) * scale);
+        ctx.filter = `blur(${radius}px)`;
         ctx.drawImage(s.backgroundImage, ax, ay, aw, ah, 0, 0, aw, ah);
       } else {
-        const pixelSize = 10;
-        const sw = Math.max(1, Math.ceil(aw / pixelSize));
-        const sh = Math.max(1, Math.ceil(ah / pixelSize));
+        const px = Math.max(2, Math.round((s.pixelSize || 10) * scale));
+        const sw = Math.max(1, Math.ceil(aw / px));
+        const sh = Math.max(1, Math.ceil(ah / px));
         const smallCanvas = document.createElement('canvas');
         smallCanvas.width = sw;
         smallCanvas.height = sh;
@@ -400,10 +535,11 @@ const EditorCanvas: React.FC = () => {
 
   // --- Find annotation element by traversing up from click target ---
   function findAnnotationId(node: Konva.Node): string | null {
+    const known = new Set(useEditorStore.getState().elements.map((el) => el.id));
     let current: Konva.Node | null = node;
     while (current) {
       const id = current.id();
-      if (id && id !== 'background' && id !== 'grid-bg') return id;
+      if (id && known.has(id)) return id;
       current = current.getParent();
     }
     return null;
@@ -429,11 +565,50 @@ const EditorCanvas: React.FC = () => {
     // Hand tool does nothing on mousedown (handled by drag)
     if (s.activeTool === 'hand') return;
 
-    // Select tool: click on empty area to deselect
+    const isBg = e.target === st
+      || e.target.name() === 'background'
+      || e.target.name() === 'background-darkened'
+      || e.target.id() === 'grid-bg';
+
+    // Only the Select tool can pick / edit existing annotations.
+    // Drawing tools always draw through annotations (no accidental reselection).
     if (s.activeTool === 'select') {
-      if (e.target === st || e.target.name() === 'background') {
-        s.setSelectedElementIds([]);
+      const clickedId = findAnnotationId(e.target);
+      if (clickedId && !isBg) {
+        if (e.evt.shiftKey) {
+          const currentIds = s.selectedElementIds;
+          s.setSelectedElementIds(
+            currentIds.includes(clickedId)
+              ? currentIds.filter((i) => i !== clickedId)
+              : [...currentIds, clickedId]
+          );
+        } else {
+          s.setSelectedElementIds([clickedId]);
+        }
+        // Sync property panel from selection (unscale so tool defaults don't double-scale)
+        const el = s.elements.find((x) => x.id === clickedId);
+        if (el) {
+          const scale = getImageToolScale(s.imageSize.width, s.imageSize.height) || 1;
+          const patch: Record<string, unknown> = {};
+          if ('stroke' in el && (el as any).stroke) patch.strokeColor = (el as any).stroke;
+          if (el.type === 'text' && (el as TextElement).fill) patch.strokeColor = (el as TextElement).fill;
+          if (el.type === 'step' && (el as StepElement).fill) patch.strokeColor = (el as StepElement).fill;
+          if ('strokeWidth' in el && (el as any).strokeWidth != null) {
+            patch.strokeWidth = Math.max(1, Math.round((el as any).strokeWidth / scale));
+          }
+          if (el.type === 'text' && (el as TextElement).fontSize) {
+            patch.fontSize = Math.max(8, Math.round(((el as TextElement).fontSize || 24) / scale));
+          }
+          if (el.type === 'step' && (el as StepElement).radius) {
+            patch.stepRadius = Math.max(8, Math.round(((el as StepElement).radius || 16) / scale));
+          }
+          if (el.opacity != null) patch.opacity = el.opacity;
+          if (Object.keys(patch).length) useEditorStore.setState(patch as any);
+        }
+        return;
       }
+      // Empty area → deselect
+      if (isBg || !clickedId) s.setSelectedElementIds([]);
       return;
     }
 
@@ -455,17 +630,22 @@ const EditorCanvas: React.FC = () => {
       return;
     }
 
+    const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
+    const sw = Math.max(1, Math.round(s.strokeWidth * scale));
+    const hw = Math.max(4, Math.round((s.highlighterWidth || 24) * scale));
+    const pointerSize = Math.max(8, Math.round(12 * scale));
+
     // Step tool: place a numbered step circle
     if (s.activeTool === 'step') {
       const pos = getCanvasPoint();
       if (!pos) return;
-      const r = s.stepRadius;
+      const r = Math.max(8, Math.round(s.stepRadius * scale));
       const num = s.stepCounter;
       s.addElement({
         id: generateId(),
         type: 'step',
-        x: pos.x - r,
-        y: pos.y - r,
+        x: pos.x,
+        y: pos.y,
         stepNumber: num,
         radius: r,
         fill: s.strokeColor,
@@ -488,7 +668,7 @@ const EditorCanvas: React.FC = () => {
         x: 0, y: 0,
         points: [pos.x, pos.y],
         stroke: s.strokeColor,
-        strokeWidth: s.activeTool === 'highlighter' ? 24 : s.strokeWidth,
+        strokeWidth: s.activeTool === 'highlighter' ? hw : sw,
         lineCap: 'round',
         lineJoin: 'round',
         tension: 0.5,
@@ -501,10 +681,10 @@ const EditorCanvas: React.FC = () => {
         x: pos.x, y: pos.y,
         points: [0, 0, 0, 0],
         stroke: s.strokeColor,
-        strokeWidth: s.strokeWidth,
+        strokeWidth: sw,
         fill: s.strokeColor,
-        pointerLength: 12,
-        pointerWidth: 12,
+        pointerLength: pointerSize,
+        pointerWidth: pointerSize,
       } as ArrowElement);
     } else if (s.activeTool === 'line') {
       setDrawingElement({
@@ -513,7 +693,7 @@ const EditorCanvas: React.FC = () => {
         x: pos.x, y: pos.y,
         points: [0, 0, 0, 0],
         stroke: s.strokeColor,
-        strokeWidth: s.strokeWidth,
+        strokeWidth: sw,
       } as LineElement);
     } else if (s.activeTool === 'circle') {
       setDrawingElement({
@@ -523,11 +703,10 @@ const EditorCanvas: React.FC = () => {
         width: 0, height: 0,
         stroke: s.strokeColor,
         fill: s.fillColor === 'transparent' ? 'transparent' : s.fillColor,
-        strokeWidth: s.strokeWidth,
+        strokeWidth: sw,
       } as CircleElement);
     } else {
       // rectangle, rounded-rect, blur, pixelate, spotlight
-      // Allow multiple spotlights - don't remove existing ones
       setDrawingElement({
         ...base,
         type: s.activeTool as ShapeElement['type'],
@@ -537,8 +716,10 @@ const EditorCanvas: React.FC = () => {
         fill: (s.activeTool === 'blur' || s.activeTool === 'pixelate')
           ? undefined
           : (s.activeTool === 'spotlight' ? undefined : s.fillColor),
-        strokeWidth: ['blur', 'pixelate', 'spotlight'].includes(s.activeTool) ? 0 : s.strokeWidth,
-        cornerRadius: s.activeTool === 'rounded-rect' ? s.cornerRadius : 0,
+        strokeWidth: ['blur', 'pixelate', 'spotlight'].includes(s.activeTool) ? 0 : sw,
+        cornerRadius: s.activeTool === 'rounded-rect' ? Math.round(s.cornerRadius * scale) : 0,
+        blurRadius: s.activeTool === 'blur' ? s.blurRadius : undefined,
+        pixelSize: s.activeTool === 'pixelate' ? s.pixelSize : undefined,
       } as ShapeElement);
     }
   }
@@ -690,7 +871,7 @@ const EditorCanvas: React.FC = () => {
     setDrawingElement(null);
   }
 
-  // --- Wheel zoom ---
+  // --- Wheel zoom (smoother / slower for trackpads & mice) ---
 
   function handleWheel(e: Konva.KonvaEventObject<WheelEvent>) {
     e.evt.preventDefault();
@@ -705,8 +886,13 @@ const EditorCanvas: React.FC = () => {
       x: (pointer.x - oldPos.x) / oldZoom,
       y: (pointer.y - oldPos.y) / oldZoom,
     };
-    const direction = e.evt.deltaY < 0 ? 1 : -1;
-    const newZoom = Math.max(0.1, Math.min(5, direction > 0 ? oldZoom * 1.06 : oldZoom / 1.06));
+    // Normalize delta across devices; scale gently (was ~6% per notch, now ~1.5–2.5%)
+    let delta = e.evt.deltaY;
+    if (e.evt.deltaMode === 1) delta *= 16; // lines → pixels
+    if (e.evt.deltaMode === 2) delta *= 400; // pages → pixels
+    // Exponential zoom from delta; clamp sensitivity
+    const factor = Math.exp(-delta * 0.0012);
+    const newZoom = Math.max(0.1, Math.min(5, oldZoom * factor));
     s.setZoom(newZoom);
     s.setStagePosition({
       x: pointer.x - mousePointTo.x * newZoom,
@@ -719,6 +905,7 @@ const EditorCanvas: React.FC = () => {
 
   function handleSelect(id: string, e: Konva.KonvaEventObject<MouseEvent>) {
     const s = useEditorStore.getState();
+    // Allow selection from select tool (drawing tools handled in mousedown)
     if (s.activeTool !== 'select') return;
     e.cancelBubble = true;
     if (e.evt.shiftKey) {
@@ -731,6 +918,36 @@ const EditorCanvas: React.FC = () => {
     } else {
       s.setSelectedElementIds([id]);
     }
+  }
+
+  function handleTextDblClick(el: TextElement, e: Konva.KonvaEventObject<any>) {
+    // Edit text only with the Select tool
+    if (useEditorStore.getState().activeTool !== 'select') return;
+    e.cancelBubble = true;
+    const s = useEditorStore.getState();
+    s.setSelectedElementIds([]);
+    setTextInput({
+      x: el.x,
+      y: el.y,
+      visible: true,
+      editId: el.id,
+      initialText: el.text,
+    });
+    if (el.fill) useEditorStore.setState({ strokeColor: el.fill });
+  }
+
+  function loadDroppedImage(file: File) {
+    if (!file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        // Replace background, keep tool + settings
+        useEditorStore.getState().setBackgroundImage(img);
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
   }
 
   // --- Transform ---
@@ -775,7 +992,10 @@ const EditorCanvas: React.FC = () => {
 
   function renderElement(el: EditorElement, isDraft = false) {
     const s = useEditorStore.getState();
-    const draggable = !isDraft && s.activeTool === 'select';
+    const isSelect = s.activeTool === 'select';
+    const draggable = !isDraft && isSelect;
+    // Only Select tool listens on existing shapes so drawing tools can draw over them
+    const listening = !isDraft && isSelect;
     const baseProps = {
       id: el.id,
       x: el.x,
@@ -785,6 +1005,7 @@ const EditorCanvas: React.FC = () => {
       scaleX: el.scaleX ?? 1,
       scaleY: el.scaleY ?? 1,
       draggable,
+      listening,
       onClick: (e: Konva.KonvaEventObject<MouseEvent>) => handleSelect(el.id, e),
       onTap: (e: Konva.KonvaEventObject<MouseEvent>) => handleSelect(el.id, e),
       onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
@@ -924,6 +1145,8 @@ const EditorCanvas: React.FC = () => {
 
       case 'text': {
         const textEl = el as TextElement;
+        // Hide while editing in the textarea overlay
+        if (textInput.visible && textInput.editId === textEl.id) return null;
         return (
           <Text
             key={textEl.id}
@@ -938,6 +1161,8 @@ const EditorCanvas: React.FC = () => {
             padding={textEl.padding ?? 4}
             align={textEl.align ?? 'left'}
             listening={true}
+            onDblClick={(e) => handleTextDblClick(textEl, e)}
+            onDblTap={(e) => handleTextDblClick(textEl, e)}
           />
         );
       }
@@ -1042,9 +1267,26 @@ const EditorCanvas: React.FC = () => {
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full overflow-hidden"
+      data-snapkit-canvas
+      className={`relative w-full h-full overflow-hidden z-0 ${dragOver ? 'ring-2 ring-inset ring-accent' : ''}`}
       style={{
         cursor: cursorCSS,
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer.types.includes('Files')) setDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        if (e.currentTarget === e.target) setDragOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(false);
+        const file = e.dataTransfer.files?.[0];
+        if (file) loadDroppedImage(file);
       }}
     >
       {/* Workspace background - always visible behind everything, follows theme */}
@@ -1136,25 +1378,33 @@ const EditorCanvas: React.FC = () => {
       </Stage>
 
       {/* Text input overlay */}
-      {textInput.visible && (
-        <textarea
-          ref={textAreaRef}
-          className="absolute z-50 bg-transparent border-2 border-dashed border-blue-500 outline-none resize-none p-1"
-          style={{
-            left: currentStagePos.x + textInput.x * currentZoom,
-            top: currentStagePos.y + textInput.y * currentZoom,
-            fontSize: fontSize * currentZoom,
-            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-            color: strokeColor,
-            minWidth: 100,
-            minHeight: 40,
-            lineHeight: 1.2,
-          }}
-          onKeyDown={handleTextAreaKeyDown}
-          onBlur={() => commitTextRef.current()}
-          rows={2}
-        />
-      )}
+      {textInput.visible && (() => {
+        const scale = getImageToolScale(imageSize.width, imageSize.height);
+        const editEl = textInput.editId
+          ? (elements.find((el) => el.id === textInput.editId) as TextElement | undefined)
+          : undefined;
+        const displayFont = editEl?.fontSize ?? Math.round(fontSize * scale);
+        const displayColor = editEl?.fill ?? strokeColor;
+        return (
+          <textarea
+            ref={textAreaRef}
+            className="absolute z-50 bg-transparent border-2 border-dashed border-blue-500 outline-none resize-none p-1"
+            style={{
+              left: currentStagePos.x + textInput.x * currentZoom,
+              top: currentStagePos.y + textInput.y * currentZoom,
+              fontSize: displayFont * currentZoom,
+              fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+              color: displayColor,
+              minWidth: 100,
+              minHeight: 40,
+              lineHeight: 1.2,
+            }}
+            onKeyDown={handleTextAreaKeyDown}
+            onBlur={() => commitTextRef.current()}
+            rows={2}
+          />
+        );
+      })()}
 
       {/* Zoom indicator */}
       <div className="absolute bottom-3 right-3 px-2.5 py-1 rounded-md bg-black/60 text-white text-xs font-medium backdrop-blur-sm pointer-events-none select-none">

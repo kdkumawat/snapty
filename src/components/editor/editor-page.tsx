@@ -80,7 +80,7 @@ const docsSections = [
       { title: 'macOS - Native Screenshot', desc: 'Use Cmd+Shift+4 to capture a region. It saves to desktop. Then paste into SnapKit with Cmd+V. For clipboard-only: Cmd+Ctrl+Shift+4.', icon: <MonitorSmartphone className="w-4 h-4" /> },
       { title: 'Windows - Win+Shift+S', desc: 'Press Win+Shift+S to capture a region to clipboard. Then paste into SnapKit with Ctrl+V. The image loads instantly.', icon: <Monitor className="w-4 h-4" /> },
       { title: 'Browser - Screenshot Extension', desc: 'Use browser extensions like GoFullPage or FireShot to capture full pages, then paste into SnapKit.', icon: <Globe className="w-4 h-4" /> },
-      { title: 'Install as App (PWA)', desc: 'SnapKit can be installed as a browser app. On Chrome/Edge, click the install icon in the address bar. On macOS, it appears in the dock for quick access.', icon: <MonitorSmartphone className="w-4 h-4" /> },
+      { title: 'Install as App (PWA)', desc: 'Install from Chrome/Edge address bar. Opens straight into the editor (no landing page). Works offline; all editing stays on your device.', icon: <MonitorSmartphone className="w-4 h-4" /> },
     ],
   },
 ];
@@ -171,8 +171,9 @@ const LandingPage: React.FC = () => {
           <div className="flex items-center gap-3">
             <a
               href="https://github.com/kdkumawat/snapkit"
+              target="_blank"
+              rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 hover:text-foreground transition-colors"
-              onClick={(e) => e.preventDefault()}
             >
               <Github className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">GitHub</span>
@@ -249,9 +250,10 @@ const LandingPage: React.FC = () => {
         <span>SnapKit - Browser-native screenshot editor for professionals</span>
         <div className="flex items-center gap-3">
           <a
-            href="#"
+            href="https://github.com/kdkumawat/snapkit"
+            target="_blank"
+            rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 hover:text-foreground transition-colors"
-            onClick={(e) => e.preventDefault()}
           >
             <Github className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">GitHub</span>
@@ -265,23 +267,53 @@ const LandingPage: React.FC = () => {
 const EditorPage: React.FC = () => {
   const backgroundImage = useEditorStore((s) => s.backgroundImage);
   const isEditorLaunched = useEditorStore((s) => s.isEditorLaunched);
+  const launchEditor = useEditorStore((s) => s.launchEditor);
 
   useKeyboardShortcuts();
   useClipboardPaste();
 
+  // Installed PWA should never show the marketing landing page
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const nav = window.navigator as Navigator & { standalone?: boolean };
+    const standalone =
+      window.matchMedia('(display-mode: standalone)').matches
+      || window.matchMedia('(display-mode: window-controls-overlay)').matches
+      || nav.standalone === true;
+    if (standalone && !isEditorLaunched) {
+      launchEditor();
+    }
+  }, [isEditorLaunched, launchEditor]);
+
   if (!isEditorLaunched && !backgroundImage) return <LandingPage />;
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-background overflow-hidden select-none">
+    <div className="h-dvh w-screen max-w-[100vw] flex flex-col bg-background overflow-hidden select-none touch-manipulation">
       <TopBar />
-      <div className="flex flex-1 min-h-0">
-        <Toolbar />
+      <div className="flex flex-1 min-h-0 min-w-0 flex-col md:flex-row">
+        {/* Tools: side rail on md+, bottom bar on mobile (see Toolbar) */}
+        <div className="hidden md:flex md:h-full shrink-0 z-30">
+          <Toolbar />
+        </div>
         {backgroundImage ? (
           <>
-            <div className="flex-1 relative"><EditorCanvas /></div>
-            <PropertiesPanel />
+            <div className="flex flex-1 min-h-0 min-w-0 order-1 md:order-none">
+              <div className="flex-1 relative min-w-0 min-h-0" data-snapkit-canvas-wrap>
+                <EditorCanvas />
+              </div>
+              {/* Settings rail — always available (collapses to a strip) */}
+              <div className="shrink-0 z-20 h-full max-h-full">
+                <PropertiesPanel />
+              </div>
+            </div>
+            {/* Mobile bottom toolbar */}
+            <div className="md:hidden shrink-0 z-30 order-3 border-t border-border bg-background safe-bottom">
+              <Toolbar />
+            </div>
           </>
-        ) : <WelcomeScreen />}
+        ) : (
+          <WelcomeScreen />
+        )}
       </div>
       <ExportDialog />
       <HelpDialog />

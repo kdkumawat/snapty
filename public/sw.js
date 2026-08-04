@@ -1,8 +1,14 @@
-const CACHE_NAME = 'snapkit-v3';
+const CACHE_NAME = 'snapkit-v4';
 
 // Static assets to precache (minimal - most loaded on-demand)
+// Prefetch editor route so installed PWA opens offline-ready
 const PRECACHE_URLS = [
   '/',
+  '/editor',
+  '/manifest.json',
+  '/favicon.svg',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
 ];
 
 // Install: precache minimal resources, skip waiting

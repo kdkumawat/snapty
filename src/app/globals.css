@@ -89,10 +89,46 @@
 
 @layer base {
   * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 0;
-    overflow: auto;
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    /* Native-app feel in PWA / standalone */
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
     font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  body {
+    overflow: auto;
+    /* Safe areas for notched devices / macOS PWA chrome */
+    padding:
+      env(safe-area-inset-top, 0)
+      env(safe-area-inset-right, 0)
+      env(safe-area-inset-bottom, 0)
+      env(safe-area-inset-left, 0);
+    background: var(--background);
+    color: var(--foreground);
+  }
+
+  /* Standalone PWA: lock rubber-band / bounce scrolling outside the app chrome */
+  @media (display-mode: standalone), (display-mode: window-controls-overlay) {
+    html, body {
+      overflow: hidden;
+      height: 100dvh;
+      width: 100%;
+      position: fixed;
+      inset: 0;
+    }
+    body {
+      /* Fill the window; children manage scroll where needed */
+      display: flex;
+      flex-direction: column;
+    }
+    body > * {
+      flex: 1;
+      min-height: 0;
+    }
   }
 
   /* Cursor pointer on interactive elements */
@@ -100,9 +136,9 @@
     cursor: pointer;
   }
 
-  /* Konva canvas - inherit cursor from parent */
-  .konvajs-content { outline: none; cursor: inherit !important; }
-  .konvajs-content canvas { cursor: inherit !important; }
+  /* Konva canvas - force tool cursors through (Konva often sets cursor on canvas itself) */
+  .konvajs-content { outline: none; }
+  .konvajs-content canvas { touch-action: none; }
 
   /* Scrollbars */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -146,4 +182,23 @@
 .toolbar-btn-active {
   color: var(--accent-foreground);
   background-color: var(--accent);
+}
+
+/* Ensure chrome sits above the Konva stage (tool icons were clipped / covered) */
+[data-snapkit-toolbar] {
+  position: relative;
+  z-index: 30;
+}
+[data-snapkit-canvas] {
+  position: relative;
+  z-index: 0;
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Horizontal toolbar scrollbar on mobile */
+[data-snapkit-toolbar]::-webkit-scrollbar {
+  height: 3px;
+  width: 3px;
 }

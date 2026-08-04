@@ -9,6 +9,47 @@ import { cn } from '@/lib/utils';
 import { modKey } from '@/hooks/use-keyboard-shortcuts';
 import ScissorLogo from '@/components/scissor-logo';
 
+/**
+ * Load a remote image entirely in the browser (no server proxy).
+ * Requires the image host to allow CORS; otherwise suggest local paste/drop.
+ */
+async function loadImageFromUrlClient(url: string): Promise<HTMLImageElement> {
+  // Try fetch + blob (works when CORS headers are present)
+  try {
+    const res = await fetch(url, { mode: 'cors', credentials: 'omit', cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType && !contentType.startsWith('image/') && !contentType.includes('octet-stream')) {
+      throw new Error('URL is not an image');
+    }
+    const blob = await res.blob();
+    if (!blob.type.startsWith('image/') && contentType && !contentType.includes('octet-stream')) {
+      throw new Error('URL is not an image');
+    }
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const img = await loadHtmlImage(objectUrl);
+      return img;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  } catch {
+    // Fallback: direct Image() load (also needs CORS for canvas export later)
+    const img = await loadHtmlImage(url, true);
+    return img;
+  }
+}
+
+function loadHtmlImage(src: string, crossOrigin = false): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    if (crossOrigin) img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = src;
+  });
+}
+
 const WelcomeScreen: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [urlInput, setUrlInput] = useState('');
@@ -47,18 +88,17 @@ const WelcomeScreen: React.FC = () => {
     setUrlLoading(true);
     setUrlError('');
     try {
-      const res = await fetch('/api/import-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: urlInput.trim() }),
-      });
-      const d = await res.json();
-      if (!d.dataURL) { setUrlError(d.error || 'Failed to fetch image'); return; }
-      const img = new Image();
-      img.onload = () => { setBackgroundImage(img); setUrlInput(''); };
-      img.src = d.dataURL;
-    } catch { setUrlError('Failed to fetch image'); }
-    finally { setUrlLoading(false); }
+      // Privacy-first: image is fetched only by your browser, never uploaded to SnapKit
+      const img = await loadImageFromUrlClient(urlInput.trim());
+      setBackgroundImage(img);
+      setUrlInput('');
+    } catch {
+      setUrlError(
+        'Could not load image in-browser (CORS blocked or invalid URL). Paste or drop the file instead — nothing is sent to our servers.'
+      );
+    } finally {
+      setUrlLoading(false);
+    }
   }
 
   return (
@@ -78,7 +118,7 @@ const WelcomeScreen: React.FC = () => {
         <Upload className={cn('w-10 h-10', dragOver ? 'text-accent' : 'text-muted-foreground')} />
         <div className="text-center">
           <p className="text-foreground text-sm font-medium mb-1">{dragOver ? 'Drop your image here' : 'Drag and drop an image here'}</p>
-          <p className="text-muted-foreground text-xs">PNG, JPG, WEBP, SVG</p>
+          <p className="text-muted-foreground text-xs">PNG, JPG, WEBP, SVG · 100% local</p>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground"><span>or</span></div>
         <div className="flex gap-2">
@@ -95,7 +135,7 @@ const WelcomeScreen: React.FC = () => {
       <div className="w-full max-w-md">
         <div className="flex gap-2">
           <Input
-            placeholder="Paste image URL..."
+            placeholder="Paste image URL (loaded in your browser only)..."
             value={urlInput}
             onChange={(e) => { setUrlInput(e.target.value); setUrlError(''); }}
             onKeyDown={(e) => { if (e.key === 'Enter') handleUrlImport(); }}
@@ -112,7 +152,7 @@ const WelcomeScreen: React.FC = () => {
         <kbd className="px-1.5 py-0.5 bg-secondary rounded border border-border text-[10px]">{modKey}</kbd>
         <span>+</span>
         <kbd className="px-1.5 py-0.5 bg-secondary rounded border border-border text-[10px]">V</kbd>
-        <span className="ml-1">to paste from clipboard</span>
+        <span className="ml-1">to paste from clipboard · never leaves your device</span>
       </p>
     </div>
   );

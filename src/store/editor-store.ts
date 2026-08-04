@@ -2,7 +2,12 @@ import { create } from 'zustand';
 import type { EditorElement, ToolType, ExportFormat, CanvasStyle } from '@/types/editor';
 
 // Persisted settings (restored on refresh)
-const PERSIST_KEYS = ['activeTool', 'strokeColor', 'fillColor', 'strokeWidth', 'fontSize', 'opacity', 'cornerRadius', 'exportFormat', 'stepStartNumber', 'stepRadius', 'exportQuality', 'gridEnabled'] as const;
+const PERSIST_KEYS = [
+  'activeTool', 'strokeColor', 'fillColor', 'strokeWidth', 'fontSize',
+  'opacity', 'cornerRadius', 'exportFormat', 'stepStartNumber', 'stepRadius',
+  'exportQuality', 'gridEnabled', 'blurRadius', 'pixelSize', 'highlighterWidth',
+  'panelCollapsed',
+] as const;
 type PersistKey = typeof PERSIST_KEYS[number];
 
 function loadPersisted(): Partial<Record<PersistKey, any>> {
@@ -18,8 +23,18 @@ function savePersisted(state: Record<string, any>) {
   try {
     const toSave: Record<string, any> = {};
     for (const k of PERSIST_KEYS) toSave[k] = state[k];
+    // gridEnabled lives on canvasStyle
+    toSave.gridEnabled = state.canvasStyle?.gridEnabled ?? state.gridEnabled;
     localStorage.setItem('snapkit-settings', JSON.stringify(toSave));
   } catch { /* quota exceeded */ }
+}
+
+/** Scale tool sizes so annotations stay readable on large screenshots. */
+export function getImageToolScale(width: number, height: number): number {
+  const longest = Math.max(width, height);
+  if (longest <= 0) return 1;
+  // 1200px baseline → 1×; 2400px → 2×; cap at 4×
+  return Math.max(1, Math.min(4, longest / 1200));
 }
 
 interface EditorState {
@@ -35,6 +50,9 @@ interface EditorState {
   fontSize: number;
   opacity: number;
   cornerRadius: number;
+  blurRadius: number;
+  pixelSize: number;
+  highlighterWidth: number;
   elements: EditorElement[];
   selectedElementIds: string[];
   stepCounter: number;
@@ -47,9 +65,11 @@ interface EditorState {
   exportFormat: ExportFormat;
   exportQuality: number;
   showHelpDialog: boolean;
+  showExportDialog: boolean;
+  panelCollapsed: boolean;
 
   launchEditor: () => void;
-  setBackgroundImage: (img: HTMLImageElement) => void;
+  setBackgroundImage: (img: HTMLImageElement, opts?: { clearAnnotations?: boolean }) => void;
   clearImage: () => void;
   replaceImage: () => void;
   setZoom: (zoom: number) => void;
@@ -62,10 +82,17 @@ interface EditorState {
   setFontSize: (size: number) => void;
   setOpacity: (opacity: number) => void;
   setCornerRadius: (radius: number) => void;
+  setBlurRadius: (r: number) => void;
+  setPixelSize: (s: number) => void;
+  setHighlighterWidth: (w: number) => void;
   setStepStartNumber: (n: number) => void;
+  setPanelCollapsed: (collapsed: boolean) => void;
+  /** Reset stroke/fill/size prefs to factory defaults (keeps image + annotations). */
+  resetToolSettings: () => void;
   addElement: (element: EditorElement) => void;
   addElements: (elements: EditorElement[]) => void;
   updateElement: (id: string, updates: Partial<EditorElement>) => void;
+  updateSelectedElements: (updates: Partial<EditorElement>) => void;
   removeElements: (ids: string[]) => void;
   setSelectedElementIds: (ids: string[]) => void;
   clearElements: () => void;
@@ -84,6 +111,7 @@ interface EditorState {
   setShowHelpDialog: (show: boolean) => void;
   resetAll: () => void;
   goToLanding: () => void;
+  getToolScale: () => number;
 }
 
 const initialCanvasStyle: CanvasStyle = {
@@ -94,21 +122,45 @@ const initialCanvasStyle: CanvasStyle = {
   deviceFrame: 'none', gridEnabled: false,
 };
 
-const defaults: Record<PersistKey, any> = {
-  activeTool: 'select' as ToolType,
+const defaults: Record<string, any> = {
+  // First visit: arrow. After that, last used tool is restored from localStorage.
+  activeTool: 'arrow' as ToolType,
   strokeColor: '#ef4444',
   fillColor: 'transparent',
-  strokeWidth: 3, fontSize: 24, opacity: 1, cornerRadius: 8,
+  strokeWidth: 3,
+  fontSize: 24,
+  opacity: 1,
+  cornerRadius: 8,
   exportFormat: 'png' as ExportFormat,
   stepStartNumber: 1,
   stepRadius: 16,
+  blurRadius: 12,
+  pixelSize: 10,
+  highlighterWidth: 24,
+  exportQuality: 1,
+  panelCollapsed: false,
 };
 
 const persisted = loadPersisted();
 const editorPath = '/editor';
 
+function isStandalonePwa(): boolean {
+  if (typeof window === 'undefined') return false;
+  const nav = window.navigator as Navigator & { standalone?: boolean };
+  return window.matchMedia('(display-mode: standalone)').matches
+    || window.matchMedia('(display-mode: window-controls-overlay)').matches
+    || nav.standalone === true;
+}
+
 function syncEditorRoute(launched: boolean) {
   if (typeof window === 'undefined') return;
+  // In installed PWA, stay on /editor — no landing route churn
+  if (isStandalonePwa()) {
+    if (window.location.pathname !== editorPath) {
+      window.history.replaceState({}, '', editorPath);
+    }
+    return;
+  }
   const nextPath = launched ? editorPath : '/';
   const samePath = window.location.pathname === nextPath;
   const hasLegacyHash = window.location.hash === '#editor';
@@ -118,8 +170,12 @@ function syncEditorRoute(launched: boolean) {
   }
 }
 
-// Auto-launch editor if URL is the dedicated editor path or the legacy hash bookmark
-const shouldAutoLaunch = typeof window !== 'undefined' && (window.location.pathname === editorPath || window.location.hash === '#editor');
+// Auto-launch: /editor path, legacy hash, or installed PWA (skip landing)
+const shouldAutoLaunch = typeof window !== 'undefined' && (
+  window.location.pathname === editorPath
+  || window.location.hash === '#editor'
+  || isStandalonePwa()
+);
 
 const generateId = () => Math.random().toString(36).substring(2, 11);
 const cloneElements = (els: EditorElement[]) => JSON.parse(JSON.stringify(els));
@@ -137,6 +193,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   fontSize: persisted.fontSize ?? defaults.fontSize,
   opacity: persisted.opacity ?? defaults.opacity,
   cornerRadius: persisted.cornerRadius ?? defaults.cornerRadius,
+  blurRadius: persisted.blurRadius ?? defaults.blurRadius,
+  pixelSize: persisted.pixelSize ?? defaults.pixelSize,
+  highlighterWidth: persisted.highlighterWidth ?? defaults.highlighterWidth,
   elements: [],
   selectedElementIds: [],
   stepCounter: persisted.stepStartNumber ?? defaults.stepStartNumber,
@@ -146,28 +205,52 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   _historyIndex: 0,
   canvasStyle: { ...initialCanvasStyle, gridEnabled: persisted.gridEnabled ?? initialCanvasStyle.gridEnabled },
   exportFormat: persisted.exportFormat ?? defaults.exportFormat,
-  exportQuality: persisted.exportQuality ?? 1,
+  exportQuality: persisted.exportQuality ?? defaults.exportQuality,
   showExportDialog: false,
   showHelpDialog: false,
+  panelCollapsed: persisted.panelCollapsed ?? defaults.panelCollapsed,
 
   launchEditor: () => {
     syncEditorRoute(true);
     set({ isEditorLaunched: true });
   },
 
-  setBackgroundImage: (img) => {
+  // Replace/load image. Preserves active tool and all drawing settings.
+  // Clears annotations by default (new screenshot = fresh canvas).
+  setBackgroundImage: (img, opts) => {
+    const clearAnnotations = opts?.clearAnnotations !== false;
     const start = get().stepStartNumber;
     syncEditorRoute(true);
-    set({
-      backgroundImage: img,
-      imageSize: { width: img.naturalWidth, height: img.naturalHeight },
-      elements: [], selectedElementIds: [],
-      _history: [[]], _historyIndex: 0,
-      stepCounter: start, isEditorLaunched: true,
-    });
+    if (clearAnnotations) {
+      set({
+        backgroundImage: img,
+        imageSize: { width: img.naturalWidth, height: img.naturalHeight },
+        elements: [], selectedElementIds: [],
+        _history: [[]], _historyIndex: 0,
+        stepCounter: start, isEditorLaunched: true,
+      });
+    } else {
+      set({
+        backgroundImage: img,
+        imageSize: { width: img.naturalWidth, height: img.naturalHeight },
+        isEditorLaunched: true,
+      });
+    }
   },
 
   clearImage: () => {
+    // In PWA, stay in editor rather than bouncing to landing
+    if (isStandalonePwa()) {
+      return set({
+        backgroundImage: null,
+        imageSize: { width: 0, height: 0 },
+        elements: [], selectedElementIds: [],
+        _history: [[]], _historyIndex: 0,
+        stepCounter: get().stepStartNumber,
+        zoom: 1, stagePosition: { x: 0, y: 0 },
+        isEditorLaunched: true,
+      });
+    }
     syncEditorRoute(false);
     return set({
       backgroundImage: null,
@@ -176,11 +259,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       _history: [[]], _historyIndex: 0,
       stepCounter: get().stepStartNumber,
       zoom: 1, stagePosition: { x: 0, y: 0 },
-      canvasStyle: { ...initialCanvasStyle },
       isEditorLaunched: false,
     });
   },
 
+  // Clear image to show welcome/drop zone WITHOUT resetting tool or style settings
   replaceImage: () => {
     syncEditorRoute(true);
     return set({
@@ -190,8 +273,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       _history: [[]], _historyIndex: 0,
       stepCounter: get().stepStartNumber,
       zoom: 1, stagePosition: { x: 0, y: 0 },
-      canvasStyle: { ...initialCanvasStyle },
-      activeTool: 'select',
+      // intentionally keep activeTool, colors, sizes, canvasStyle
     });
   },
 
@@ -200,21 +282,180 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   resetView: () => {
     const { imageSize } = get();
     if (!imageSize.width || !imageSize.height) return;
-    const cw = window.innerWidth - 320;
-    const ch = window.innerHeight - 56;
-    const z = Math.min((cw - 100) / imageSize.width, (ch - 100) / imageSize.height, 1);
-    set({ zoom: z, stagePosition: { x: (cw - imageSize.width * z) / 2, y: (ch - imageSize.height * z) / 2 } });
+    // Prefer measuring the actual canvas container when available
+    const container = document.querySelector('[data-snapkit-canvas]') as HTMLElement | null;
+    const cw = container?.clientWidth || Math.max(200, window.innerWidth - 96);
+    const ch = container?.clientHeight || Math.max(200, window.innerHeight - 96);
+    const pad = Math.min(80, Math.max(16, Math.min(cw, ch) * 0.08));
+    const z = Math.min((cw - pad) / imageSize.width, (ch - pad) / imageSize.height, 1);
+    set({
+      zoom: Math.max(0.05, z),
+      stagePosition: {
+        x: (cw - imageSize.width * z) / 2,
+        y: (ch - imageSize.height * z) / 2,
+      },
+    });
   },
 
   setActiveTool: (tool) => { set({ activeTool: tool, selectedElementIds: [] }); savePersisted({ ...get(), activeTool: tool }); },
-  setStrokeColor: (color) => { set({ strokeColor: color }); savePersisted({ ...get(), strokeColor: color }); },
-  setFillColor: (color) => { set({ fillColor: color }); savePersisted({ ...get(), fillColor: color }); },
-  setStrokeWidth: (width) => { set({ strokeWidth: width }); savePersisted({ ...get(), strokeWidth: width }); },
-  setFontSize: (size) => { set({ fontSize: size }); savePersisted({ ...get(), fontSize: size }); },
-  setOpacity: (opacity) => { set({ opacity: Math.max(0, Math.min(1, opacity)) }); savePersisted({ ...get(), opacity }); },
-  setCornerRadius: (radius) => { set({ cornerRadius: radius }); savePersisted({ ...get(), cornerRadius: radius }); },
+  setStrokeColor: (color) => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      let els = s.elements;
+      let historyExtra = false;
+      if (ids.size) {
+        els = s.elements.map((el) => {
+          if (!ids.has(el.id)) return el;
+          if (el.type === 'text' || el.type === 'step') return { ...el, fill: color } as EditorElement;
+          if (el.type === 'arrow') return { ...el, stroke: color, fill: color } as EditorElement;
+          if (['blur', 'pixelate', 'spotlight'].includes(el.type)) return el;
+          return { ...el, stroke: color } as EditorElement;
+        });
+        historyExtra = true;
+      }
+      return historyExtra
+        ? { strokeColor: color, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        : { strokeColor: color };
+    });
+    savePersisted({ ...get(), strokeColor: color });
+  },
+  setFillColor: (color) => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      let els = s.elements;
+      let historyExtra = false;
+      if (ids.size) {
+        els = s.elements.map((el) => {
+          if (!ids.has(el.id)) return el;
+          if (['rectangle', 'rounded-rect', 'circle'].includes(el.type)) return { ...el, fill: color } as EditorElement;
+          return el;
+        });
+        historyExtra = true;
+      }
+      return historyExtra
+        ? { fillColor: color, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        : { fillColor: color };
+    });
+    savePersisted({ ...get(), fillColor: color });
+  },
+  setStrokeWidth: (width) => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      let els = s.elements;
+      let historyExtra = false;
+      if (ids.size) {
+        // Apply image scale so edits match draw-time sizing on large screenshots
+        const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
+        const scaled = Math.max(1, Math.round(width * scale));
+        els = s.elements.map((el) => {
+          if (!ids.has(el.id) || !('strokeWidth' in el)) return el;
+          return { ...el, strokeWidth: scaled } as EditorElement;
+        });
+        historyExtra = true;
+      }
+      return historyExtra
+        ? { strokeWidth: width, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        : { strokeWidth: width };
+    });
+    savePersisted({ ...get(), strokeWidth: width });
+  },
+  setFontSize: (size) => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      let els = s.elements;
+      let historyExtra = false;
+      if (ids.size) {
+        const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
+        const scaled = Math.max(8, Math.round(size * scale));
+        els = s.elements.map((el) => {
+          if (!ids.has(el.id) || el.type !== 'text') return el;
+          return { ...el, fontSize: scaled } as EditorElement;
+        });
+        historyExtra = true;
+      }
+      return historyExtra
+        ? { fontSize: size, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        : { fontSize: size };
+    });
+    savePersisted({ ...get(), fontSize: size });
+  },
+  setOpacity: (opacity) => {
+    const o = Math.max(0, Math.min(1, opacity));
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      if (!ids.size) return { opacity: o };
+      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, opacity: o } as EditorElement : el);
+      return { opacity: o, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 };
+    });
+    savePersisted({ ...get(), opacity: o });
+  },
+  setCornerRadius: (radius) => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      let els = s.elements;
+      let historyExtra = false;
+      if (ids.size) {
+        els = s.elements.map((el) => {
+          if (!ids.has(el.id) || (el.type !== 'rounded-rect' && el.type !== 'rectangle')) return el;
+          return { ...el, cornerRadius: radius } as EditorElement;
+        });
+        historyExtra = true;
+      }
+      return historyExtra
+        ? { cornerRadius: radius, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        : { cornerRadius: radius };
+    });
+    savePersisted({ ...get(), cornerRadius: radius });
+  },
+  setBlurRadius: (r) => { set({ blurRadius: Math.max(2, Math.min(40, r)) }); savePersisted({ ...get(), blurRadius: r }); },
+  setPixelSize: (s) => { set({ pixelSize: Math.max(2, Math.min(40, s)) }); savePersisted({ ...get(), pixelSize: s }); },
+  setHighlighterWidth: (w) => { set({ highlighterWidth: Math.max(4, Math.min(60, w)) }); savePersisted({ ...get(), highlighterWidth: w }); },
   setStepStartNumber: (n) => { set({ stepStartNumber: n, stepCounter: n }); savePersisted({ ...get(), stepStartNumber: n }); },
-  setStepRadius: (r) => { set({ stepRadius: Math.max(8, Math.min(40, r)) }); savePersisted({ ...get(), stepRadius: r }); },
+  setStepRadius: (r) => {
+    const radius = Math.max(8, Math.min(80, r));
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      let els = s.elements;
+      let historyExtra = false;
+      if (ids.size) {
+        const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
+        const scaled = Math.max(8, Math.round(radius * scale));
+        els = s.elements.map((el) => {
+          if (!ids.has(el.id) || el.type !== 'step') return el;
+          return { ...el, radius: scaled, fontSize: Math.round(scaled * 0.8) } as EditorElement;
+        });
+        historyExtra = true;
+      }
+      return historyExtra
+        ? { stepRadius: radius, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        : { stepRadius: radius };
+    });
+    savePersisted({ ...get(), stepRadius: radius });
+  },
+  setPanelCollapsed: (collapsed) => {
+    set({ panelCollapsed: collapsed });
+    savePersisted({ ...get(), panelCollapsed: collapsed });
+  },
+
+  resetToolSettings: () => {
+    // Preserve activeTool — only reset stroke/fill/size prefs
+    const next = {
+      strokeColor: defaults.strokeColor as string,
+      fillColor: defaults.fillColor as string,
+      strokeWidth: defaults.strokeWidth as number,
+      fontSize: defaults.fontSize as number,
+      opacity: defaults.opacity as number,
+      cornerRadius: defaults.cornerRadius as number,
+      blurRadius: defaults.blurRadius as number,
+      pixelSize: defaults.pixelSize as number,
+      highlighterWidth: defaults.highlighterWidth as number,
+      stepRadius: defaults.stepRadius as number,
+      stepStartNumber: defaults.stepStartNumber as number,
+      stepCounter: defaults.stepStartNumber as number,
+    };
+    set(next);
+    savePersisted({ ...get(), ...next });
+  },
 
   addElement: (element) => {
     set((s) => {
@@ -232,6 +473,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   updateElement: (id, updates) => {
     set((s) => {
       const els = s.elements.map((el) => el.id === id ? { ...el, ...updates } as EditorElement : el);
+      return { elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 };
+    });
+  },
+  updateSelectedElements: (updates) => {
+    set((s) => {
+      if (!s.selectedElementIds.length) return s;
+      const els = s.elements.map((el) =>
+        s.selectedElementIds.includes(el.id) ? { ...el, ...updates } as EditorElement : el
+      );
       return { elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 };
     });
   },
@@ -257,6 +507,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setCanvasStyle: (style) => {
     set((s) => {
       const updated = { ...s.canvasStyle, ...style };
+      if ('gridEnabled' in style) savePersisted({ ...get(), canvasStyle: updated, gridEnabled: updated.gridEnabled });
       return { canvasStyle: updated };
     });
   },
@@ -277,9 +528,20 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   goToLanding: () => {
+    // Installed PWA should never show landing — stay in editor
+    if (isStandalonePwa()) {
+      set({ isEditorLaunched: true });
+      syncEditorRoute(true);
+      return;
+    }
     syncEditorRoute(false);
     set({ isEditorLaunched: false, backgroundImage: null });
   },
+
+  getToolScale: () => {
+    const { imageSize } = get();
+    return getImageToolScale(imageSize.width, imageSize.height);
+  },
 }));
 
-export { generateId };
+export { generateId, isStandalonePwa };
