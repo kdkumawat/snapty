@@ -65,7 +65,7 @@ The `public/_headers` file configures caching:
 | Variable | Description | Default |
 |---|---|---|
 | `NODE_VERSION` | Node.js version for build | `20` |
-| `NEXT_PUBLIC_SITE_URL` | Production URL for SEO/canonical | `https://snapkit.dev` |
+| `NEXT_PUBLIC_SITE_URL` | Production URL for SEO/canonical | `https://snapkit.pages.dev` |
 
 ---
 

@@ -102,7 +102,7 @@ function drawDeviceFrame(
     ctx.strokeStyle = '#d1d5db'; ctx.lineWidth = 1;
     ctx.strokeRect(80, dotY - 12, totalW - 120, 24);
     ctx.fillStyle = '#9ca3af'; ctx.font = '12px sans-serif';
-    ctx.fillText('snapkit.dev', 90, dotY + 4);
+    ctx.fillText('snapkit.pages.dev', 90, dotY + 4);
     return { x: 0, y: titleBarH, w: totalW, h: totalH - titleBarH };
   }
 

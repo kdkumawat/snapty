@@ -1,5 +1,5 @@
 export default function JsonLd() {
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://snapkit.dev";
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://snapkit.pages.dev";
   const data = {
     "@context": "https://schema.org",
     "@type": "WebApplication",

@@ -13,4 +13,4 @@ Allow: /
 User-agent: *
 Allow: /
 
-Sitemap: https://snapkit.dev/sitemap.xml
+Sitemap: https://snapkit.pages.dev/sitemap.xml
