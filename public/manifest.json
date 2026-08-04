@@ -1,0 +1,27 @@
+{
+  "name": "SnapKit - Screenshot Editor",
+  "short_name": "SnapKit",
+  "description": "The fastest browser-based screenshot editor. Annotate, style, and export — all in your browser.",
+  "start_url": "/#editor",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#f97316",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "categories": ["productivity", "utilities"],
+  "screenshots": [],
+  "prefer_related_applications": false
+}
