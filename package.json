@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
     "build": "next build",
-    "export": "next build && next export",
     "cf:build": "npm run build",
     "cf:preview": "npm run cf:build && npx wrangler pages dev out",
     "cf:deploy": "npm run cf:build && npx wrangler pages deploy out",
@@ -90,7 +89,6 @@
     "zustand": "^5.0.6"
   },
   "devDependencies": {
-    "@cloudflare/next-on-pages": "^1.0.0",
     "@opennextjs/cloudflare": "^1.20.2",
     "@tailwindcss/postcss": "^4",
     "@types/react": "^19",
