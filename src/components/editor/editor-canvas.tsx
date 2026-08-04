@@ -219,10 +219,16 @@ const EditorCanvas: React.FC = () => {
 
   // Register stage globally for export
   useEffect(() => {
-    const timer = setTimeout(() => {
+    const registerStage = () => {
       if (stageRef.current) (window as any).__snapkit_stage = stageRef.current;
-    }, 100);
-    return () => clearTimeout(timer);
+    };
+    registerStage();
+    const timer = window.setTimeout(registerStage, 100);
+    const raf = window.requestAnimationFrame(registerStage);
+    return () => {
+      window.clearTimeout(timer);
+      window.cancelAnimationFrame(raf);
+    };
   }, [backgroundImage]);
 
   // Update transformer nodes when selection changes

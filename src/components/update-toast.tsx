@@ -1,49 +1,83 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { X, RefreshCw } from 'lucide-react';
 
 export default function UpdateToast() {
   const [show, setShow] = useState(false);
 
   useEffect(() => {
-    let sw: ServiceWorker | null = null;
-    let refreshing = false;
+    if (!('serviceWorker' in navigator)) return;
 
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').then((reg) => {
-        sw = reg;
-        reg.addEventListener('updatefound', () => {
-          const newWorker = reg.installing;
+    let isMounted = true;
+    const showToast = () => {
+      if (isMounted) setShow(true);
+    };
+
+    const registerServiceWorker = async () => {
+      try {
+        const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+
+        if (registration.waiting) {
+          showToast();
+        }
+
+        registration.addEventListener('updatefound', () => {
+          const newWorker = registration.installing;
           if (!newWorker) return;
+
           newWorker.addEventListener('statechange', () => {
-            if (newWorker.state === 'activated' && navigator.serviceWorker.controller) {
-              setShow(true);
+            if (newWorker.state === 'installed' || newWorker.state === 'activated') {
+              showToast();
             }
           });
         });
-      }).catch(() => {});
-    }
 
-    // Handle controller change (new SW took over)
+        await registration.update();
+        if (registration.waiting) {
+          showToast();
+        }
+      } catch {
+        // Ignore registration failures; the app can still run without the update prompt.
+      }
+    };
+
     const handleControllerChange = () => {
-      if (refreshing) return;
-      refreshing = true;
       window.location.reload();
     };
-    navigator.serviceWorker?.addEventListener('controllerchange', handleControllerChange);
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'NEW_VERSION_READY') {
+        showToast();
+      }
+    };
+
+    void registerServiceWorker();
+    navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
+    navigator.serviceWorker.addEventListener('message', handleMessage);
 
     return () => {
-      navigator.serviceWorker?.removeEventListener('controllerchange', handleControllerChange);
+      isMounted = false;
+      navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange);
+      navigator.serviceWorker.removeEventListener('message', handleMessage);
     };
   }, []);
 
-  const handleRefresh = () => {
-    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-      navigator.serviceWorker.controller.postMessage({ type: 'SKIP_WAITING' });
-    }
-    window.location.reload();
-  };
+  const handleRefresh = useCallback(() => {
+    setShow(false);
+    const refreshApp = () => window.location.reload();
+
+    navigator.serviceWorker.getRegistration().then((registration) => {
+      if (registration?.waiting) {
+        registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+      } else if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({ type: 'SKIP_WAITING' });
+      }
+      window.setTimeout(refreshApp, 250);
+    }).catch(() => {
+      refreshApp();
+    });
+  }, []);
 
   if (!show) return null;
 

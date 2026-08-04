@@ -149,12 +149,12 @@ function drawDeviceFrame(
 }
 
 /** Render the final export with canvas styles applied */
-function renderWithCanvasStyle(
+async function renderWithCanvasStyle(
   stageDataURL: string,
   canvasStyle: CanvasStyle,
   imgW: number,
   imgH: number
-): string {
+): Promise<string> {
   const pad = canvasStyle.padding;
   const totalW = imgW + pad * 2;
   const totalH = imgH + pad * 2;
@@ -209,9 +209,13 @@ function renderWithCanvasStyle(
     drawRect = drawDeviceFrame(ctx, canvasStyle.deviceFrame, totalW, totalH, pad);
   }
 
-  // Draw the stage image
+  // Draw the stage image once it has fully loaded
   const img = new Image();
   img.src = stageDataURL;
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('Failed to load stage image for export'));
+  });
   ctx.drawImage(img, drawRect.x, drawRect.y, drawRect.w, drawRect.h);
 
   return canvas.toDataURL('image/png');
@@ -235,7 +239,7 @@ async function exportImage(format: ExportFormat, quality: number): Promise<Blob 
       // Render stage at original size first
       const stageDataURL = config.stage.toDataURL({ pixelRatio: 1, mimeType: 'image/png' });
       // Apply canvas style
-      finalDataURL = renderWithCanvasStyle(stageDataURL, canvasStyle, config.imageSize.width, config.imageSize.height);
+      finalDataURL = await renderWithCanvasStyle(stageDataURL, canvasStyle, config.imageSize.width, config.imageSize.height);
       // Convert to blob with correct format
       const res = await fetch(finalDataURL);
       const pngBlob = await res.blob();
@@ -268,7 +272,14 @@ async function exportImage(format: ExportFormat, quality: number): Promise<Blob 
 
 async function copyToClipboard() {
     console.log('copyToClipboard function called');
-    const config = getStageConfig();
+    let config = getStageConfig();
+    if (!config) {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        config = getStageConfig();
+        if (config) break;
+      }
+    }
     if (!config) {
       console.error('No stage configuration available for copying');
       throw new Error('No stage configuration available for copying');
@@ -288,7 +299,7 @@ async function copyToClipboard() {
       if (hasStyle) {
         console.log('Rendering with canvas style');
         const stageDataURL = config.stage.toDataURL({ pixelRatio: 1, mimeType: 'image/png' });
-        dataURL = renderWithCanvasStyle(stageDataURL, canvasStyle, config.imageSize.width, config.imageSize.height);
+        dataURL = await renderWithCanvasStyle(stageDataURL, canvasStyle, config.imageSize.width, config.imageSize.height);
       } else {
         console.log('Getting raw stage data URL');
         dataURL = config.stage.toDataURL({ pixelRatio: 1, mimeType: 'image/png' });

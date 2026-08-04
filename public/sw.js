@@ -1,4 +1,4 @@
-const CACHE_NAME = 'snapkit-v2';
+const CACHE_NAME = 'snapkit-v3';
 
 // Static assets to precache (minimal - most loaded on-demand)
 const PRECACHE_URLS = [
@@ -17,7 +17,9 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
-    ).then(() => self.clients.claim())
+    ).then(() => self.clients.claim()).then(() => self.clients.matchAll()).then((clients) => {
+      clients.forEach((client) => client.postMessage({ type: 'NEW_VERSION_READY' }));
+    })
   );
 });
 
