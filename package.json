@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
     "build": "next build",
-    "cf:build": "opennextjs-cloudflare build",
+    "cf:build": "mkdir -p .open-next/assets && opennextjs-cloudflare build",
     "preview": "npm run cf:build && opennextjs-cloudflare preview",
     "deploy": "npm run cf:build && opennextjs-cloudflare deploy",
     "upload": "npm run cf:build && opennextjs-cloudflare upload",
