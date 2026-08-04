@@ -2,7 +2,7 @@
 
 ## Cloudflare Pages (Recommended)
 
-SnapKit uses `@opennextjs/cloudflare` to deploy to Cloudflare Pages as a serverless application.
+SnapKit is deployed to Cloudflare Pages with the OpenNext Cloudflare adapter.
 
 ### Prerequisites
 
@@ -10,46 +10,29 @@ SnapKit uses `@opennextjs/cloudflare` to deploy to Cloudflare Pages as a serverl
 - GitHub repository with your code
 - Node.js 20+
 
-### Option 1: Deploy via GitHub Integration
+### Cloudflare Pages settings
 
-1. **Install the adapter** (add as dev dependency):
+In Cloudflare Pages, use these values:
 
-```bash
-npm install -D @opennextjs/cloudflare
-```
+- **Build command:** `npm run cf:build`
+- **Build output directory:** `.open-next/assets`
+- **Node.js version:** `20`
+- **Environment variable:** `NODE_VERSION=20`
 
-2. **Push your code to GitHub**.
+The project already includes the required Cloudflare config files and the adapter dependency.
 
-3. **Connect to Cloudflare Pages**:
-   - Go to [Cloudflare Dashboard](https://dash.cloudflare.com/) → Workers & Pages → Create → Pages → Connect to Git
-   - Select your repository
-   - Configure build settings:
-     - **Build command:** `npx @opennextjs/cloudflare build`
-     - **Build output directory:** `.open-next/assets`
-     - **Node.js version:** `20`
-   - Add environment variable: `NODE_VERSION=20`
-   - Click **Deploy**
+### Deploy via GitHub integration
 
-4. **Custom domain** (optional):
-   - Pages → Your project → Custom domains → Add
+1. Push the repository to GitHub.
+2. Open Cloudflare Dashboard → Workers & Pages → Create → Pages → Connect to Git.
+3. Select the repository and use the settings above.
+4. Click Deploy.
 
-### Option 2: Deploy via CLI
-
-1. Install dependencies:
+### Deploy via CLI
 
 ```bash
-npm install -D @opennextjs/cloudflare wrangler
-```
-
-2. Build:
-
-```bash
-npx @opennextjs/cloudflare build
-```
-
-3. Deploy:
-
-```bash
+npm install
+npm run cf:build
 npx wrangler pages deploy .open-next/assets --project-name=snapkit
 ```
 
