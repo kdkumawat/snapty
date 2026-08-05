@@ -8,6 +8,8 @@ import { useEditorStore } from '@/store/editor-store';
 import { cn } from '@/lib/utils';
 import { modKey } from '@/hooks/use-keyboard-shortcuts';
 import ScissorLogo from '@/components/scissor-logo';
+import { loadImageFileIntoEditor } from '@/lib/image-load';
+import ImageLoadingSkeleton from './image-loading-skeleton';
 
 /**
  * Load a remote image entirely in the browser (no server proxy).
@@ -53,19 +55,14 @@ function loadHtmlImage(src: string, crossOrigin = false): Promise<HTMLImageEleme
 const WelcomeScreen: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [urlInput, setUrlInput] = useState('');
-  const [urlLoading, setUrlLoading] = useState(false);
   const [urlError, setUrlError] = useState('');
   const [dragOver, setDragOver] = useState(false);
+  const imageLoading = useEditorStore((s) => s.imageLoading);
+  const setImageLoading = useEditorStore((s) => s.setImageLoading);
   const setBackgroundImage = useEditorStore((s) => s.setBackgroundImage);
 
   function loadImage(file: File) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => setBackgroundImage(img);
-      img.src = reader.result as string;
-    };
-    reader.readAsDataURL(file);
+    void loadImageFileIntoEditor(file);
   }
 
   async function handlePaste() {
@@ -75,7 +72,7 @@ const WelcomeScreen: React.FC = () => {
         for (const type of item.types) {
           if (type.startsWith('image/')) {
             const blob = await item.getType(type);
-            loadImage(new File([blob], 'paste.png', { type }));
+            void loadImageFileIntoEditor(new File([blob], 'paste.png', { type }));
             return;
           }
         }
@@ -85,11 +82,12 @@ const WelcomeScreen: React.FC = () => {
 
   async function handleUrlImport() {
     if (!urlInput.trim()) return;
-    setUrlLoading(true);
     setUrlError('');
+    setImageLoading(true);
     try {
       // Privacy-first: image is fetched only by your browser, never uploaded to Snapty
       const img = await loadImageFromUrlClient(urlInput.trim());
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
       setBackgroundImage(img);
       setUrlInput('');
     } catch {
@@ -97,24 +95,29 @@ const WelcomeScreen: React.FC = () => {
         'Could not load image in-browser (CORS blocked or invalid URL). Paste or drop the file instead — nothing is sent to our servers.'
       );
     } finally {
-      setUrlLoading(false);
+      setImageLoading(false);
     }
   }
 
   return (
     <div
-      className={cn('flex-1 flex flex-col items-center justify-center p-8 transition-all', dragOver && 'bg-accent/5')}
+      className={cn(
+        'relative h-full min-h-0 w-full flex flex-col items-center justify-center px-4 py-6 sm:p-8 transition-all overflow-y-auto',
+        dragOver && 'bg-accent/5',
+      )}
       onDrop={(e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f?.type.startsWith('image/')) loadImage(f); }}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
     >
-      <div className="w-16 h-16 rounded-2xl bg-accent/10 text-accent flex items-center justify-center mb-6">
-        <ScissorLogo size={32} />
+      {imageLoading && <ImageLoadingSkeleton label="Loading image…" />}
+      <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-accent/10 text-accent flex items-center justify-center mb-4 sm:mb-6 shrink-0">
+        <ScissorLogo size={28} className="sm:hidden" />
+        <ScissorLogo size={32} className="hidden sm:block" />
       </div>
-      <h1 className="text-2xl font-bold text-foreground mb-2">Snapty</h1>
-      <p className="text-muted-foreground text-sm mb-8">Capture. Annotate. Share.</p>
+      <h1 className="text-xl sm:text-2xl font-bold text-foreground mb-2">Snapty</h1>
+      <p className="text-muted-foreground text-sm mb-6 sm:mb-8">Capture. Annotate. Share.</p>
 
-      <div className={cn('w-full max-w-md border-2 border-dashed rounded-2xl p-10 flex flex-col items-center gap-4 transition-all mb-6', dragOver ? 'border-accent bg-accent/5' : 'border-border hover:border-muted-foreground bg-secondary/30')}>
+      <div className={cn('w-full max-w-md border-2 border-dashed rounded-2xl p-6 sm:p-10 flex flex-col items-center gap-3 sm:gap-4 transition-all mb-6', dragOver ? 'border-accent bg-accent/5' : 'border-border hover:border-muted-foreground bg-secondary/30')}>
         <Upload className={cn('w-10 h-10', dragOver ? 'text-accent' : 'text-muted-foreground')} />
         <div className="text-center">
           <p className="text-foreground text-sm font-medium mb-1">{dragOver ? 'Drop your image here' : 'Drag and drop an image here'}</p>
@@ -141,8 +144,8 @@ const WelcomeScreen: React.FC = () => {
             onKeyDown={(e) => { if (e.key === 'Enter') handleUrlImport(); }}
             className="h-10 bg-background border-border text-foreground placeholder:text-muted-foreground focus:border-accent"
           />
-          <Button variant="outline" className="h-10 bg-background border-border text-foreground hover:bg-accent shrink-0" disabled={urlLoading || !urlInput.trim()} onClick={handleUrlImport}>
-            {urlLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <LinkIcon className="w-4 h-4" />}
+          <Button variant="outline" className="h-10 bg-background border-border text-foreground hover:bg-accent shrink-0" disabled={imageLoading || !urlInput.trim()} onClick={handleUrlImport}>
+            {imageLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <LinkIcon className="w-4 h-4" />}
           </Button>
         </div>
         {urlError && <p className="text-destructive text-xs mt-1.5">{urlError}</p>}

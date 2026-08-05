@@ -16,6 +16,9 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip';
+import { modKey } from '@/hooks/use-keyboard-shortcuts';
+import { useResponsivePanel } from '@/hooks/use-responsive-panel';
+import { toastSuccess } from '@/lib/app-toast';
 
 function loadPanelSections(): Record<string, boolean> {
   try {
@@ -105,24 +108,7 @@ function showsFill(tool: ToolType, selectedTypes: string[]): boolean {
 }
 
 const PropertiesPanel: React.FC = () => {
-  // Auto-collapse on narrow viewports so icons/canvas aren't crushed; user can re-open
-  React.useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mq = window.matchMedia('(max-width: 768px)');
-    const apply = () => {
-      if (mq.matches && !useEditorStore.getState().panelCollapsed) {
-        // Only auto-collapse once per narrow session if not already collapsed by user
-        const flag = sessionStorage.getItem('snapty-auto-collapsed');
-        if (!flag) {
-          useEditorStore.getState().setPanelCollapsed(true);
-          sessionStorage.setItem('snapty-auto-collapsed', '1');
-        }
-      }
-    };
-    apply();
-    mq.addEventListener('change', apply);
-    return () => mq.removeEventListener('change', apply);
-  }, []);
+  const { panelCollapsed, expandPanel, collapsePanel } = useResponsivePanel();
 
   const activeTool = useEditorStore((s) => s.activeTool);
   const strokeColor = useEditorStore((s) => s.strokeColor);
@@ -138,7 +124,6 @@ const PropertiesPanel: React.FC = () => {
   const elements = useEditorStore((s) => s.elements);
   const stepRadius = useEditorStore((s) => s.stepRadius);
   const stepCounter = useEditorStore((s) => s.stepCounter);
-  const panelCollapsed = useEditorStore((s) => s.panelCollapsed);
   const setStrokeColor = useEditorStore((s) => s.setStrokeColor);
   const setFillColor = useEditorStore((s) => s.setFillColor);
   const setStrokeWidth = useEditorStore((s) => s.setStrokeWidth);
@@ -156,8 +141,14 @@ const PropertiesPanel: React.FC = () => {
   const sendToBack = useEditorStore((s) => s.sendToBack);
   const setStepRadius = useEditorStore((s) => s.setStepRadius);
   const setStepStartNumber = useEditorStore((s) => s.setStepStartNumber);
-  const setPanelCollapsed = useEditorStore((s) => s.setPanelCollapsed);
   const resetToolSettings = useEditorStore((s) => s.resetToolSettings);
+
+  const handleClearAll = () => {
+    const n = useEditorStore.getState().elements.length;
+    if (!n) return;
+    clearElements();
+    toastSuccess('Annotations cleared', n === 1 ? '1 annotation removed.' : `${n} annotations removed.`);
+  };
   const resetAll = useEditorStore((s) => s.resetAll);
   const hasImage = useEditorStore((s) => s.backgroundImage !== null);
   const hasSelection = selectedElementIds.length > 0;
@@ -193,13 +184,13 @@ const PropertiesPanel: React.FC = () => {
   if (panelCollapsed) {
     return (
       <TooltipProvider delayDuration={200}>
-        <div className="w-9 sm:w-9 bg-background border-l border-border flex flex-col items-center py-2 gap-1 shrink-0 h-full z-20 relative">
+        <div data-snapty-panel className="w-9 bg-background border-l border-border flex flex-col items-center py-2 gap-1 shrink-0 h-full min-h-0 z-20 relative">
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 type="button"
                 className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
-                onClick={() => setPanelCollapsed(false)}
+                onClick={expandPanel}
                 aria-label="Show panel"
               >
                 <PanelRightOpen className="w-4 h-4" />
@@ -220,6 +211,23 @@ const PropertiesPanel: React.FC = () => {
             </TooltipTrigger>
             <TooltipContent side="left" className="z-[200]">Reset tools</TooltipContent>
           </Tooltip>
+          {hasImage && elements.length > 0 && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+                  onClick={handleClearAll}
+                  aria-label="Clear all annotations"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="z-[200]">
+                Clear all ({modKey}+Shift+⌫)
+              </TooltipContent>
+            </Tooltip>
+          )}
           {hasImage && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -241,11 +249,30 @@ const PropertiesPanel: React.FC = () => {
   }
 
   return (
-    <div className="w-48 sm:w-56 bg-background border-l border-border flex flex-col shrink-0 h-full z-20 relative">
+    <div data-snapty-panel className="w-[min(14rem,42vw)] sm:w-52 lg:w-56 bg-background border-l border-border flex flex-col shrink-0 h-full min-h-0 max-h-full z-20 relative overflow-hidden">
       <div className="px-2 py-1.5 border-b border-border flex items-center justify-between shrink-0 gap-1">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-1 truncate">Settings</span>
         <div className="flex items-center gap-0.5">
           <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
+                  onClick={handleClearAll}
+                  disabled={!elements.length}
+                  aria-label="Clear all annotations"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="z-[200]">
+                Clear all annotations
+                <kbd className="ml-2 text-muted-foreground bg-secondary px-1.5 py-0.5 rounded text-[10px] font-mono">
+                  {modKey}+Shift+⌫
+                </kbd>
+              </TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -278,7 +305,7 @@ const PropertiesPanel: React.FC = () => {
           <button
             type="button"
             className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
-            onClick={() => setPanelCollapsed(true)}
+            onClick={collapsePanel}
             title="Collapse settings"
             aria-label="Collapse settings"
           >
@@ -474,12 +501,6 @@ const PropertiesPanel: React.FC = () => {
             <p className="text-[9px] text-muted-foreground/60">Paste or drop images onto the canvas. All processing stays on your device.</p>
           </div>
         </Section>
-
-        <div className="px-3 py-3 pb-6">
-          <Button variant="ghost" size="sm" className="w-full text-[10px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer" onClick={clearElements}>
-            <Trash2 className="w-3 h-3 mr-1" />Clear All Annotations
-          </Button>
-        </div>
       </div>
     </div>
   );

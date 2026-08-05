@@ -3,6 +3,8 @@
 import { useEffect, useRef } from 'react';
 import { useEditorStore } from '@/store/editor-store';
 import { copyToClipboard } from '@/components/editor/export-dialog';
+import { loadImageFileIntoEditor } from '@/lib/image-load';
+import { toastError, toastSuccess } from '@/lib/app-toast';
 import type { ToolType } from '@/types/editor';
 
 // Mac detection helper
@@ -47,13 +49,27 @@ export function useKeyboardShortcuts() {
       if (isCtrl && !isShift && e.key === '0') { e.preventDefault(); useEditorStore.getState().resetView(); return; }
       if (isCtrl && e.key.toLowerCase() === 'e' && !isShift) { e.preventDefault(); useEditorStore.getState().setShowExportDialog(true); return; }
       if (isCtrl && e.key.toLowerCase() === 'a' && !isShift) { e.preventDefault(); const { elements, setSelectedElementIds } = useEditorStore.getState(); setSelectedElementIds(elements.map(el => el.id)); return; }
+      // Clear all annotations
+      if (isCtrl && isShift && (e.key === 'Backspace' || e.key === 'Delete')) {
+        e.preventDefault();
+        const st = useEditorStore.getState();
+        const n = st.elements.length;
+        if (n) {
+          st.clearElements();
+          toastSuccess('Annotations cleared', n === 1 ? '1 annotation removed.' : `${n} annotations removed.`);
+        }
+        return;
+      }
       if (isCtrl && e.key.toLowerCase() === 'c' && !isShift) {
         const st = useEditorStore.getState();
         if (st.backgroundImage) {
           e.preventDefault();
-          void copyToClipboard().catch((error) => {
-            console.error('Failed to copy image to clipboard via keyboard shortcut:', error);
-          });
+          void copyToClipboard()
+            .then(() => toastSuccess('Copied to clipboard', 'Image is ready to paste anywhere.'))
+            .catch((error) => {
+              console.error('Failed to copy image to clipboard via keyboard shortcut:', error);
+              toastError('Copy failed', 'Clipboard access was blocked or the image could not be exported.');
+            });
         }
         return;
       }
@@ -100,14 +116,8 @@ export function useClipboardPaste() {
         if (item.type.startsWith('image/')) {
           e.preventDefault();
           const file = item.getAsFile(); if (!file) continue;
-          const reader = new FileReader();
-          reader.onload = () => {
-            const img = new Image();
-            // Replaces image + clears annotations but keeps tool/settings
-            img.onload = () => useEditorStore.getState().setBackgroundImage(img);
-            img.src = reader.result as string;
-          };
-          reader.readAsDataURL(file);
+          // Skeleton while decoding large screenshots
+          void loadImageFileIntoEditor(file);
           return;
         }
       }

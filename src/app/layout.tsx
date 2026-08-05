@@ -4,6 +4,7 @@ import { ThemeProvider } from "next-themes";
 import "./globals.css";
 import UpdateToast from "@/components/update-toast";
 import JsonLd from "@/components/json-ld";
+import { Toaster } from "@/components/ui/toaster";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -108,8 +109,14 @@ export default function RootLayout({
       >
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <JsonLd />
-          {children}
-          <UpdateToast />
+          {/* Single full-viewport shell — keeps PWA/editor from sharing height with sibling nodes */}
+          <div data-snapty-root className="bg-background text-foreground">
+            <div className="flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden">
+              {children}
+            </div>
+            <UpdateToast />
+            <Toaster />
+          </div>
         </ThemeProvider>
       </body>
     </html>

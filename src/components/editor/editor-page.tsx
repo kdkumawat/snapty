@@ -10,6 +10,7 @@ import PropertiesPanel from './properties-panel';
 import WelcomeScreen from './welcome-screen';
 import ExportDialog from './export-dialog';
 import HelpDialog from './help-dialog';
+import ImageLoadingSkeleton from './image-loading-skeleton';
 import ScissorLogo from '@/components/scissor-logo';
 import { useTheme } from 'next-themes';
 import { Button } from '@/components/ui/button';
@@ -106,8 +107,8 @@ const LandingPage: React.FC = () => {
 
   if (showDocs) {
     return (
-      <div className="min-h-screen bg-background text-foreground flex flex-col">
-        <header className="border-b border-border px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between sticky top-0 bg-background/80 backdrop-blur-md z-10">
+      <div className="flex-1 min-h-0 h-full w-full bg-background text-foreground flex flex-col overflow-y-auto">
+        <header className="border-b border-border px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between sticky top-0 bg-background/80 backdrop-blur-md z-10 shrink-0">
           <div className="flex items-center gap-3">
             <button
               className="flex items-center gap-2 cursor-pointer group"
@@ -185,8 +186,8 @@ const LandingPage: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col">
-      <header className="border-b border-border px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between sticky top-0 bg-background/80 backdrop-blur-md z-10">
+    <div className="flex-1 min-h-0 h-full w-full bg-background text-foreground flex flex-col overflow-y-auto">
+      <header className="border-b border-border px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between sticky top-0 bg-background/80 backdrop-blur-md z-10 shrink-0">
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-accent/10 text-accent flex items-center justify-center">
             <ScissorLogo size={16} className="sm:hidden" />
@@ -267,6 +268,7 @@ const LandingPage: React.FC = () => {
 const EditorPage: React.FC = () => {
   const backgroundImage = useEditorStore((s) => s.backgroundImage);
   const isEditorLaunched = useEditorStore((s) => s.isEditorLaunched);
+  const imageLoading = useEditorStore((s) => s.imageLoading);
   const launchEditor = useEditorStore((s) => s.launchEditor);
 
   useKeyboardShortcuts();
@@ -288,31 +290,34 @@ const EditorPage: React.FC = () => {
   if (!isEditorLaunched && !backgroundImage) return <LandingPage />;
 
   return (
-    <div className="h-dvh w-screen max-w-[100vw] flex flex-col bg-background overflow-hidden select-none touch-manipulation">
+    <div className="flex-1 min-h-0 h-full w-full flex flex-col bg-background overflow-hidden select-none touch-manipulation">
       <TopBar />
-      <div className="flex flex-1 min-h-0 min-w-0 flex-col md:flex-row">
+      <div className="flex flex-1 min-h-0 min-w-0 flex-col md:flex-row overflow-hidden">
         {/* Tools: side rail on md+, bottom bar on mobile (see Toolbar) */}
-        <div className="hidden md:flex md:h-full shrink-0 z-30">
+        <div className="hidden md:flex md:h-full md:min-h-0 shrink-0 z-30">
           <Toolbar />
         </div>
         {backgroundImage ? (
           <>
-            <div className="flex flex-1 min-h-0 min-w-0 order-1 md:order-none">
-              <div className="flex-1 relative min-w-0 min-h-0" data-snapty-canvas-wrap>
+            <div className="flex flex-1 min-h-0 min-w-0 order-1 md:order-none overflow-hidden">
+              <div className="flex-1 relative min-w-0 min-h-0 overflow-hidden" data-snapty-canvas-wrap>
                 <EditorCanvas />
+                {imageLoading && <ImageLoadingSkeleton label="Loading image…" />}
               </div>
-              {/* Settings rail — always available (collapses to a strip) */}
-              <div className="shrink-0 z-20 h-full max-h-full">
+              {/* Settings rail — collapses on narrow viewports */}
+              <div className="shrink-0 z-20 h-full max-h-full min-h-0 max-w-[min(100%,16rem)]">
                 <PropertiesPanel />
               </div>
             </div>
-            {/* Mobile bottom toolbar */}
+            {/* Mobile / narrow: bottom toolbar */}
             <div className="md:hidden shrink-0 z-30 order-3 border-t border-border bg-background safe-bottom">
               <Toolbar />
             </div>
           </>
         ) : (
-          <WelcomeScreen />
+          <div className="flex-1 min-h-0 min-w-0 overflow-y-auto">
+            <WelcomeScreen />
+          </div>
         )}
       </div>
       <ExportDialog />

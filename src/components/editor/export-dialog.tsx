@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -127,61 +127,83 @@ function getContentBounds(): { x: number; y: number; width: number; height: numb
   };
 }
 
-function getStageConfig() {
+/**
+ * Capture stage content at image-native resolution WITHOUT resizing/moving the
+ * live stage (that caused a visible flicker on copy/export).
+ * Only selection transformers are briefly hidden.
+ */
+async function captureStagePng(): Promise<{ dataURL: string; width: number; height: number }> {
   const stage = (window as any).__snapty_stage;
-  if (!stage) return null;
-  const st = useEditorStore.getState();
-  const { imageSize } = st;
-  if (!imageSize.width || !imageSize.height) return null;
-  return {
-    stage,
-    imageSize,
-    origWidth: stage.width() as number,
-    origHeight: stage.height() as number,
-    origScaleX: stage.scaleX() as number,
-    origScaleY: stage.scaleY() as number,
-    origX: stage.x() as number,
-    origY: stage.y() as number,
-    hiddenNodes: [] as { node: any; visible: boolean }[],
-    exportBounds: { x: 0, y: 0, width: imageSize.width, height: imageSize.height },
-  };
-}
+  if (!stage) throw new Error('No stage configuration available');
+  const { imageSize } = useEditorStore.getState();
+  if (!imageSize.width || !imageSize.height) throw new Error('No image loaded');
 
-function setupStageForExport(config: NonNullable<ReturnType<typeof getStageConfig>>) {
   const bounds = getContentBounds();
-  config.exportBounds = bounds;
-
-  // Hide transformer so selection anchors aren't baked into the export
-  config.hiddenNodes = [];
+  const hidden: { node: any; visible: boolean }[] = [];
   try {
-    const transformers = config.stage.find?.('Transformer') || [];
+    const transformers = stage.find?.('Transformer') || [];
     transformers.forEach((node: any) => {
-      config.hiddenNodes.push({ node, visible: node.visible() });
+      hidden.push({ node, visible: node.visible() });
       node.visible(false);
     });
-  } catch { /* ignore */ }
+    if (hidden.length) stage.batchDraw();
 
-  config.stage.width(bounds.width);
-  config.stage.height(bounds.height);
-  config.stage.scaleX(1);
-  config.stage.scaleY(1);
-  // Shift content so the union of image + annotations starts at (0,0)
-  config.stage.x(-bounds.x);
-  config.stage.y(-bounds.y);
-  config.stage.batchDraw();
+    const scaleX = stage.scaleX() || 1;
+    const scaleY = stage.scaleY() || 1;
+    // Region of the stage container that currently displays `bounds` (content space)
+    const x = stage.x() + bounds.x * scaleX;
+    const y = stage.y() + bounds.y * scaleY;
+    const width = Math.max(1, bounds.width * scaleX);
+    const height = Math.max(1, bounds.height * scaleY);
+    // pixelRatio so output is ~bounds in image pixels regardless of zoom
+    const pixelRatio = scaleX > 0 ? 1 / scaleX : 1;
+
+    const dataURL = stage.toDataURL({
+      x,
+      y,
+      width,
+      height,
+      pixelRatio,
+      mimeType: 'image/png',
+    });
+    return { dataURL, width: bounds.width, height: bounds.height };
+  } finally {
+    for (const { node, visible } of hidden) {
+      try { node.visible(visible); } catch { /* gone */ }
+    }
+    if (hidden.length) stage.batchDraw();
+  }
 }
 
-function restoreStage(config: NonNullable<ReturnType<typeof getStageConfig>>) {
-  for (const { node, visible } of config.hiddenNodes || []) {
-    try { node.visible(visible); } catch { /* node may be gone */ }
+async function dataUrlToBlob(dataURL: string, mime?: string, quality?: number): Promise<Blob> {
+  if (!mime || mime === 'image/png' || quality == null) {
+    const res = await fetch(dataURL);
+    if (!res.ok) throw new Error(`Failed to fetch image data: ${res.status}`);
+    return res.blob();
   }
-  config.stage.width(config.origWidth);
-  config.stage.height(config.origHeight);
-  config.stage.scaleX(config.origScaleX);
-  config.stage.scaleY(config.origScaleY);
-  config.stage.x(config.origX);
-  config.stage.y(config.origY);
-  config.stage.batchDraw();
+  // Re-encode PNG data URL → jpeg/webp at quality
+  const img = new Image();
+  img.src = dataURL;
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('Failed to decode export image'));
+  });
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d')!;
+  if (mime === 'image/jpeg') {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  ctx.drawImage(img, 0, 0);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error('toBlob failed'))),
+      mime,
+      quality,
+    );
+  });
 }
 
 /** Draw rounded rect clip path */
@@ -352,111 +374,65 @@ async function renderWithCanvasStyle(
   return canvas.toDataURL('image/png');
 }
 
+async function waitForStage(maxAttempts = 8): Promise<void> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if ((window as any).__snapty_stage && useEditorStore.getState().imageSize.width) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+async function buildExportDataURL(): Promise<{ dataURL: string; width: number; height: number }> {
+  await waitForStage();
+  const captured = await captureStagePng();
+  const canvasStyle = useEditorStore.getState().canvasStyle;
+  const hasStyle =
+    canvasStyle.padding > 0
+    || canvasStyle.borderRadius > 0
+    || canvasStyle.shadowEnabled
+    || canvasStyle.bgStyle !== 'none'
+    || canvasStyle.deviceFrame !== 'none';
+
+  if (!hasStyle) return captured;
+
+  const styled = await renderWithCanvasStyle(
+    captured.dataURL,
+    canvasStyle,
+    captured.width,
+    captured.height,
+  );
+  // Styled canvas may differ in size; decode to get dimensions if needed later
+  return { dataURL: styled, width: captured.width, height: captured.height };
+}
+
 async function exportImage(format: ExportFormat, quality: number): Promise<Blob | null> {
-  const config = getStageConfig();
-  if (!config) return null;
-  const fmt = formats.find(f => f.id === format);
+  const fmt = formats.find((f) => f.id === format);
   if (!fmt) return null;
-
-  setupStageForExport(config);
   try {
-    const st = useEditorStore.getState();
-    const canvasStyle = st.canvasStyle;
-    const hasStyle = canvasStyle.padding > 0 || canvasStyle.borderRadius > 0 ||
-      canvasStyle.shadowEnabled || canvasStyle.bgStyle !== 'none' || canvasStyle.deviceFrame !== 'none';
-
-    const exportW = config.exportBounds?.width ?? config.imageSize.width;
-    const exportH = config.exportBounds?.height ?? config.imageSize.height;
-
-    let finalDataURL: string;
-    if (hasStyle) {
-      // Render full content bounds (image + out-of-frame annotations)
-      const stageDataURL = config.stage.toDataURL({ pixelRatio: 1, mimeType: 'image/png' });
-      finalDataURL = await renderWithCanvasStyle(stageDataURL, canvasStyle, exportW, exportH);
-      const res = await fetch(finalDataURL);
-      const pngBlob = await res.blob();
-      if (format === 'png') return pngBlob;
-      const tmpCanvas = document.createElement('canvas');
-      const tmpImg = new Image();
-      tmpImg.src = finalDataURL;
-      await new Promise(r => { tmpImg.onload = r; });
-      tmpCanvas.width = tmpImg.naturalWidth;
-      tmpCanvas.height = tmpImg.naturalHeight;
-      const tmpCtx = tmpCanvas.getContext('2d')!;
-      if (format === 'jpg') {
-        tmpCtx.fillStyle = '#ffffff';
-        tmpCtx.fillRect(0, 0, tmpCanvas.width, tmpCanvas.height);
-      }
-      tmpCtx.drawImage(tmpImg, 0, 0);
-      return new Promise(resolve => tmpCanvas.toBlob(b => resolve(b), fmt.mime, quality));
-    } else {
-      const isLossless = format === 'png';
-      const q = isLossless ? undefined : quality;
-      // For JPEG fill transparent overflow with white first via intermediate canvas
-      if (format === 'jpg') {
-        const pngUrl = config.stage.toDataURL({ pixelRatio: 1, mimeType: 'image/png' });
-        const tmpCanvas = document.createElement('canvas');
-        tmpCanvas.width = exportW;
-        tmpCanvas.height = exportH;
-        const tmpCtx = tmpCanvas.getContext('2d')!;
-        tmpCtx.fillStyle = '#ffffff';
-        tmpCtx.fillRect(0, 0, exportW, exportH);
-        const tmpImg = new Image();
-        tmpImg.src = pngUrl;
-        await new Promise(r => { tmpImg.onload = r; });
-        tmpCtx.drawImage(tmpImg, 0, 0);
-        return new Promise(resolve => tmpCanvas.toBlob(b => resolve(b), fmt.mime, quality));
-      }
-      finalDataURL = config.stage.toDataURL({ pixelRatio: 1, mimeType: fmt.mime, quality: q });
-      const res = await fetch(finalDataURL);
-      return res.blob();
-    }
-  } finally {
-    restoreStage(config);
+    const { dataURL } = await buildExportDataURL();
+    if (format === 'png') return dataUrlToBlob(dataURL);
+    return dataUrlToBlob(dataURL, fmt.mime, quality);
+  } catch (error) {
+    console.error('Export failed:', error);
+    return null;
   }
 }
 
 async function copyToClipboard() {
-  let config = getStageConfig();
-  if (!config) {
-    for (let attempt = 0; attempt < 8; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      config = getStageConfig();
-      if (config) break;
-    }
-  }
-  if (!config) {
-    throw new Error('No stage configuration available for copying');
-  }
-
   try {
-    setupStageForExport(config);
-    const st = useEditorStore.getState();
-    const canvasStyle = st.canvasStyle;
-    const hasStyle = canvasStyle.padding > 0 || canvasStyle.borderRadius > 0 ||
-      canvasStyle.shadowEnabled || canvasStyle.bgStyle !== 'none' || canvasStyle.deviceFrame !== 'none';
-    const exportW = config.exportBounds?.width ?? config.imageSize.width;
-    const exportH = config.exportBounds?.height ?? config.imageSize.height;
-
-    let dataURL: string;
-    if (hasStyle) {
-      const stageDataURL = config.stage.toDataURL({ pixelRatio: 1, mimeType: 'image/png' });
-      dataURL = await renderWithCanvasStyle(stageDataURL, canvasStyle, exportW, exportH);
-    } else {
-      dataURL = config.stage.toDataURL({ pixelRatio: 1, mimeType: 'image/png' });
-    }
-    const res = await fetch(dataURL);
-    if (!res.ok) {
-      throw new Error(`Failed to fetch image data: ${res.status} ${res.statusText}`);
-    }
-    const blob = await res.blob();
+    const { dataURL } = await buildExportDataURL();
+    const blob = await dataUrlToBlob(dataURL);
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
   } catch (error) {
     console.error('Error copying to clipboard:', error);
     throw error;
-  } finally {
-    restoreStage(config);
   }
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 2 : 1)} MB`;
 }
 
 const ExportDialog: React.FC = () => {
@@ -468,14 +444,41 @@ const ExportDialog: React.FC = () => {
   const setExportQuality = useEditorStore((s) => s.setExportQuality);
   const imageSize = useEditorStore((s) => s.imageSize);
   const canvasStyle = useEditorStore((s) => s.canvasStyle);
+  const elements = useEditorStore((s) => s.elements);
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [estimating, setEstimating] = useState(false);
+  const [estimatedBytes, setEstimatedBytes] = useState<number | null>(null);
 
   const hasPadding = canvasStyle.padding > 0;
-  // Approximate export size (full bounds computed at export time may be larger if annotations overflow)
   const exportW = imageSize.width + canvasStyle.padding * 2;
   const exportH = imageSize.height + canvasStyle.padding * 2;
+
+  // Debounced real size estimate when dialog is open (uses same pipeline as download)
+  useEffect(() => {
+    if (!showExportDialog || !imageSize.width) {
+      setEstimatedBytes(null);
+      return;
+    }
+    let cancelled = false;
+    setEstimating(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const q = exportFormat === 'png' ? 1 : exportQuality / 100;
+        const blob = await exportImage(exportFormat, q);
+        if (!cancelled && blob) setEstimatedBytes(blob.size);
+      } catch {
+        if (!cancelled) setEstimatedBytes(null);
+      } finally {
+        if (!cancelled) setEstimating(false);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [showExportDialog, exportFormat, exportQuality, imageSize.width, imageSize.height, canvasStyle, elements]);
 
   const handleDownload = async () => {
     setExporting(true);
@@ -485,15 +488,18 @@ const ExportDialog: React.FC = () => {
       setProgress(60);
       const blob = await exportImage(exportFormat, q);
       if (!blob) return;
+      setEstimatedBytes(blob.size);
       setProgress(90);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `snapty-export${formats.find(f => f.id === exportFormat)?.ext || '.png'}`;
+      a.download = `snapty-export${formats.find((f) => f.id === exportFormat)?.ext || '.png'}`;
       a.click();
       URL.revokeObjectURL(url);
       setProgress(100);
-    } finally { setTimeout(() => { setExporting(false); setProgress(0); }, 300); }
+    } finally {
+      setTimeout(() => { setExporting(false); setProgress(0); }, 300);
+    }
   };
 
   const handleCopy = async () => {
@@ -508,11 +514,11 @@ const ExportDialog: React.FC = () => {
       setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       console.error('Failed to copy image to clipboard:', error);
-      // Show error state briefly
       setCopied(false);
       setProgress(0);
-      // Optionally show a toast notification here
-    } finally { setTimeout(() => { setExporting(false); setProgress(0); }, 300); }
+    } finally {
+      setTimeout(() => { setExporting(false); setProgress(0); }, 300);
+    }
   };
 
   return (
@@ -520,20 +526,47 @@ const ExportDialog: React.FC = () => {
       <DialogContent className="bg-background border-border text-foreground max-w-sm">
         <DialogHeader><DialogTitle className="text-lg">Export Image</DialogTitle></DialogHeader>
         <div className="space-y-5 py-2">
-          <p className="text-xs text-muted-foreground">
-            Original: {imageSize.width} × {imageSize.height}px
-            {hasPadding && <span className="text-foreground"> → Export: {exportW} × {exportH}px</span>}
-          </p>
+          <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2.5 space-y-1">
+            <p className="text-xs text-muted-foreground">
+              Dimensions:{' '}
+              <span className="text-foreground font-medium tabular-nums">
+                {imageSize.width} × {imageSize.height}px
+              </span>
+              {hasPadding && (
+                <span className="text-muted-foreground">
+                  {' '}→ {exportW} × {exportH}px
+                </span>
+              )}
+            </p>
+            <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+              Estimated size:{' '}
+              <span className="text-foreground font-medium tabular-nums">
+                {estimating && estimatedBytes == null
+                  ? 'Calculating…'
+                  : formatBytes(estimatedBytes ?? 0)}
+              </span>
+              {estimating && estimatedBytes != null && (
+                <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+              )}
+            </p>
+          </div>
           <div className="space-y-2">
             <Label className="text-xs text-muted-foreground">Format</Label>
             <div className="grid grid-cols-3 gap-2">
               {formats.map((f) => (
-                <button key={f.id} className={cn(
-                  'px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-center cursor-pointer',
-                  exportFormat === f.id
-                    ? 'bg-accent text-accent-foreground border border-accent'
-                    : 'bg-secondary text-muted-foreground border border-border hover:border-muted-foreground'
-                )} onClick={() => setExportFormat(f.id)}>{f.label}</button>
+                <button
+                  key={f.id}
+                  type="button"
+                  className={cn(
+                    'px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-center cursor-pointer',
+                    exportFormat === f.id
+                      ? 'bg-accent text-accent-foreground border border-accent'
+                      : 'bg-secondary text-muted-foreground border border-border hover:border-muted-foreground',
+                  )}
+                  onClick={() => setExportFormat(f.id)}
+                >
+                  {f.label}
+                </button>
               ))}
             </div>
           </div>
@@ -541,13 +574,22 @@ const ExportDialog: React.FC = () => {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-xs text-muted-foreground">Quality</Label>
-                <span className="text-xs text-muted-foreground font-mono">{exportQuality}%</span>
+                <span className="text-xs text-muted-foreground font-mono tabular-nums">{exportQuality}%</span>
               </div>
-              <Slider value={[exportQuality]} onValueChange={([v]) => setExportQuality(v)} min={10} max={100} step={5} />
+              <Slider
+                value={[exportQuality]}
+                onValueChange={([v]) => setExportQuality(v)}
+                min={10}
+                max={100}
+                step={5}
+              />
+              <p className="text-[11px] text-muted-foreground/60">
+                Preference is saved for next export
+              </p>
             </div>
           )}
           {exportFormat === 'png' && (
-            <p className="text-[11px] text-muted-foreground/60">PNG is lossless - always full quality</p>
+            <p className="text-[11px] text-muted-foreground/60">PNG is lossless — always full quality</p>
           )}
           {exporting && progress > 0 && (
             <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
@@ -558,16 +600,33 @@ const ExportDialog: React.FC = () => {
             </div>
           )}
           <div className="flex gap-2 pt-2">
-            <Button variant="outline" className="flex-1 bg-secondary border-border text-foreground hover:bg-accent hover:text-accent-foreground h-10 min-w-[108px] justify-center cursor-pointer" onClick={handleCopy} disabled={exporting}>
-              {exporting
-                ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                : copied ? <Check className="w-3.5 h-3.5 mr-2" /> : <Copy className="w-3.5 h-3.5 mr-2" />}
-              {exporting ? 'Copying...' : copied ? 'Copied' : 'Copy Image'}
+            <Button
+              variant="outline"
+              className="flex-1 bg-secondary border-border text-foreground hover:bg-accent hover:text-accent-foreground h-10 min-w-[7.5rem] justify-center cursor-pointer"
+              onClick={handleCopy}
+              disabled={exporting}
+            >
+              <span className="relative w-4 h-4 mr-2 shrink-0">
+                {exporting ? (
+                  <Loader2 className="w-4 h-4 absolute inset-0 animate-spin" />
+                ) : copied ? (
+                  <Check className="w-3.5 h-3.5 absolute inset-0 m-auto" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5 absolute inset-0 m-auto" />
+                )}
+              </span>
+              <span className="tabular-nums">{exporting ? 'Copying…' : copied ? 'Copied' : 'Copy'}</span>
             </Button>
-            <Button className="flex-1 bg-accent text-accent-foreground hover:bg-accent/90 h-10 cursor-pointer" onClick={handleDownload} disabled={exporting}>
-              {exporting
-                ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                : <Download className="w-4 h-4 mr-2" />}
+            <Button
+              className="flex-1 bg-accent text-accent-foreground hover:bg-accent/90 h-10 cursor-pointer"
+              onClick={handleDownload}
+              disabled={exporting}
+            >
+              {exporting ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4 mr-2" />
+              )}
               Download
             </Button>
           </div>

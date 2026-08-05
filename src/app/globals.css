@@ -89,45 +89,79 @@
 
 @layer base {
   * { box-sizing: border-box; }
-  html, body {
+  html {
     margin: 0;
     padding: 0;
     height: 100%;
+    /* Prefer dynamic viewport; fall back for older engines */
+    height: 100dvh;
+    width: 100%;
     /* Native-app feel in PWA / standalone */
     overscroll-behavior: none;
     -webkit-tap-highlight-color: transparent;
     -webkit-text-size-adjust: 100%;
-    font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
   body {
-    overflow: auto;
-    /* Safe areas for notched devices / macOS PWA chrome */
-    padding:
-      env(safe-area-inset-top, 0)
-      env(safe-area-inset-right, 0)
-      env(safe-area-inset-bottom, 0)
-      env(safe-area-inset-left, 0);
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    min-height: 100dvh;
+    width: 100%;
+    overflow: hidden;
     background: var(--background);
     color: var(--foreground);
+    font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 
-  /* Standalone PWA: lock rubber-band / bounce scrolling outside the app chrome */
+  /*
+   * Single full-window app shell.
+   * Avoid body > * { flex:1 } — ThemeProvider/scripts/toasts as siblings were
+   * sharing viewport height on Mac PWA and leaving the editor half-blank.
+   */
+  [data-snapty-root] {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    /* Safe areas (notch / home indicator) + macOS window-controls-overlay titlebar */
+    padding-top: max(
+      env(safe-area-inset-top, 0px),
+      env(titlebar-area-height, 0px)
+    );
+    padding-right: env(safe-area-inset-right, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+  }
+
+  /* Standalone / installed PWA: no rubber-band outside chrome */
   @media (display-mode: standalone), (display-mode: window-controls-overlay) {
     html, body {
       overflow: hidden;
-      height: 100dvh;
-      width: 100%;
       position: fixed;
       inset: 0;
+      width: 100%;
+      height: 100%;
+      height: 100dvh;
     }
-    body {
-      /* Fill the window; children manage scroll where needed */
-      display: flex;
-      flex-direction: column;
+  }
+
+  /* Draggable region for window-controls-overlay titlebar on desktop PWAs */
+  @media (display-mode: window-controls-overlay) {
+    [data-snapty-titlebar] {
+      app-region: drag;
+      -webkit-app-region: drag;
     }
-    body > * {
-      flex: 1;
-      min-height: 0;
+    [data-snapty-titlebar] button,
+    [data-snapty-titlebar] a,
+    [data-snapty-titlebar] input,
+    [data-snapty-titlebar] [role="button"] {
+      app-region: no-drag;
+      -webkit-app-region: no-drag;
     }
   }
 
@@ -198,9 +232,44 @@
 [data-snapty-canvas] {
   position: relative;
   z-index: 0;
+  /* Absolute fill of flex parent so Konva always measures real height */
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+[data-snapty-canvas-wrap] {
+  position: relative;
+  flex: 1 1 0%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Image load skeleton shimmer */
+@keyframes snapty-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.snapty-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--foreground) 7%, transparent) 50%,
+    transparent 100%
+  );
+  animation: snapty-shimmer 1.35s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* Settings rail: smooth width transition when auto expand/collapse */
+[data-snapty-panel] {
+  transition: width 0.2s ease, min-width 0.2s ease, opacity 0.15s ease;
 }
 
 /* Horizontal toolbar scrollbar on mobile */

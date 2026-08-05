@@ -8,6 +8,7 @@ import {
 import Konva from 'konva';
 import { ZoomIn, ZoomOut, Maximize } from 'lucide-react';
 import { useEditorStore, generateId, getImageToolScale } from '@/store/editor-store';
+import { loadImageFileIntoEditor } from '@/lib/image-load';
 import type {
   EditorElement, ShapeElement, ArrowElement, LineElement,
   PencilElement, CircleElement, TextElement, StepElement,
@@ -267,16 +268,41 @@ const EditorCanvas: React.FC = () => {
 
   // Resize observer for container dimensions — update stage size without auto-resetting zoom
   // (auto resetView on every resize felt jumpy; fit-to-screen remains available on toolbar)
+  // When the shell first gains real height (common Mac PWA / flex fix), re-fit the image.
+  const lastSizeRef = useRef({ width: 0, height: 0 });
   useEffect(() => {
     const c = containerRef.current;
     if (!c) return;
     const update = () => {
-      setDimensions({ width: c.offsetWidth, height: c.offsetHeight });
+      const width = Math.max(0, Math.floor(c.clientWidth));
+      const height = Math.max(0, Math.floor(c.clientHeight));
+      if (width === 0 || height === 0) return;
+      const prev = lastSizeRef.current;
+      const gainedSize = (prev.width === 0 || prev.height === 0) && width > 0 && height > 0;
+      const largeChange =
+        prev.width > 0
+        && (Math.abs(prev.width - width) > 80 || Math.abs(prev.height - height) > 80);
+      lastSizeRef.current = { width, height };
+      setDimensions({ width, height });
+      // First real size or big shell resize (window drag on Mac) — re-fit
+      if (gainedSize || largeChange) {
+        if (useEditorStore.getState().backgroundImage) {
+          requestAnimationFrame(() => useEditorStore.getState().resetView());
+        }
+      }
     };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(c);
-    return () => observer.disconnect();
+    // visualViewport covers mobile browser chrome + some desktop PWA resizes
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', update);
+    window.addEventListener('resize', update);
+    return () => {
+      observer.disconnect();
+      vv?.removeEventListener('resize', update);
+      window.removeEventListener('resize', update);
+    };
   }, []);
 
   // Reset view when background image changes
@@ -1052,16 +1078,7 @@ const EditorCanvas: React.FC = () => {
 
   function loadDroppedImage(file: File) {
     if (!file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        // Replace background, keep tool + settings
-        useEditorStore.getState().setBackgroundImage(img);
-      };
-      img.src = reader.result as string;
-    };
-    reader.readAsDataURL(file);
+    void loadImageFileIntoEditor(file);
   }
 
   // --- Transform ---

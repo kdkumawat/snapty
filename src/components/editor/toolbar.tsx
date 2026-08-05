@@ -44,9 +44,9 @@ const Toolbar: React.FC = () => {
         className={cn(
           'toolbar-bg border-border z-30 relative shrink-0',
           // Vertical (md+)
-          'md:w-12 md:h-full md:border-r md:flex md:flex-col md:items-center md:py-2 md:gap-0.5 md:overflow-y-auto md:overflow-x-hidden',
+          'md:w-11 lg:w-12 md:h-full md:min-h-0 md:border-r md:flex md:flex-col md:items-center md:py-1.5 md:gap-0.5 md:overflow-y-auto md:overflow-x-hidden md:overscroll-contain',
           // Horizontal (mobile)
-          'w-full h-12 border-t flex flex-row items-center px-1 gap-0.5 overflow-x-auto overflow-y-hidden md:border-t-0',
+          'w-full h-12 min-h-12 border-t flex flex-row items-center px-1 gap-0.5 overflow-x-auto overflow-y-hidden overscroll-x-contain md:border-t-0',
         )}
         data-snapty-toolbar
       >

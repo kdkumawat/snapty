@@ -6,7 +6,7 @@ const PERSIST_KEYS = [
   'activeTool', 'strokeColor', 'fillColor', 'strokeWidth', 'fontSize',
   'opacity', 'cornerRadius', 'exportFormat', 'stepStartNumber', 'stepRadius',
   'exportQuality', 'gridEnabled', 'blurRadius', 'pixelSize', 'highlighterWidth',
-  'panelCollapsed',
+  // panelCollapsed is responsive/session — not persisted across reloads
 ] as const;
 type PersistKey = typeof PERSIST_KEYS[number];
 
@@ -79,8 +79,11 @@ interface EditorState {
   showHelpDialog: boolean;
   showExportDialog: boolean;
   panelCollapsed: boolean;
+  /** True while a paste/URL/file image is decoding — drives skeleton UI */
+  imageLoading: boolean;
 
   launchEditor: () => void;
+  setImageLoading: (loading: boolean) => void;
   setBackgroundImage: (img: HTMLImageElement, opts?: { clearAnnotations?: boolean }) => void;
   clearImage: () => void;
   replaceImage: () => void;
@@ -151,9 +154,16 @@ const defaults: Record<string, any> = {
   blurRadius: 12,
   pixelSize: 10,
   highlighterWidth: 24,
-  exportQuality: 1,
+  exportQuality: 92,
   panelCollapsed: false,
 };
+
+/** Quality is 10–100. Legacy values were 0–1 fractions. */
+function normalizeExportQuality(q: unknown): number {
+  if (typeof q !== 'number' || !Number.isFinite(q)) return defaults.exportQuality as number;
+  if (q > 0 && q <= 1) return Math.round(q * 100);
+  return Math.max(10, Math.min(100, Math.round(q)));
+}
 
 const persisted = loadPersisted();
 const editorPath = '/editor';
@@ -357,15 +367,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   ...emptyHistory(),
   canvasStyle: { ...initialCanvasStyle, gridEnabled: persisted.gridEnabled ?? initialCanvasStyle.gridEnabled },
   exportFormat: persisted.exportFormat ?? defaults.exportFormat,
-  exportQuality: persisted.exportQuality ?? defaults.exportQuality,
+  exportQuality: normalizeExportQuality(persisted.exportQuality ?? defaults.exportQuality),
   showExportDialog: false,
   showHelpDialog: false,
-  panelCollapsed: persisted.panelCollapsed ?? defaults.panelCollapsed,
+  panelCollapsed: typeof window !== 'undefined' && window.innerWidth < 900,
+  imageLoading: false,
 
   launchEditor: () => {
     syncEditorRoute(true);
     set({ isEditorLaunched: true });
   },
+
+  setImageLoading: (loading) => set({ imageLoading: loading }),
 
   // Replace/load image. Preserves active tool and all drawing settings.
   // Clears annotations by default (new screenshot = fresh canvas).
@@ -383,6 +396,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         elements: [], selectedElementIds: [],
         ...emptyHistory(dataURL, size),
         stepCounter: start, isEditorLaunched: true,
+        imageLoading: false,
       });
     } else {
       set({
@@ -390,6 +404,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         imageDataURL: dataURL,
         imageSize: size,
         isEditorLaunched: true,
+        imageLoading: false,
       });
     }
   },
@@ -443,8 +458,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (!imageSize.width || !imageSize.height) return;
     // Prefer measuring the actual canvas container when available
     const container = document.querySelector('[data-snapty-canvas]') as HTMLElement | null;
-    const cw = container?.clientWidth || Math.max(200, window.innerWidth - 96);
-    const ch = container?.clientHeight || Math.max(200, window.innerHeight - 96);
+    const root = document.querySelector('[data-snapty-root]') as HTMLElement | null;
+    // Fallbacks subtract chrome (toolbar ~48 + top bar ~48 + settings ~0–224)
+    const cw = (container && container.clientWidth > 0)
+      ? container.clientWidth
+      : Math.max(200, (root?.clientWidth || window.innerWidth) - 96);
+    const ch = (container && container.clientHeight > 0)
+      ? container.clientHeight
+      : Math.max(200, (root?.clientHeight || window.innerHeight) - 96);
+    if (cw < 40 || ch < 40) return;
     const pad = Math.min(80, Math.max(16, Math.min(cw, ch) * 0.08));
     const z = Math.min((cw - pad) / imageSize.width, (ch - pad) / imageSize.height, 1);
     set({
@@ -593,7 +615,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
   setPanelCollapsed: (collapsed) => {
     set({ panelCollapsed: collapsed });
-    savePersisted({ ...get(), panelCollapsed: collapsed });
   },
 
   resetToolSettings: () => {
@@ -702,7 +723,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
   setExportFormat: (format) => { set({ exportFormat: format }); savePersisted({ ...get(), exportFormat: format }); },
-  setExportQuality: (quality) => { set({ exportQuality: quality }); savePersisted({ ...get(), exportQuality: quality }); },
+  setExportQuality: (quality) => {
+    const q = normalizeExportQuality(quality);
+    set({ exportQuality: q });
+    savePersisted({ ...get(), exportQuality: q });
+  },
   setShowExportDialog: (show) => set({ showExportDialog: show }),
   setShowHelpDialog: (show) => set({ showHelpDialog: show }),
 
