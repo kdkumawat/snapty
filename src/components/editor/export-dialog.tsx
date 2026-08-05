@@ -12,6 +12,7 @@ import type {
   LineElement, PencilElement, CircleElement, TextElement, StepElement,
 } from '@/types/editor';
 import { cn } from '@/lib/utils';
+import { toastError, toastSuccess } from '@/lib/app-toast';
 
 const formats: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
   { id: 'png', label: 'PNG', ext: '.png', mime: 'image/png' },
@@ -429,7 +430,7 @@ async function copyToClipboard() {
 }
 
 function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+  if (!Number.isFinite(bytes) || bytes <= 0) return '-';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 2 : 1)} MB`;
@@ -487,16 +488,26 @@ const ExportDialog: React.FC = () => {
       const q = exportFormat === 'png' ? 1 : exportQuality / 100;
       setProgress(60);
       const blob = await exportImage(exportFormat, q);
-      if (!blob) return;
+      if (!blob) {
+        toastError('Download failed', 'Couldn’t prepare the image');
+        return;
+      }
       setEstimatedBytes(blob.size);
       setProgress(90);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `snapty-export${formats.find((f) => f.id === exportFormat)?.ext || '.png'}`;
+      const ext = formats.find((f) => f.id === exportFormat)?.ext || '.png';
+      a.download = `snapty-export${ext}`;
       a.click();
       URL.revokeObjectURL(url);
       setProgress(100);
+      toastSuccess(
+        'Downloaded',
+        `${exportFormat.toUpperCase()} · ${formatBytes(blob.size)}`,
+      );
+    } catch {
+      toastError('Download failed', 'Something went wrong - try again');
     } finally {
       setTimeout(() => { setExporting(false); setProgress(0); }, 300);
     }
@@ -511,11 +522,13 @@ const ExportDialog: React.FC = () => {
       await copyToClipboard();
       setProgress(100);
       setCopied(true);
+      toastSuccess('Copied', 'Image on clipboard - ready to paste');
       setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       console.error('Failed to copy image to clipboard:', error);
       setCopied(false);
       setProgress(0);
+      toastError('Couldn’t copy', 'Allow clipboard access and try again');
     } finally {
       setTimeout(() => { setExporting(false); setProgress(0); }, 300);
     }
@@ -589,7 +602,7 @@ const ExportDialog: React.FC = () => {
             </div>
           )}
           {exportFormat === 'png' && (
-            <p className="text-[11px] text-muted-foreground/60">PNG is lossless — always full quality</p>
+            <p className="text-[11px] text-muted-foreground/60">PNG is lossless - always full quality</p>
           )}
           {exporting && progress > 0 && (
             <div className="h-1.5 bg-secondary rounded-full overflow-hidden">

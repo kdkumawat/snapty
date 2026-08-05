@@ -115,7 +115,7 @@
 
   /*
    * Single full-window app shell.
-   * Avoid body > * { flex:1 } — ThemeProvider/scripts/toasts as siblings were
+   * Avoid body > * { flex:1 } - ThemeProvider/scripts/toasts as siblings were
    * sharing viewport height on Mac PWA and leaving the editor half-blank.
    */
   [data-snapty-root] {
@@ -270,6 +270,39 @@
 /* Settings rail: smooth width transition when auto expand/collapse */
 [data-snapty-panel] {
   transition: width 0.2s ease, min-width 0.2s ease, opacity 0.15s ease;
+}
+
+/* Themed toasts - accent bar, soft surface matching app chrome */
+.snapty-toast {
+  border-color: var(--border) !important;
+  background: color-mix(in oklab, var(--card) 92%, transparent) !important;
+  color: var(--card-foreground) !important;
+  box-shadow:
+    0 1px 0 color-mix(in oklab, var(--foreground) 4%, transparent),
+    0 12px 32px color-mix(in oklab, var(--foreground) 8%, transparent);
+}
+.snapty-toast::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 999px 0 0 999px;
+  background: var(--accent);
+}
+.snapty-toast-success::before {
+  background: var(--accent);
+}
+.snapty-toast-info::before {
+  background: color-mix(in oklab, var(--muted-foreground) 70%, var(--accent));
+}
+.snapty-toast-error {
+  border-color: color-mix(in oklab, var(--destructive) 35%, var(--border)) !important;
+  background: color-mix(in oklab, var(--card) 88%, var(--destructive) 8%) !important;
+}
+.snapty-toast-error::before {
+  background: var(--destructive);
 }
 
 /* Horizontal toolbar scrollbar on mobile */

@@ -4,8 +4,7 @@ import React from 'react';
 import { cn } from '@/lib/utils';
 
 /**
- * Native-feeling skeleton while an image is pasting / loading from URL / file.
- * Soft shimmer over a muted canvas placeholder — no spinners.
+ * App-native loading state: soft surface + content blocks (not a fake OS window).
  */
 const ImageLoadingSkeleton: React.FC<{ className?: string; label?: string }> = ({
   className,
@@ -14,29 +13,31 @@ const ImageLoadingSkeleton: React.FC<{ className?: string; label?: string }> = (
   return (
     <div
       className={cn(
-        'absolute inset-0 z-40 flex flex-col items-center justify-center bg-background/80 backdrop-blur-[2px]',
+        'absolute inset-0 z-40 flex flex-col items-center justify-center bg-background/75 backdrop-blur-[3px]',
         className,
       )}
       role="status"
       aria-live="polite"
       aria-label={label}
     >
-      <div className="w-[min(72%,28rem)] max-w-md flex flex-col gap-3 px-4">
-        <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-          <div className="h-8 border-b border-border flex items-center gap-1.5 px-3 bg-secondary/40">
-            <span className="w-2 h-2 rounded-full bg-border animate-pulse" />
-            <span className="w-2 h-2 rounded-full bg-border animate-pulse [animation-delay:75ms]" />
-            <span className="w-2 h-2 rounded-full bg-border animate-pulse [animation-delay:150ms]" />
-            <div className="ml-2 h-4 flex-1 max-w-[12rem] rounded-md bg-muted animate-pulse" />
-          </div>
-          <div className="relative aspect-[16/10] bg-muted/40 overflow-hidden">
+      <div className="w-[min(78%,20rem)] flex flex-col items-center gap-4 px-4">
+        {/* App card - content placeholder, not browser chrome */}
+        <div className="w-full rounded-2xl border border-border bg-card shadow-sm overflow-hidden">
+          <div className="relative aspect-[4/3] bg-secondary/50 overflow-hidden">
             <div className="absolute inset-0 snapty-shimmer" />
-            <div className="absolute inset-4 flex flex-col gap-2.5">
-              <div className="h-3 w-2/5 rounded bg-muted animate-pulse" />
-              <div className="h-3 w-4/5 rounded bg-muted animate-pulse [animation-delay:100ms]" />
-              <div className="h-3 w-3/5 rounded bg-muted animate-pulse [animation-delay:200ms]" />
-              <div className="mt-auto h-16 w-full rounded-lg bg-muted/80 animate-pulse [animation-delay:150ms]" />
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6">
+              <div className="w-12 h-12 rounded-2xl bg-accent/15 animate-pulse" />
+              <div className="w-full max-w-[11rem] space-y-2">
+                <div className="h-2.5 w-3/4 mx-auto rounded-full bg-muted animate-pulse" />
+                <div className="h-2.5 w-full rounded-full bg-muted/80 animate-pulse [animation-delay:100ms]" />
+                <div className="h-2.5 w-2/3 mx-auto rounded-full bg-muted/70 animate-pulse [animation-delay:180ms]" />
+              </div>
             </div>
+          </div>
+          <div className="px-4 py-3 border-t border-border bg-secondary/20 flex items-center gap-2">
+            <div className="h-2 w-16 rounded-full bg-muted animate-pulse" />
+            <div className="h-2 flex-1 rounded-full bg-muted/50 animate-pulse [animation-delay:80ms]" />
+            <div className="h-6 w-14 rounded-md bg-accent/20 animate-pulse [animation-delay:120ms]" />
           </div>
         </div>
         <p className="text-center text-xs text-muted-foreground font-medium tracking-wide">

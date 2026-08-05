@@ -1,6 +1,6 @@
 /**
  * Capture screen / window via the browser Screen Capture API.
- * Browsers show the OS picker (screen, window, or tab) — closest to native snipping
+ * Browsers show the OS picker (screen, window, or tab) - closest to native snipping
  * available on the web. After load we activate crop so the user can refine a region.
  */
 
@@ -96,7 +96,7 @@ export async function captureScreenRegion(): Promise<CaptureResult> {
   let stream: MediaStream | null = null;
   try {
     // Prefer monitor; user can still pick window/tab in the picker.
-    // Extra keys are Chromium hints — cast keeps TS happy across lib.dom versions.
+    // Extra keys are Chromium hints - cast keeps TS happy across lib.dom versions.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     stream = await navigator.mediaDevices.getDisplayMedia({
       audio: false,

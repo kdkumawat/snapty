@@ -109,7 +109,7 @@ export default function RootLayout({
       >
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <JsonLd />
-          {/* Single full-viewport shell — keeps PWA/editor from sharing height with sibling nodes */}
+          {/* Single full-viewport shell - keeps PWA/editor from sharing height with sibling nodes */}
           <div data-snapty-root className="bg-background text-foreground">
             <div className="flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden">
               {children}

@@ -45,11 +45,11 @@ const TopBar: React.FC = () => {
     try {
       await copyToClipboard();
       setCopied(true);
-      toastSuccess('Copied to clipboard', 'Image is ready to paste anywhere.');
+      toastSuccess('Copied', 'Image on clipboard - ready to paste');
       setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       console.error('Failed to copy image to clipboard:', error);
-      toastError('Copy failed', 'Clipboard access was blocked or the image could not be exported.');
+      toastError('Couldn’t copy', 'Allow clipboard access and try again');
     } finally {
       setCopying(false);
     }
@@ -58,7 +58,7 @@ const TopBar: React.FC = () => {
   const handleCapture = async () => {
     if (capturing) return;
     if (!captureSupported) {
-      toastError('Capture unavailable', 'This browser does not support screen capture.');
+      toastError('Capture unavailable', 'Not supported in this browser');
       return;
     }
     setCapturing(true);
@@ -68,22 +68,18 @@ const TopBar: React.FC = () => {
       const result = await captureScreenRegion();
       if (!result.ok) {
         if (result.reason === 'denied') {
-          toastInfo('Capture cancelled', result.message);
+          toastInfo('Capture cancelled', 'No screenshot was taken');
         } else {
           toastError('Capture failed', result.message);
         }
         return;
       }
+      // Keep current tool - don’t force crop
       store.setBackgroundImage(result.image);
-      // Let the user refine a region like a native snip
-      store.setActiveTool('crop');
-      toastSuccess(
-        'Screen captured',
-        'Drag on the image to crop a region, or press Escape to keep the full capture.',
-      );
+      toastSuccess('Captured', 'Screenshot loaded in the editor');
     } catch (err) {
       console.error(err);
-      toastError('Capture failed', 'Something went wrong while capturing the screen.');
+      toastError('Capture failed', 'Something went wrong - try again');
     } finally {
       useEditorStore.getState().setImageLoading(false);
       setCapturing(false);
@@ -110,9 +106,12 @@ const TopBar: React.FC = () => {
         </Button>
       </TooltipTrigger>
       <TooltipContent className="z-[200]">
-        Capture screen
-        <span className="block text-[10px] text-muted-foreground mt-0.5 max-w-[14rem]">
-          Pick a screen or window, then crop the region you need
+        <span className="font-medium">Capture screen</span>
+        <kbd className="ml-2 text-muted-foreground bg-secondary px-1.5 py-0.5 rounded text-[10px] font-mono">
+          {modKey}+Shift+S
+        </kbd>
+        <span className="block text-[10px] text-muted-foreground mt-1 max-w-[15rem] leading-snug">
+          Choose a screen or window. Your current tool stays selected.
         </span>
       </TooltipContent>
     </Tooltip>
@@ -157,7 +156,7 @@ const TopBar: React.FC = () => {
         <div className="flex-1 min-w-2" />
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
-          {/* Capture — always available (before Shortcuts) */}
+          {/* Capture - always available (before Shortcuts) */}
           {captureControl}
 
           {backgroundImage ? (

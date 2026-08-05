@@ -266,7 +266,7 @@ const EditorCanvas: React.FC = () => {
   // Grid pattern (created once)
   const gridPattern = useMemo(() => createGridPattern(), []);
 
-  // Resize observer for container dimensions — update stage size without auto-resetting zoom
+  // Resize observer for container dimensions - update stage size without auto-resetting zoom
   // (auto resetView on every resize felt jumpy; fit-to-screen remains available on toolbar)
   // When the shell first gains real height (common Mac PWA / flex fix), re-fit the image.
   const lastSizeRef = useRef({ width: 0, height: 0 });
@@ -284,7 +284,7 @@ const EditorCanvas: React.FC = () => {
         && (Math.abs(prev.width - width) > 80 || Math.abs(prev.height - height) > 80);
       lastSizeRef.current = { width, height };
       setDimensions({ width, height });
-      // First real size or big shell resize (window drag on Mac) — re-fit
+      // First real size or big shell resize (window drag on Mac) - re-fit
       if (gainedSize || largeChange) {
         if (useEditorStore.getState().backgroundImage) {
           requestAnimationFrame(() => useEditorStore.getState().resetView());
@@ -868,7 +868,7 @@ const EditorCanvas: React.FC = () => {
     const MIN_SIZE = 3;
     let valid = false;
 
-    // Crop commit (marquee only — never saved as an annotation)
+    // Crop commit (marquee only - never saved as an annotation)
     if (drawingElement.id === '__crop_marquee__' && drawingElement.type === 'rectangle') {
       const shape = drawingElement as ShapeElement;
       const x = Math.min(shape.x, shape.x + shape.width);

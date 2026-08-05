@@ -92,7 +92,7 @@ const WelcomeScreen: React.FC = () => {
       setUrlInput('');
     } catch {
       setUrlError(
-        'Could not load image in-browser (CORS blocked or invalid URL). Paste or drop the file instead — nothing is sent to our servers.'
+        'Could not load image in-browser (CORS blocked or invalid URL). Paste or drop the file instead - nothing is sent to our servers.'
       );
     } finally {
       setImageLoading(false);

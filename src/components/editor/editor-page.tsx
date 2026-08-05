@@ -62,7 +62,7 @@ const docsSections = [
       { title: 'Blur (B)', desc: 'Draw a rectangle to apply a Gaussian blur effect to that region of the image.', icon: <Eye className="w-4 h-4" /> },
       { title: 'Pixelate (X)', desc: 'Draw a rectangle to pixelate that region, hiding sensitive information.', icon: <Grid3x3 className="w-4 h-4" /> },
       { title: 'Spotlight (S)', desc: 'Draw a rectangle to darken everything except the selected area, drawing focus.', icon: <Circle className="w-4 h-4" /> },
-      { title: 'Eraser (E)', desc: 'Click and drag to create a selection — any annotation it touches will be erased.', icon: <Eraser className="w-4 h-4" /> },
+      { title: 'Eraser (E)', desc: 'Click and drag to create a selection - any annotation it touches will be erased.', icon: <Eraser className="w-4 h-4" /> },
     ],
   },
   {
@@ -304,7 +304,7 @@ const EditorPage: React.FC = () => {
                 <EditorCanvas />
                 {imageLoading && <ImageLoadingSkeleton label="Loading image…" />}
               </div>
-              {/* Settings rail — collapses on narrow viewports */}
+              {/* Settings rail - collapses on narrow viewports */}
               <div className="shrink-0 z-20 h-full max-h-full min-h-0 max-w-[min(100%,16rem)]">
                 <PropertiesPanel />
               </div>

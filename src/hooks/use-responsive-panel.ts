@@ -35,7 +35,7 @@ function writePin(pin: Pin) {
 function naturalCollapsed(width: number, current: boolean): boolean {
   if (width < COLLAPSE_BELOW) return true;
   if (width > EXPAND_ABOVE) return false;
-  return current; // dead zone — keep current
+  return current; // dead zone - keep current
 }
 
 export function useResponsivePanel() {
@@ -73,7 +73,7 @@ export function useResponsivePanel() {
     else next = naturalCollapsed(width, current);
 
     if (next !== current) {
-      // Auto updates must not write localStorage pin / fight user — use silent set
+      // Auto updates must not write localStorage pin / fight user - use silent set
       useEditorStore.setState({ panelCollapsed: next });
     }
   }, []);
@@ -95,7 +95,7 @@ export function useResponsivePanel() {
     };
   }, [applyResponsive]);
 
-  /** User toggled the rail — pin until viewport releases it */
+  /** User toggled the rail - pin until viewport releases it */
   const togglePanel = useCallback((collapsed?: boolean) => {
     const current = useEditorStore.getState().panelCollapsed;
     const next = collapsed ?? !current;

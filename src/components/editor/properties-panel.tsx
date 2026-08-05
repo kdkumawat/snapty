@@ -147,8 +147,13 @@ const PropertiesPanel: React.FC = () => {
     const n = useEditorStore.getState().elements.length;
     if (!n) return;
     clearElements();
-    toastSuccess('Annotations cleared', n === 1 ? '1 annotation removed.' : `${n} annotations removed.`);
+    toastSuccess('Cleared', n === 1 ? 'Removed 1 annotation' : `Removed ${n} annotations`);
   };
+
+  const panelBtn =
+    'w-9 h-9 shrink-0 flex items-center justify-center rounded-lg transition-all duration-150 toolbar-btn cursor-pointer';
+  const panelBtnDanger =
+    'w-9 h-9 shrink-0 flex items-center justify-center rounded-lg transition-all duration-150 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer disabled:opacity-40 disabled:pointer-events-none';
   const resetAll = useEditorStore((s) => s.resetAll);
   const hasImage = useEditorStore((s) => s.backgroundImage !== null);
   const hasSelection = selectedElementIds.length > 0;
@@ -180,69 +185,60 @@ const PropertiesPanel: React.FC = () => {
     { icon: <ArrowDown className="w-3.5 h-3.5" />, label: 'Backward', fn: () => selectedElementIds.forEach(sendBackward) },
   ];
 
-  // Collapsed: thin strip with expand + reset tools + reset image
+  // Collapsed: tool-sized strip - expand on top, actions at bottom (matches left toolbar)
   if (panelCollapsed) {
     return (
       <TooltipProvider delayDuration={200}>
-        <div data-snapty-panel className="w-9 bg-background border-l border-border flex flex-col items-center py-2 gap-1 shrink-0 h-full min-h-0 z-20 relative">
+        <div
+          data-snapty-panel
+          className="w-11 lg:w-12 bg-background border-l border-border flex flex-col items-center py-1.5 gap-0.5 shrink-0 h-full min-h-0 z-20 relative"
+        >
           <Tooltip>
             <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
-                onClick={expandPanel}
-                aria-label="Show panel"
-              >
+              <button type="button" className={panelBtn} onClick={expandPanel} aria-label="Show settings">
                 <PanelRightOpen className="w-4 h-4" />
               </button>
             </TooltipTrigger>
             <TooltipContent side="left" className="z-[200]">Show settings</TooltipContent>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
-                onClick={resetToolSettings}
-                aria-label="Reset tool defaults"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="left" className="z-[200]">Reset tools</TooltipContent>
-          </Tooltip>
-          {hasImage && elements.length > 0 && (
+
+          <div className="flex-1 min-h-0" />
+
+          <div className="flex flex-col items-center gap-0.5 pb-0.5">
             <Tooltip>
               <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
-                  onClick={handleClearAll}
-                  aria-label="Clear all annotations"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
+                <button type="button" className={panelBtn} onClick={resetToolSettings} aria-label="Reset tools">
+                  <RotateCcw className="w-4 h-4" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="left" className="z-[200]">
-                Clear all ({modKey}+Shift+⌫)
-              </TooltipContent>
+              <TooltipContent side="left" className="z-[200]">Reset tools</TooltipContent>
             </Tooltip>
-          )}
-          {hasImage && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
-                  onClick={resetAll}
-                  aria-label="Reset image"
-                >
-                  <ImageOff className="w-3.5 h-3.5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="left" className="z-[200]">Reset image</TooltipContent>
-            </Tooltip>
-          )}
+            {hasImage && elements.length > 0 && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button type="button" className={panelBtnDanger} onClick={handleClearAll} aria-label="Clear annotations">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="left" className="z-[200]">
+                  Clear annotations
+                  <kbd className="ml-2 text-muted-foreground bg-secondary px-1.5 py-0.5 rounded text-[10px] font-mono">
+                    {modKey}+Shift+⌫
+                  </kbd>
+                </TooltipContent>
+              </Tooltip>
+            )}
+            {hasImage && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button type="button" className={panelBtnDanger} onClick={resetAll} aria-label="New image">
+                    <ImageOff className="w-4 h-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="left" className="z-[200]">New image</TooltipContent>
+              </Tooltip>
+            )}
+          </div>
         </div>
       </TooltipProvider>
     );
@@ -250,68 +246,17 @@ const PropertiesPanel: React.FC = () => {
 
   return (
     <div data-snapty-panel className="w-[min(14rem,42vw)] sm:w-52 lg:w-56 bg-background border-l border-border flex flex-col shrink-0 h-full min-h-0 max-h-full z-20 relative overflow-hidden">
-      <div className="px-2 py-1.5 border-b border-border flex items-center justify-between shrink-0 gap-1">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-1 truncate">Settings</span>
-        <div className="flex items-center gap-0.5">
-          <TooltipProvider delayDuration={200}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
-                  onClick={handleClearAll}
-                  disabled={!elements.length}
-                  aria-label="Clear all annotations"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="z-[200]">
-                Clear all annotations
-                <kbd className="ml-2 text-muted-foreground bg-secondary px-1.5 py-0.5 rounded text-[10px] font-mono">
-                  {modKey}+Shift+⌫
-                </kbd>
-              </TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
-                  onClick={resetToolSettings}
-                  aria-label="Reset tool defaults"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="z-[200]">Reset tools</TooltipContent>
-            </Tooltip>
-            {hasImage && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
-                    onClick={resetAll}
-                    aria-label="Reset image"
-                  >
-                    <ImageOff className="w-3.5 h-3.5" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="z-[200]">Reset image</TooltipContent>
-              </Tooltip>
-            )}
-          </TooltipProvider>
-          <button
-            type="button"
-            className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
-            onClick={collapsePanel}
-            title="Collapse settings"
-            aria-label="Collapse settings"
-          >
-            <PanelRightClose className="w-3.5 h-3.5" />
-          </button>
-        </div>
+      <div className="px-3 py-2 border-b border-border flex items-center justify-between shrink-0 gap-1">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground truncate">Settings</span>
+        <button
+          type="button"
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
+          onClick={collapsePanel}
+          title="Collapse settings"
+          aria-label="Collapse settings"
+        >
+          <PanelRightClose className="w-4 h-4" />
+        </button>
       </div>
 
       {hasSelection && (
@@ -501,6 +446,49 @@ const PropertiesPanel: React.FC = () => {
             <p className="text-[9px] text-muted-foreground/60">Paste or drop images onto the canvas. All processing stays on your device.</p>
           </div>
         </Section>
+      </div>
+
+      {/* Action dock - bottom, same placement as collapsed strip */}
+      <div className="shrink-0 border-t border-border px-2 py-1.5 flex items-center justify-center gap-0.5">
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" className={panelBtn} onClick={resetToolSettings} aria-label="Reset tools">
+                <RotateCcw className="w-4 h-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="z-[200]">Reset tools</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className={panelBtnDanger}
+                onClick={handleClearAll}
+                disabled={!elements.length}
+                aria-label="Clear annotations"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="z-[200]">
+              Clear annotations
+              <kbd className="ml-2 text-muted-foreground bg-secondary px-1.5 py-0.5 rounded text-[10px] font-mono">
+                {modKey}+Shift+⌫
+              </kbd>
+            </TooltipContent>
+          </Tooltip>
+          {hasImage && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button type="button" className={panelBtnDanger} onClick={resetAll} aria-label="New image">
+                  <ImageOff className="w-4 h-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="z-[200]">New image</TooltipContent>
+            </Tooltip>
+          )}
+        </TooltipProvider>
       </div>
     </div>
   );

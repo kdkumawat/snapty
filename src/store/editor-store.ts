@@ -6,7 +6,7 @@ const PERSIST_KEYS = [
   'activeTool', 'strokeColor', 'fillColor', 'strokeWidth', 'fontSize',
   'opacity', 'cornerRadius', 'exportFormat', 'stepStartNumber', 'stepRadius',
   'exportQuality', 'gridEnabled', 'blurRadius', 'pixelSize', 'highlighterWidth',
-  // panelCollapsed is responsive/session — not persisted across reloads
+  // panelCollapsed is responsive/session - not persisted across reloads
 ] as const;
 type PersistKey = typeof PERSIST_KEYS[number];
 
@@ -38,7 +38,7 @@ export function getImageToolScale(width: number, height: number): number {
   return Math.max(1, Math.min(4, longest / 1200));
 }
 
-/** Full undo/redo snapshot — elements + image (so crop can be undone). */
+/** Full undo/redo snapshot - elements + image (so crop can be undone). */
 export type HistorySnapshot = {
   elements: EditorElement[];
   imageDataURL: string | null;
@@ -79,7 +79,7 @@ interface EditorState {
   showHelpDialog: boolean;
   showExportDialog: boolean;
   panelCollapsed: boolean;
-  /** True while a paste/URL/file image is decoding — drives skeleton UI */
+  /** True while a paste/URL/file image is decoding - drives skeleton UI */
   imageLoading: boolean;
 
   launchEditor: () => void;
@@ -178,7 +178,7 @@ function isStandalonePwa(): boolean {
 
 function syncEditorRoute(launched: boolean) {
   if (typeof window === 'undefined') return;
-  // In installed PWA, stay on /editor — no landing route churn
+  // In installed PWA, stay on /editor - no landing route churn
   if (isStandalonePwa()) {
     if (window.location.pathname !== editorPath) {
       window.history.replaceState({}, '', editorPath);
@@ -618,7 +618,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   resetToolSettings: () => {
-    // Preserve activeTool — only reset stroke/fill/size prefs
+    // Preserve activeTool - only reset stroke/fill/size prefs
     const next = {
       strokeColor: defaults.strokeColor as string,
       fillColor: defaults.fillColor as string,
@@ -744,7 +744,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   goToLanding: () => {
-    // Installed PWA should never show landing — stay in editor
+    // Installed PWA should never show landing - stay in editor
     if (isStandalonePwa()) {
       set({ isEditorLaunched: true });
       syncEditorRoute(true);

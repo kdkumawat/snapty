@@ -4,7 +4,8 @@ import { useEffect, useRef } from 'react';
 import { useEditorStore } from '@/store/editor-store';
 import { copyToClipboard } from '@/components/editor/export-dialog';
 import { loadImageFileIntoEditor } from '@/lib/image-load';
-import { toastError, toastSuccess } from '@/lib/app-toast';
+import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
+import { captureScreenRegion, isScreenCaptureSupported } from '@/lib/screen-capture';
 import type { ToolType } from '@/types/editor';
 
 // Mac detection helper
@@ -56,8 +57,31 @@ export function useKeyboardShortcuts() {
         const n = st.elements.length;
         if (n) {
           st.clearElements();
-          toastSuccess('Annotations cleared', n === 1 ? '1 annotation removed.' : `${n} annotations removed.`);
+          toastSuccess('Cleared', n === 1 ? 'Removed 1 annotation' : `Removed ${n} annotations`);
         }
+        return;
+      }
+      // Capture screen (Mod+Shift+S) - keep current tool
+      if (isCtrl && isShift && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        if (!isScreenCaptureSupported()) {
+          toastError('Capture unavailable', 'Not supported in this browser');
+          return;
+        }
+        const st = useEditorStore.getState();
+        st.setImageLoading(true);
+        void captureScreenRegion()
+          .then((result) => {
+            if (!result.ok) {
+              if (result.reason === 'denied') toastInfo('Capture cancelled', 'No screenshot was taken');
+              else toastError('Capture failed', result.message);
+              return;
+            }
+            useEditorStore.getState().setBackgroundImage(result.image);
+            toastSuccess('Captured', 'Screenshot loaded in the editor');
+          })
+          .catch(() => toastError('Capture failed', 'Something went wrong - try again'))
+          .finally(() => useEditorStore.getState().setImageLoading(false));
         return;
       }
       if (isCtrl && e.key.toLowerCase() === 'c' && !isShift) {
@@ -65,10 +89,10 @@ export function useKeyboardShortcuts() {
         if (st.backgroundImage) {
           e.preventDefault();
           void copyToClipboard()
-            .then(() => toastSuccess('Copied to clipboard', 'Image is ready to paste anywhere.'))
+            .then(() => toastSuccess('Copied', 'Image on clipboard - ready to paste'))
             .catch((error) => {
               console.error('Failed to copy image to clipboard via keyboard shortcut:', error);
-              toastError('Copy failed', 'Clipboard access was blocked or the image could not be exported.');
+              toastError('Couldn’t copy', 'Allow clipboard access and try again');
             });
         }
         return;
