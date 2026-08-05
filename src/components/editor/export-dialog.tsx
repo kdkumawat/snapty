@@ -128,7 +128,7 @@ function getContentBounds(): { x: number; y: number; width: number; height: numb
 }
 
 function getStageConfig() {
-  const stage = (window as any).__snapkit_stage;
+  const stage = (window as any).__snapty_stage;
   if (!stage) return null;
   const st = useEditorStore.getState();
   const { imageSize } = st;
@@ -232,7 +232,7 @@ function drawDeviceFrame(
     ctx.strokeStyle = '#d1d5db'; ctx.lineWidth = 1;
     ctx.strokeRect(80, dotY - 12, totalW - 120, 24);
     ctx.fillStyle = '#9ca3af'; ctx.font = '12px sans-serif';
-    ctx.fillText('snapkit.pages.dev', 90, dotY + 4);
+    ctx.fillText('snapty.pages.dev', 90, dotY + 4);
     return { x: 0, y: titleBarH, w: totalW, h: totalH - titleBarH };
   }
 
@@ -489,7 +489,7 @@ const ExportDialog: React.FC = () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `snapkit-export${formats.find(f => f.id === exportFormat)?.ext || '.png'}`;
+      a.download = `snapty-export${formats.find(f => f.id === exportFormat)?.ext || '.png'}`;
       a.click();
       URL.revokeObjectURL(url);
       setProgress(100);

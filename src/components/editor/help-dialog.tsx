@@ -8,8 +8,8 @@ import { modKey } from '@/hooks/use-keyboard-shortcuts';
 const M = modKey;
 
 const shortcuts = [
-  { cat: 'General', items: [["V", "Select tool"], ["H / Space (hold)", "Hand / Pan"], ["?", "Show shortcuts"], ["Escape", "Deselect / Select tool"], [`${M}+Z`, "Undo"], [`${M}+Shift+Z`, "Redo"], ["Delete / Backspace", "Delete selected"], [`${M}+A`, "Select all"], [`${M}+E`, "Export"], [`${M}+C`, "Copy image to clipboard"], [`${M}+= / ${M}+-`, "Zoom in / out"], [`${M}+0`, "Fit to screen"]] },
-  { cat: 'Drawing Tools', items: [["A", "Arrow"], ["R", "Rectangle"], ["U", "Rounded Rectangle"], ["O", "Ellipse"], ["L", "Line"], ["P", "Pencil"], ["I", "Highlighter"], ["T", "Text"], ["N", "Step Number"], ["B", "Blur region"], ["X", "Pixelate region"], ["S", "Spotlight"], ["E", "Eraser"]] },
+  { cat: 'General', items: [["V", "Select tool"], ["H / Space (hold)", "Hand / Pan"], ["?", "Show shortcuts"], ["Escape", "Deselect / Select tool"], [`${M}+Z`, "Undo"], [`${M}+Shift+Z`, "Redo"], ["Delete / Backspace", "Delete selected"], [`${M}+A`, "Select all"], [`${M}+E`, "Export"], [`${M}+C`, "Copy image to clipboard"], [`${M}+= / ${M}+-`, "Zoom in / out"], [`${M}+0`, "Fit to screen"], ["Pinch", "Zoom on touch devices"]] },
+  { cat: 'Drawing Tools', items: [["A", "Arrow"], ["R", "Rectangle"], ["U", "Rounded Rectangle"], ["O", "Ellipse"], ["L", "Line"], ["P", "Pencil"], ["I", "Highlighter"], ["T", "Text"], ["N", "Step Number"], ["C", "Crop image"], ["B", "Blur region"], ["X", "Pixelate region"], ["S", "Spotlight"], ["E", "Eraser"]] },
   { cat: 'Text Tool', items: [["Type text", "Enter to commit"], ["New line", "Shift + Enter"], ["Cancel", "Escape"]] },
   { cat: 'Step Numbers', items: [[`${M}+Shift+0`, "Reset step counter to 1"]] },
 ];

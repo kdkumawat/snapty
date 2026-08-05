@@ -8,7 +8,7 @@ import JsonLd from "@/components/json-ld";
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://snapkit.pages.dev";
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://snapty.pages.dev";
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -24,8 +24,8 @@ export const viewport: Viewport = {
 
 export const metadata: Metadata = {
   title: {
-    default: "SnapKit - Free Browser Screenshot Editor | Capture, Annotate & Share",
-    template: "%s | SnapKit",
+    default: "Snapty - Free Browser Screenshot Editor | Capture, Annotate & Share",
+    template: "%s | Snapty",
   },
   description:
     "The fastest, most beautiful browser-based screenshot editor. Professional annotations with arrows, shapes, blur, text, step numbers and more. No installation required. Privacy-first - all processing happens locally.",
@@ -39,14 +39,14 @@ export const metadata: Metadata = {
     "arrow tool",
     "blur tool",
     "pixelate",
-    "snapkit",
+    "snapty",
     "screenshot annotation",
     "image editor online",
     "privacy first editor",
     "no signup editor",
     "open source screenshot tool",
   ],
-  authors: [{ name: "SnapKit" }],
+  authors: [{ name: "Snapty" }],
   icons: {
     icon: [
       { url: "/favicon.svg", type: "image/svg+xml" },
@@ -56,23 +56,23 @@ export const metadata: Metadata = {
   },
   manifest: "/manifest.json",
   metadataBase: new URL(siteUrl),
-  applicationName: "SnapKit",
+  applicationName: "Snapty",
   appleWebApp: {
     capable: true,
-    title: "SnapKit",
+    title: "Snapty",
     statusBarStyle: "black-translucent",
   },
   openGraph: {
-    title: "SnapKit - Free Browser Screenshot Editor",
+    title: "Snapty - Free Browser Screenshot Editor",
     description:
       "Professional screenshot annotations in seconds. No installation needed. Privacy-first, open source, works offline.",
     type: "website",
-    siteName: "SnapKit",
+    siteName: "Snapty",
     locale: "en_US",
   },
   twitter: {
     card: "summary_large_image",
-    title: "SnapKit - Free Browser Screenshot Editor",
+    title: "Snapty - Free Browser Screenshot Editor",
     description:
       "Professional screenshot annotations in seconds. No installation needed.",
   },
@@ -94,7 +94,7 @@ export const metadata: Metadata = {
     "mobile-web-app-capable": "yes",
     "apple-mobile-web-app-capable": "yes",
     "apple-mobile-web-app-status-bar-style": "black-translucent",
-    "apple-mobile-web-app-title": "SnapKit",
+    "apple-mobile-web-app-title": "Snapty",
   },
 };
 

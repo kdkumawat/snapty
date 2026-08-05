@@ -77,9 +77,9 @@ const docsSections = [
     title: 'Screen Capture Integration',
     icon: <ScreenShare className="w-5 h-5" />,
     items: [
-      { title: 'macOS - Native Screenshot', desc: 'Use Cmd+Shift+4 to capture a region. It saves to desktop. Then paste into SnapKit with Cmd+V. For clipboard-only: Cmd+Ctrl+Shift+4.', icon: <MonitorSmartphone className="w-4 h-4" /> },
-      { title: 'Windows - Win+Shift+S', desc: 'Press Win+Shift+S to capture a region to clipboard. Then paste into SnapKit with Ctrl+V. The image loads instantly.', icon: <Monitor className="w-4 h-4" /> },
-      { title: 'Browser - Screenshot Extension', desc: 'Use browser extensions like GoFullPage or FireShot to capture full pages, then paste into SnapKit.', icon: <Globe className="w-4 h-4" /> },
+      { title: 'macOS - Native Screenshot', desc: 'Use Cmd+Shift+4 to capture a region. It saves to desktop. Then paste into Snapty with Cmd+V. For clipboard-only: Cmd+Ctrl+Shift+4.', icon: <MonitorSmartphone className="w-4 h-4" /> },
+      { title: 'Windows - Win+Shift+S', desc: 'Press Win+Shift+S to capture a region to clipboard. Then paste into Snapty with Ctrl+V. The image loads instantly.', icon: <Monitor className="w-4 h-4" /> },
+      { title: 'Browser - Screenshot Extension', desc: 'Use browser extensions like GoFullPage or FireShot to capture full pages, then paste into Snapty.', icon: <Globe className="w-4 h-4" /> },
       { title: 'Install as App (PWA)', desc: 'Install from Chrome/Edge address bar. Opens straight into the editor (no landing page). Works offline; all editing stays on your device.', icon: <MonitorSmartphone className="w-4 h-4" /> },
     ],
   },
@@ -120,7 +120,7 @@ const LandingPage: React.FC = () => {
                 <ScissorLogo size={16} className="sm:hidden" />
                 <ScissorLogo size={18} className="hidden sm:block" />
               </div>
-              <span className="text-lg sm:text-xl font-bold tracking-tight">SnapKit</span>
+              <span className="text-lg sm:text-xl font-bold tracking-tight">Snapty</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -129,7 +129,7 @@ const LandingPage: React.FC = () => {
         </header>
         <main className="flex-1 max-w-4xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
           <h1 className="text-2xl sm:text-3xl font-bold mb-2">Documentation</h1>
-          <p className="text-base sm:text-lg text-muted-foreground mb-8 sm:mb-12">Everything you need to master SnapKit.</p>
+          <p className="text-base sm:text-lg text-muted-foreground mb-8 sm:mb-12">Everything you need to master Snapty.</p>
 
           {docsSections.map((section) => (
             <section key={section.title} className="mb-8 sm:mb-12">
@@ -167,10 +167,10 @@ const LandingPage: React.FC = () => {
           </div>
         </main>
         <footer className="border-t border-border px-4 sm:px-6 py-4 flex items-center justify-between text-xs text-muted-foreground">
-          <span>SnapKit - Browser-native screenshot editor</span>
+          <span>Snapty - Browser-native screenshot editor</span>
           <div className="flex items-center gap-3">
             <a
-              href="https://github.com/kdkumawat/snapkit"
+              href="https://github.com/kdkumawat/snapty"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 hover:text-foreground transition-colors"
@@ -192,7 +192,7 @@ const LandingPage: React.FC = () => {
             <ScissorLogo size={16} className="sm:hidden" />
             <ScissorLogo size={18} className="hidden sm:block" />
           </div>
-          <span className="text-lg sm:text-xl font-bold tracking-tight">SnapKit</span>
+          <span className="text-lg sm:text-xl font-bold tracking-tight">Snapty</span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -247,10 +247,10 @@ const LandingPage: React.FC = () => {
         </div>
       </main>
       <footer className="border-t border-border px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between text-xs text-muted-foreground">
-        <span>SnapKit - Browser-native screenshot editor for professionals</span>
+        <span>Snapty - Browser-native screenshot editor for professionals</span>
         <div className="flex items-center gap-3">
           <a
-            href="https://github.com/kdkumawat/snapkit"
+            href="https://github.com/kdkumawat/snapty"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 hover:text-foreground transition-colors"
@@ -298,7 +298,7 @@ const EditorPage: React.FC = () => {
         {backgroundImage ? (
           <>
             <div className="flex flex-1 min-h-0 min-w-0 order-1 md:order-none">
-              <div className="flex-1 relative min-w-0 min-h-0" data-snapkit-canvas-wrap>
+              <div className="flex-1 relative min-w-0 min-h-0" data-snapty-canvas-wrap>
                 <EditorCanvas />
               </div>
               {/* Settings rail — always available (collapses to a strip) */}

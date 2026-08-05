@@ -1,9 +1,9 @@
 export default function JsonLd() {
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://snapkit.pages.dev";
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://snapty.pages.dev";
   const data = {
     "@context": "https://schema.org",
     "@type": "WebApplication",
-    name: "SnapKit",
+    name: "Snapty",
     url: siteUrl,
     description:
       "Free browser-based screenshot editor with professional annotations. No installation required.",
@@ -16,6 +16,7 @@ export default function JsonLd() {
     },
     featureList: [
       "Arrow annotation",
+      "Crop tool",
       "Rectangle and shape tools",
       "Blur and pixelate regions",
       "Text annotation",

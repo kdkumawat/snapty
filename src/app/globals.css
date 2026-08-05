@@ -132,8 +132,14 @@
   }
 
   /* Cursor pointer on interactive elements */
-  button, [role="button"], a, [role="link"], [type="button"] {
+  button, [role="button"], a, [role="link"], [type="button"],
+  [data-slot="slider"], [data-slot="slider-thumb"], [data-slot="slider-track"],
+  label[for], summary, select, input[type="checkbox"], input[type="radio"],
+  input[type="range"], input[type="file"] {
     cursor: pointer;
+  }
+  button:disabled, [aria-disabled="true"] {
+    cursor: not-allowed;
   }
 
   /* Konva canvas - force tool cursors through (Konva often sets cursor on canvas itself) */
@@ -185,11 +191,11 @@
 }
 
 /* Ensure chrome sits above the Konva stage (tool icons were clipped / covered) */
-[data-snapkit-toolbar] {
+[data-snapty-toolbar] {
   position: relative;
   z-index: 30;
 }
-[data-snapkit-canvas] {
+[data-snapty-canvas] {
   position: relative;
   z-index: 0;
 }
@@ -198,7 +204,7 @@
 }
 
 /* Horizontal toolbar scrollbar on mobile */
-[data-snapkit-toolbar]::-webkit-scrollbar {
+[data-snapty-toolbar]::-webkit-scrollbar {
   height: 3px;
   width: 3px;
 }

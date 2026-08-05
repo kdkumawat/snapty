@@ -2,7 +2,7 @@
 
 ## Cloudflare Pages (Recommended)
 
-SnapKit is deployed to Cloudflare Pages with the OpenNext Cloudflare adapter.
+Snapty is deployed to Cloudflare Pages with the OpenNext Cloudflare adapter.
 
 ### Prerequisites
 
@@ -34,7 +34,7 @@ The project already includes the required Cloudflare config files and the adapte
 ```bash
 npm install
 npm run cf:build
-npx wrangler pages deploy .open-next/assets --project-name=snapkit
+npx wrangler pages deploy .open-next/assets --project-name=Snapty
 ```
 
 ### Cloudflare Pages Headers
@@ -49,13 +49,13 @@ The `public/_headers` file configures caching:
 | Variable | Description | Default |
 |---|---|---|
 | `NODE_VERSION` | Node.js version for build | `20` |
-| `NEXT_PUBLIC_SITE_URL` | Production URL for SEO/canonical | `https://snapkit.pages.dev` |
+| `NEXT_PUBLIC_SITE_URL` | Production URL for SEO/canonical | `https://snapty.pages.dev` |
 
 ---
 
 ## Vercel
 
-SnapKit is a standard Next.js app and deploys to Vercel with zero config:
+Snapty is a standard Next.js app and deploys to Vercel with zero config:
 
 1. Push your code to GitHub
 2. Import project at [vercel.com/new](https://vercel.com/new)
@@ -93,8 +93,8 @@ CMD ["node", "server.js"]
 Build and run:
 
 ```bash
-docker build -t snapkit .
-docker run -p 3000:3000 snapkit
+docker build -t Snapty .
+docker run -p 3000:3000 Snapty
 ```
 
 ---
@@ -111,7 +111,7 @@ docker run -p 3000:3000 snapkit
 
 ```bash
 # Clone
- git clone <your-repo> && cd snapkit
+ git clone <your-repo> && cd Snapty
 
 # Install
 bun install
@@ -128,7 +128,7 @@ The production server runs on port 3000. Use a reverse proxy (nginx, Caddy) for 
 ### Caddy Example
 
 ```
-snapkit.example.com {
+snapty.example.com {
     reverse_proxy localhost:3000
 }
 ```
@@ -138,7 +138,7 @@ snapkit.example.com {
 ```nginx
 server {
     listen 443 ssl;
-    server_name snapkit.example.com;
+    server_name snapty.example.com;
 
     ssl_certificate /path/to/cert.pem;
     ssl_certificate_key /path/to/key.pem;
@@ -160,6 +160,6 @@ server {
 
 - **Service Worker**: Uses network-first for navigation (always fresh) and cache-first for static assets
 - **Static Assets**: `_next/static/*` files have content hashes and can be cached indefinitely
-- **PWA**: SnapKit can be installed as a standalone browser app via the manifest.json
+- **PWA**: Snapty can be installed as a standalone browser app via the manifest.json
 - **No Database**: All processing is client-side, no database needed
 - **Bundle Size**: Dynamic imports for Konva.js keep initial load fast

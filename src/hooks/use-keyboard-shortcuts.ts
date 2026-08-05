@@ -13,7 +13,7 @@ export { modKey, isMac };
 const toolShortcuts: Record<string, ToolType> = {
   v: 'select', h: 'hand', a: 'arrow', r: 'rectangle', u: 'rounded-rect',
   o: 'circle', l: 'line', p: 'pencil', i: 'highlighter', t: 'text',
-  n: 'step', b: 'blur', x: 'pixelate', s: 'spotlight', e: 'eraser',
+  n: 'step', b: 'blur', x: 'pixelate', s: 'spotlight', e: 'eraser', c: 'crop',
 };
 
 export function useKeyboardShortcuts() {

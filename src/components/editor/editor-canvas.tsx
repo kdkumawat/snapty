@@ -6,6 +6,7 @@ import {
   Image as KonvaImage, Circle, Transformer,
 } from 'react-konva';
 import Konva from 'konva';
+import { ZoomIn, ZoomOut, Maximize } from 'lucide-react';
 import { useEditorStore, generateId, getImageToolScale } from '@/store/editor-store';
 import type {
   EditorElement, ShapeElement, ArrowElement, LineElement,
@@ -39,11 +40,21 @@ function toolCursorSVG(tool: ToolType, opts: CursorOpts = {}): string {
     case 'hand':
       return '';
     case 'arrow':
+      // Neutral crosshair + small right-pointing arrow badge (doesn't imply a fixed draw direction)
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-        <line x1="5" y1="27" x2="24" y2="8" stroke="${halo}" stroke-width="5" stroke-linecap="round"/>
-        <polyline points="14,7 25,7 25,18" fill="none" stroke="${halo}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-        <line x1="5" y1="27" x2="24" y2="8" stroke="${color}" stroke-width="2.5" stroke-linecap="round"/>
-        <polyline points="14,7 25,7 25,18" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="${half}" y1="4" x2="${half}" y2="28" stroke="${halo}" stroke-width="4" stroke-linecap="round"/>
+        <line x1="4" y1="${half}" x2="28" y2="${half}" stroke="${halo}" stroke-width="4" stroke-linecap="round"/>
+        <line x1="${half}" y1="4" x2="${half}" y2="28" stroke="${color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="4" y1="${half}" x2="28" y2="${half}" stroke="${color}" stroke-width="1.75" stroke-linecap="round"/>
+        <path d="M20 9 L28 12 L20 15 Z" fill="${halo}"/>
+        <path d="M21 10 L26 12 L21 14 Z" fill="${color}"/>
+      </svg>`;
+    case 'crop':
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <path d="M8 4v20h20" fill="none" stroke="${halo}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M4 8h20v20" fill="none" stroke="${halo}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M8 4v20h20" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M4 8h20v20" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>`;
     case 'rectangle':
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
@@ -157,8 +168,8 @@ function getToolCursorCSS(tool: ToolType, isDragging: boolean, opts: CursorOpts 
       const hotspot =
         tool === 'pencil' || tool === 'highlighter' ? '4 28'
         : tool === 'text' ? '6 6'
-        : tool === 'arrow' || tool === 'line' ? '5 27'
-        : tool === 'step' ? '16 16'
+        : tool === 'line' ? '5 27'
+        : tool === 'arrow' || tool === 'crop' || tool === 'step' ? '16 16'
         : '16 16';
       return svgToCursor(svg, hotspot);
     }
@@ -341,7 +352,7 @@ const EditorCanvas: React.FC = () => {
   // Register stage globally for export
   useEffect(() => {
     const registerStage = () => {
-      if (stageRef.current) (window as any).__snapkit_stage = stageRef.current;
+      if (stageRef.current) (window as any).__snapty_stage = stageRef.current;
     };
     registerStage();
     const timer = window.setTimeout(registerStage, 100);
@@ -622,6 +633,27 @@ const EditorCanvas: React.FC = () => {
       return;
     }
 
+    // Crop tool: drag a region to crop the image
+    if (s.activeTool === 'crop') {
+      const pos = getCanvasPoint();
+      if (!pos) return;
+      setIsDrawing(true);
+      // Temporary rect used only as a crop marquee (never committed as an annotation)
+      setDrawingElement({
+        id: '__crop_marquee__',
+        type: 'rectangle',
+        x: pos.x,
+        y: pos.y,
+        width: 0,
+        height: 0,
+        stroke: '#3b82f6',
+        fill: 'rgba(59,130,246,0.15)',
+        strokeWidth: Math.max(1, Math.round(2 * getImageToolScale(s.imageSize.width, s.imageSize.height))),
+        opacity: 1,
+      } as ShapeElement);
+      return;
+    }
+
     // Text tool: show text input at click position
     if (s.activeTool === 'text') {
       const pos = getCanvasPoint();
@@ -810,6 +842,20 @@ const EditorCanvas: React.FC = () => {
     const MIN_SIZE = 3;
     let valid = false;
 
+    // Crop commit (marquee only — never saved as an annotation)
+    if (drawingElement.id === '__crop_marquee__' && drawingElement.type === 'rectangle') {
+      const shape = drawingElement as ShapeElement;
+      const x = Math.min(shape.x, shape.x + shape.width);
+      const y = Math.min(shape.y, shape.y + shape.height);
+      const w = Math.abs(shape.width);
+      const h = Math.abs(shape.height);
+      setDrawingElement(null);
+      if (w > MIN_SIZE && h > MIN_SIZE) {
+        useEditorStore.getState().cropToRegion({ x, y, width: w, height: h });
+      }
+      return;
+    }
+
     if (drawingElement.type === 'pencil' || drawingElement.type === 'highlighter') {
       valid = (drawingElement as PencilElement).points.length > 4;
     } else if (drawingElement.type === 'arrow' || drawingElement.type === 'line') {
@@ -871,7 +917,29 @@ const EditorCanvas: React.FC = () => {
     setDrawingElement(null);
   }
 
-  // --- Wheel zoom (smoother / slower for trackpads & mice) ---
+  // --- Zoom helpers (wheel + pinch) ---
+
+  function applyZoomAt(clientX: number, clientY: number, newZoom: number) {
+    const st = stageRef.current;
+    const root = containerRef.current;
+    if (!st || !root) return;
+    const rect = root.getBoundingClientRect();
+    const pointer = { x: clientX - rect.left, y: clientY - rect.top };
+    const s = useEditorStore.getState();
+    const oldZoom = s.zoom;
+    const oldPos = s.stagePosition;
+    const clamped = Math.max(0.1, Math.min(5, newZoom));
+    const mousePointTo = {
+      x: (pointer.x - oldPos.x) / oldZoom,
+      y: (pointer.y - oldPos.y) / oldZoom,
+    };
+    s.setZoom(clamped);
+    s.setStagePosition({
+      x: pointer.x - mousePointTo.x * clamped,
+      y: pointer.y - mousePointTo.y * clamped,
+    });
+    st.batchDraw();
+  }
 
   function handleWheel(e: Konva.KonvaEventObject<WheelEvent>) {
     e.evt.preventDefault();
@@ -880,26 +948,72 @@ const EditorCanvas: React.FC = () => {
     const pointer = st.getPointerPosition();
     if (!pointer) return;
     const s = useEditorStore.getState();
-    const oldZoom = s.zoom;
-    const oldPos = s.stagePosition;
-    const mousePointTo = {
-      x: (pointer.x - oldPos.x) / oldZoom,
-      y: (pointer.y - oldPos.y) / oldZoom,
-    };
-    // Normalize delta across devices; scale gently (was ~6% per notch, now ~1.5–2.5%)
     let delta = e.evt.deltaY;
     if (e.evt.deltaMode === 1) delta *= 16; // lines → pixels
     if (e.evt.deltaMode === 2) delta *= 400; // pages → pixels
-    // Exponential zoom from delta; clamp sensitivity
     const factor = Math.exp(-delta * 0.0012);
-    const newZoom = Math.max(0.1, Math.min(5, oldZoom * factor));
-    s.setZoom(newZoom);
-    s.setStagePosition({
-      x: pointer.x - mousePointTo.x * newZoom,
-      y: pointer.y - mousePointTo.y * newZoom,
-    });
-    st.batchDraw();
+    const root = containerRef.current;
+    if (!root) return;
+    const rect = root.getBoundingClientRect();
+    applyZoomAt(rect.left + pointer.x, rect.top + pointer.y, s.zoom * factor);
   }
+
+  // Pinch-to-zoom (touch)
+  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const touchDist = (t: TouchList) => {
+      if (t.length < 2) return 0;
+      const dx = t[0].clientX - t[1].clientX;
+      const dy = t[0].clientY - t[1].clientY;
+      return Math.hypot(dx, dy);
+    };
+    const touchCenter = (t: TouchList) => ({
+      x: (t[0].clientX + t[1].clientX) / 2,
+      y: (t[0].clientY + t[1].clientY) / 2,
+    });
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        pinchRef.current = {
+          dist: touchDist(e.touches),
+          zoom: useEditorStore.getState().zoom,
+        };
+        // Cancel any in-progress draw so pinch doesn't create a stroke
+        setIsDrawing(false);
+        setDrawingElement(null);
+        setIsErasing(false);
+        setEraserStart(null);
+        setEraserEnd(null);
+      }
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 2 || !pinchRef.current) return;
+      e.preventDefault();
+      const dist = touchDist(e.touches);
+      if (dist < 1 || pinchRef.current.dist < 1) return;
+      const scale = dist / pinchRef.current.dist;
+      const center = touchCenter(e.touches);
+      applyZoomAt(center.x, center.y, pinchRef.current.zoom * scale);
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) pinchRef.current = null;
+    };
+
+    el.addEventListener('touchstart', onTouchStart, { passive: false });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd);
+    el.addEventListener('touchcancel', onTouchEnd);
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, []);
 
   // --- Selection ---
 
@@ -1029,6 +1143,7 @@ const EditorCanvas: React.FC = () => {
             />
           );
         }
+        const isCropMarquee = shape.id === '__crop_marquee__';
         return (
           <Rect
             key={shape.id}
@@ -1039,6 +1154,8 @@ const EditorCanvas: React.FC = () => {
             stroke={shape.stroke}
             strokeWidth={shape.strokeWidth}
             cornerRadius={shape.cornerRadius ?? 0}
+            dash={isCropMarquee ? [8, 4] : undefined}
+            listening={!isCropMarquee}
           />
         );
       }
@@ -1267,7 +1384,7 @@ const EditorCanvas: React.FC = () => {
   return (
     <div
       ref={containerRef}
-      data-snapkit-canvas
+      data-snapty-canvas
       className={`relative w-full h-full overflow-hidden z-0 ${dragOver ? 'ring-2 ring-inset ring-accent' : ''}`}
       style={{
         cursor: cursorCSS,
@@ -1406,10 +1523,60 @@ const EditorCanvas: React.FC = () => {
         );
       })()}
 
-      {/* Zoom indicator */}
-      <div className="absolute bottom-3 right-3 px-2.5 py-1 rounded-md bg-black/60 text-white text-xs font-medium backdrop-blur-sm pointer-events-none select-none">
-        {Math.round(zoom * 100)}%
-      </div>
+      {/* Zoom controls: percentage on top, zoom in/out/fit below */}
+      {backgroundImage && (
+        <div className="absolute bottom-3 right-3 z-20 flex flex-col items-stretch gap-1 select-none">
+          <button
+            type="button"
+            className="px-2.5 py-1 rounded-md bg-black/60 hover:bg-black/75 text-white text-xs font-medium backdrop-blur-sm cursor-pointer font-mono transition-colors"
+            onClick={() => setZoom(1)}
+            title="Reset to 100%"
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <div className="flex items-center justify-center gap-0.5 rounded-md bg-black/60 backdrop-blur-sm p-0.5">
+            <button
+              type="button"
+              className="h-7 w-7 flex items-center justify-center rounded text-white/90 hover:bg-white/15 cursor-pointer transition-colors"
+              onClick={() => {
+                const s = useEditorStore.getState();
+                const root = containerRef.current;
+                if (!root) { setZoom(s.zoom / 1.2); return; }
+                const r = root.getBoundingClientRect();
+                applyZoomAt(r.left + r.width / 2, r.top + r.height / 2, s.zoom / 1.2);
+              }}
+              title="Zoom out"
+              aria-label="Zoom out"
+            >
+              <ZoomOut className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              className="h-7 w-7 flex items-center justify-center rounded text-white/90 hover:bg-white/15 cursor-pointer transition-colors"
+              onClick={() => {
+                const s = useEditorStore.getState();
+                const root = containerRef.current;
+                if (!root) { setZoom(s.zoom * 1.2); return; }
+                const r = root.getBoundingClientRect();
+                applyZoomAt(r.left + r.width / 2, r.top + r.height / 2, s.zoom * 1.2);
+              }}
+              title="Zoom in"
+              aria-label="Zoom in"
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              className="h-7 w-7 flex items-center justify-center rounded text-white/90 hover:bg-white/15 cursor-pointer transition-colors"
+              onClick={resetView}
+              title="Fit to screen"
+              aria-label="Fit to screen"
+            >
+              <Maximize className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

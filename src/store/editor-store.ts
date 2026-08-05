@@ -13,7 +13,8 @@ type PersistKey = typeof PERSIST_KEYS[number];
 function loadPersisted(): Partial<Record<PersistKey, any>> {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = localStorage.getItem('snapkit-settings');
+    const raw = localStorage.getItem('snapty-settings')
+      ?? localStorage.getItem('snapkit-settings');
     return raw ? JSON.parse(raw) : {};
   } catch { return {}; }
 }
@@ -25,7 +26,7 @@ function savePersisted(state: Record<string, any>) {
     for (const k of PERSIST_KEYS) toSave[k] = state[k];
     // gridEnabled lives on canvasStyle
     toSave.gridEnabled = state.canvasStyle?.gridEnabled ?? state.gridEnabled;
-    localStorage.setItem('snapkit-settings', JSON.stringify(toSave));
+    localStorage.setItem('snapty-settings', JSON.stringify(toSave));
   } catch { /* quota exceeded */ }
 }
 
@@ -37,9 +38,20 @@ export function getImageToolScale(width: number, height: number): number {
   return Math.max(1, Math.min(4, longest / 1200));
 }
 
+/** Full undo/redo snapshot — elements + image (so crop can be undone). */
+export type HistorySnapshot = {
+  elements: EditorElement[];
+  imageDataURL: string | null;
+  imageSize: { width: number; height: number };
+  /** Tool active when this state was created; restored on image-changing undo/redo (crop). */
+  activeTool?: ToolType;
+};
+
 interface EditorState {
   isEditorLaunched: boolean;
   backgroundImage: HTMLImageElement | null;
+  /** Cached data-URL of the background (shared across history entries until crop). */
+  imageDataURL: string | null;
   imageSize: { width: number; height: number };
   zoom: number;
   stagePosition: { x: number; y: number };
@@ -59,7 +71,7 @@ interface EditorState {
   stepStartNumber: number;
   stepRadius: number;
   setStepRadius: (r: number) => void;
-  _history: EditorElement[][];
+  _history: HistorySnapshot[];
   _historyIndex: number;
   canvasStyle: CanvasStyle;
   exportFormat: ExportFormat;
@@ -112,6 +124,8 @@ interface EditorState {
   resetAll: () => void;
   goToLanding: () => void;
   getToolScale: () => number;
+  /** Crop background image to rect (image coords) and shift annotations. */
+  cropToRegion: (region: { x: number; y: number; width: number; height: number }) => void;
 }
 
 const initialCanvasStyle: CanvasStyle = {
@@ -178,11 +192,150 @@ const shouldAutoLaunch = typeof window !== 'undefined' && (
 );
 
 const generateId = () => Math.random().toString(36).substring(2, 11);
-const cloneElements = (els: EditorElement[]) => JSON.parse(JSON.stringify(els));
+const cloneElements = (els: EditorElement[]) => JSON.parse(JSON.stringify(els)) as EditorElement[];
+
+type HistorySource = {
+  _history: HistorySnapshot[];
+  _historyIndex: number;
+  imageDataURL: string | null;
+  imageSize: { width: number; height: number };
+  activeTool: ToolType;
+};
+
+function makeSnapshot(
+  elements: EditorElement[],
+  imageDataURL: string | null,
+  imageSize: { width: number; height: number },
+  activeTool?: ToolType,
+): HistorySnapshot {
+  return {
+    elements: cloneElements(elements),
+    imageDataURL,
+    imageSize: { width: imageSize.width, height: imageSize.height },
+    activeTool,
+  };
+}
+
+/** Push a new history entry. Pass `image` when the background changed (crop). */
+function pushHistory(
+  s: HistorySource,
+  elements: EditorElement[],
+  image?: { imageDataURL: string | null; imageSize: { width: number; height: number } },
+) {
+  const imageDataURL = image ? image.imageDataURL : s.imageDataURL;
+  const imageSize = image ? image.imageSize : s.imageSize;
+  const snap = makeSnapshot(elements, imageDataURL, imageSize, s.activeTool);
+  return {
+    elements,
+    ...(image
+      ? { imageDataURL: image.imageDataURL, imageSize: { ...image.imageSize } }
+      : {}),
+    _history: [...s._history.slice(0, s._historyIndex + 1), snap],
+    _historyIndex: s._historyIndex + 1,
+  };
+}
+
+function emptyHistory(
+  imageDataURL: string | null = null,
+  imageSize: { width: number; height: number } = { width: 0, height: 0 },
+  activeTool?: ToolType,
+) {
+  return {
+    _history: [makeSnapshot([], imageDataURL, imageSize, activeTool)] as HistorySnapshot[],
+    _historyIndex: 0,
+  };
+}
+
+/** Encode current HTMLImageElement for history (reuse data: URLs as-is). */
+function imageToDataURL(img: HTMLImageElement): string | null {
+  try {
+    if (img.src?.startsWith('data:')) return img.src;
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth || img.width;
+    c.height = img.naturalHeight || img.height;
+    if (!c.width || !c.height) return null;
+    const ctx = c.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(img, 0, 0);
+    return c.toDataURL('image/png');
+  } catch {
+    return null;
+  }
+}
+
+/** Guards against rapid undo/redo while an image is still decoding. */
+let historyApplyGen = 0;
+
+function applyHistorySnapshot(
+  set: (partial: Partial<EditorState> | ((s: EditorState) => Partial<EditorState>)) => void,
+  get: () => EditorState,
+  snap: HistorySnapshot,
+  index: number,
+) {
+  const s = get();
+  const imageChanged =
+    snap.imageDataURL !== s.imageDataURL
+    || snap.imageSize.width !== s.imageSize.width
+    || snap.imageSize.height !== s.imageSize.height;
+
+  // Only restore tool when the image changes (crop undo/redo). Normal annotation
+  // undo keeps the user's current tool.
+  const toolPatch: Partial<EditorState> =
+    imageChanged && snap.activeTool ? { activeTool: snap.activeTool } : {};
+
+  if (!imageChanged) {
+    set({
+      elements: cloneElements(snap.elements),
+      _historyIndex: index,
+      selectedElementIds: [],
+    });
+    return;
+  }
+
+  const gen = ++historyApplyGen;
+  if (!snap.imageDataURL) {
+    set({
+      elements: cloneElements(snap.elements),
+      _historyIndex: index,
+      selectedElementIds: [],
+      backgroundImage: null,
+      imageDataURL: null,
+      imageSize: { width: 0, height: 0 },
+      ...toolPatch,
+    });
+    return;
+  }
+
+  const img = new Image();
+  img.onload = () => {
+    if (gen !== historyApplyGen) return;
+    set({
+      elements: cloneElements(snap.elements),
+      _historyIndex: index,
+      selectedElementIds: [],
+      backgroundImage: img,
+      imageDataURL: snap.imageDataURL,
+      imageSize: { width: snap.imageSize.width, height: snap.imageSize.height },
+      ...toolPatch,
+    });
+    setTimeout(() => get().resetView(), 30);
+  };
+  img.onerror = () => {
+    if (gen !== historyApplyGen) return;
+    set({
+      elements: cloneElements(snap.elements),
+      _historyIndex: index,
+      selectedElementIds: [],
+      ...toolPatch,
+    });
+  };
+  img.src = snap.imageDataURL;
+}
 
 export const useEditorStore = create<EditorState>((set, get) => ({
   isEditorLaunched: shouldAutoLaunch,
   backgroundImage: null,
+  imageDataURL: null,
   imageSize: { width: 0, height: 0 },
   zoom: 1,
   stagePosition: { x: 0, y: 0 },
@@ -201,8 +354,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   stepCounter: persisted.stepStartNumber ?? defaults.stepStartNumber,
   stepStartNumber: persisted.stepStartNumber ?? defaults.stepStartNumber,
   stepRadius: persisted.stepRadius ?? defaults.stepRadius,
-  _history: [[]],
-  _historyIndex: 0,
+  ...emptyHistory(),
   canvasStyle: { ...initialCanvasStyle, gridEnabled: persisted.gridEnabled ?? initialCanvasStyle.gridEnabled },
   exportFormat: persisted.exportFormat ?? defaults.exportFormat,
   exportQuality: persisted.exportQuality ?? defaults.exportQuality,
@@ -220,19 +372,23 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setBackgroundImage: (img, opts) => {
     const clearAnnotations = opts?.clearAnnotations !== false;
     const start = get().stepStartNumber;
+    const size = { width: img.naturalWidth, height: img.naturalHeight };
+    const dataURL = imageToDataURL(img);
     syncEditorRoute(true);
     if (clearAnnotations) {
       set({
         backgroundImage: img,
-        imageSize: { width: img.naturalWidth, height: img.naturalHeight },
+        imageDataURL: dataURL,
+        imageSize: size,
         elements: [], selectedElementIds: [],
-        _history: [[]], _historyIndex: 0,
+        ...emptyHistory(dataURL, size),
         stepCounter: start, isEditorLaunched: true,
       });
     } else {
       set({
         backgroundImage: img,
-        imageSize: { width: img.naturalWidth, height: img.naturalHeight },
+        imageDataURL: dataURL,
+        imageSize: size,
         isEditorLaunched: true,
       });
     }
@@ -243,9 +399,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (isStandalonePwa()) {
       return set({
         backgroundImage: null,
+        imageDataURL: null,
         imageSize: { width: 0, height: 0 },
         elements: [], selectedElementIds: [],
-        _history: [[]], _historyIndex: 0,
+        ...emptyHistory(),
         stepCounter: get().stepStartNumber,
         zoom: 1, stagePosition: { x: 0, y: 0 },
         isEditorLaunched: true,
@@ -254,9 +411,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     syncEditorRoute(false);
     return set({
       backgroundImage: null,
+      imageDataURL: null,
       imageSize: { width: 0, height: 0 },
       elements: [], selectedElementIds: [],
-      _history: [[]], _historyIndex: 0,
+      ...emptyHistory(),
       stepCounter: get().stepStartNumber,
       zoom: 1, stagePosition: { x: 0, y: 0 },
       isEditorLaunched: false,
@@ -268,9 +426,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     syncEditorRoute(true);
     return set({
       backgroundImage: null,
+      imageDataURL: null,
       imageSize: { width: 0, height: 0 },
       elements: [], selectedElementIds: [],
-      _history: [[]], _historyIndex: 0,
+      ...emptyHistory(),
       stepCounter: get().stepStartNumber,
       zoom: 1, stagePosition: { x: 0, y: 0 },
       // intentionally keep activeTool, colors, sizes, canvasStyle
@@ -283,7 +442,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { imageSize } = get();
     if (!imageSize.width || !imageSize.height) return;
     // Prefer measuring the actual canvas container when available
-    const container = document.querySelector('[data-snapkit-canvas]') as HTMLElement | null;
+    const container = document.querySelector('[data-snapty-canvas]') as HTMLElement | null;
     const cw = container?.clientWidth || Math.max(200, window.innerWidth - 96);
     const ch = container?.clientHeight || Math.max(200, window.innerHeight - 96);
     const pad = Math.min(80, Math.max(16, Math.min(cw, ch) * 0.08));
@@ -314,7 +473,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         historyExtra = true;
       }
       return historyExtra
-        ? { strokeColor: color, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        ? { strokeColor: color, ...pushHistory(s, els) }
         : { strokeColor: color };
     });
     savePersisted({ ...get(), strokeColor: color });
@@ -333,7 +492,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         historyExtra = true;
       }
       return historyExtra
-        ? { fillColor: color, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        ? { fillColor: color, ...pushHistory(s, els) }
         : { fillColor: color };
     });
     savePersisted({ ...get(), fillColor: color });
@@ -354,7 +513,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         historyExtra = true;
       }
       return historyExtra
-        ? { strokeWidth: width, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        ? { strokeWidth: width, ...pushHistory(s, els) }
         : { strokeWidth: width };
     });
     savePersisted({ ...get(), strokeWidth: width });
@@ -374,7 +533,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         historyExtra = true;
       }
       return historyExtra
-        ? { fontSize: size, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        ? { fontSize: size, ...pushHistory(s, els) }
         : { fontSize: size };
     });
     savePersisted({ ...get(), fontSize: size });
@@ -385,7 +544,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const ids = new Set(s.selectedElementIds);
       if (!ids.size) return { opacity: o };
       const els = s.elements.map((el) => ids.has(el.id) ? { ...el, opacity: o } as EditorElement : el);
-      return { opacity: o, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 };
+      return { opacity: o, ...pushHistory(s, els) };
     });
     savePersisted({ ...get(), opacity: o });
   },
@@ -402,7 +561,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         historyExtra = true;
       }
       return historyExtra
-        ? { cornerRadius: radius, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        ? { cornerRadius: radius, ...pushHistory(s, els) }
         : { cornerRadius: radius };
     });
     savePersisted({ ...get(), cornerRadius: radius });
@@ -427,7 +586,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         historyExtra = true;
       }
       return historyExtra
-        ? { stepRadius: radius, elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 }
+        ? { stepRadius: radius, ...pushHistory(s, els) }
         : { stepRadius: radius };
     });
     savePersisted({ ...get(), stepRadius: radius });
@@ -458,22 +617,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   addElement: (element) => {
-    set((s) => {
-      const els = [...s.elements, element];
-      return { elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 };
-    });
+    set((s) => pushHistory(s, [...s.elements, element]));
     if (element.type === 'step') set((s) => ({ stepCounter: s.stepCounter + 1 }));
   },
   addElements: (elements) => {
-    set((s) => {
-      const els = [...s.elements, ...elements];
-      return { elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 };
-    });
+    set((s) => pushHistory(s, [...s.elements, ...elements]));
   },
   updateElement: (id, updates) => {
     set((s) => {
       const els = s.elements.map((el) => el.id === id ? { ...el, ...updates } as EditorElement : el);
-      return { elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 };
+      return pushHistory(s, els);
     });
   },
   updateSelectedElements: (updates) => {
@@ -482,25 +635,62 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const els = s.elements.map((el) =>
         s.selectedElementIds.includes(el.id) ? { ...el, ...updates } as EditorElement : el
       );
-      return { elements: els, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 };
+      return pushHistory(s, els);
     });
   },
   removeElements: (ids) => {
     set((s) => {
       const els = s.elements.filter((el) => !ids.includes(el.id));
-      return { elements: els, selectedElementIds: s.selectedElementIds.filter((id) => !ids.includes(id)), _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(els)], _historyIndex: s._historyIndex + 1 };
+      return {
+        ...pushHistory(s, els),
+        selectedElementIds: s.selectedElementIds.filter((id) => !ids.includes(id)),
+      };
     });
   },
   setSelectedElementIds: (ids) => set({ selectedElementIds: ids }),
-  clearElements: () => set((s) => ({ elements: [], selectedElementIds: [], _history: [...s._history.slice(0, s._historyIndex + 1), []], _historyIndex: s._historyIndex + 1 })),
+  clearElements: () => set((s) => ({ ...pushHistory(s, []), selectedElementIds: [] })),
 
-  bringForward: (id) => set((s) => { const i = s.elements.findIndex((el) => el.id === id); if (i < 0 || i >= s.elements.length - 1) return s; const e = [...s.elements]; [e[i], e[i+1]] = [e[i+1], e[i]]; return { elements: e, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(e)], _historyIndex: s._historyIndex + 1 }; }),
-  sendBackward: (id) => set((s) => { const i = s.elements.findIndex((el) => el.id === id); if (i <= 0) return s; const e = [...s.elements]; [e[i], e[i-1]] = [e[i-1], e[i]]; return { elements: e, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(e)], _historyIndex: s._historyIndex + 1 }; }),
-  bringToFront: (id) => set((s) => { const i = s.elements.findIndex((el) => el.id === id); if (i < 0) return s; const e = [...s.elements]; const [el] = e.splice(i, 1); e.push(el); return { elements: e, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(e)], _historyIndex: s._historyIndex + 1 }; }),
-  sendToBack: (id) => set((s) => { const i = s.elements.findIndex((el) => el.id === id); if (i < 0) return s; const e = [...s.elements]; const [el] = e.splice(i, 1); e.unshift(el); return { elements: e, _history: [...s._history.slice(0, s._historyIndex + 1), cloneElements(e)], _historyIndex: s._historyIndex + 1 }; }),
+  bringForward: (id) => set((s) => {
+    const i = s.elements.findIndex((el) => el.id === id);
+    if (i < 0 || i >= s.elements.length - 1) return s;
+    const e = [...s.elements];
+    [e[i], e[i + 1]] = [e[i + 1], e[i]];
+    return pushHistory(s, e);
+  }),
+  sendBackward: (id) => set((s) => {
+    const i = s.elements.findIndex((el) => el.id === id);
+    if (i <= 0) return s;
+    const e = [...s.elements];
+    [e[i], e[i - 1]] = [e[i - 1], e[i]];
+    return pushHistory(s, e);
+  }),
+  bringToFront: (id) => set((s) => {
+    const i = s.elements.findIndex((el) => el.id === id);
+    if (i < 0) return s;
+    const e = [...s.elements];
+    const [el] = e.splice(i, 1);
+    e.push(el);
+    return pushHistory(s, e);
+  }),
+  sendToBack: (id) => set((s) => {
+    const i = s.elements.findIndex((el) => el.id === id);
+    if (i < 0) return s;
+    const e = [...s.elements];
+    const [el] = e.splice(i, 1);
+    e.unshift(el);
+    return pushHistory(s, e);
+  }),
 
-  undo: () => set((s) => { if (s._historyIndex <= 0) return s; const ni = s._historyIndex - 1; return { elements: cloneElements(s._history[ni]), _historyIndex: ni, selectedElementIds: [] }; }),
-  redo: () => set((s) => { if (s._historyIndex >= s._history.length - 1) return s; const ni = s._historyIndex + 1; return { elements: cloneElements(s._history[ni]), _historyIndex: ni, selectedElementIds: [] }; }),
+  undo: () => {
+    const s = get();
+    if (s._historyIndex <= 0) return;
+    applyHistorySnapshot(set, get, s._history[s._historyIndex - 1], s._historyIndex - 1);
+  },
+  redo: () => {
+    const s = get();
+    if (s._historyIndex >= s._history.length - 1) return;
+    applyHistorySnapshot(set, get, s._history[s._historyIndex + 1], s._historyIndex + 1);
+  },
   canUndo: () => get()._historyIndex > 0,
   canRedo: () => get()._historyIndex < get()._history.length - 1,
 
@@ -519,10 +709,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   resetAll: () => {
     set({
       backgroundImage: null,
+      imageDataURL: null,
       imageSize: { width: 0, height: 0 }, zoom: 1, stagePosition: { x: 0, y: 0 },
       isEditorLaunched: true,
       elements: [], selectedElementIds: [],
-      _history: [[]], _historyIndex: 0,
+      ...emptyHistory(),
       showExportDialog: false, showHelpDialog: false,
     });
   },
@@ -535,12 +726,93 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return;
     }
     syncEditorRoute(false);
-    set({ isEditorLaunched: false, backgroundImage: null });
+    set({ isEditorLaunched: false, backgroundImage: null, imageDataURL: null });
   },
 
   getToolScale: () => {
     const { imageSize } = get();
     return getImageToolScale(imageSize.width, imageSize.height);
+  },
+
+  cropToRegion: (region) => {
+    const state = get();
+    const { backgroundImage, imageSize, elements } = state;
+    if (!backgroundImage || !imageSize.width || !imageSize.height) return;
+
+    // Ensure pre-crop image is stored on history so undo can restore it
+    if (!state.imageDataURL) {
+      const encoded = imageToDataURL(backgroundImage);
+      if (encoded) {
+        const hist = state._history.map((snap) =>
+          snap.imageDataURL
+            ? snap
+            : { ...snap, imageDataURL: encoded, imageSize: { ...imageSize } },
+        );
+        set({ imageDataURL: encoded, _history: hist });
+      }
+    }
+
+    const x = Math.max(0, Math.round(region.x));
+    const y = Math.max(0, Math.round(region.y));
+    const w = Math.max(1, Math.round(region.width));
+    const h = Math.max(1, Math.round(region.height));
+    const cropX = Math.min(x, imageSize.width - 1);
+    const cropY = Math.min(y, imageSize.height - 1);
+    const cropW = Math.min(w, imageSize.width - cropX);
+    const cropH = Math.min(h, imageSize.height - cropY);
+    if (cropW < 2 || cropH < 2) return;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = cropW;
+    canvas.height = cropH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(backgroundImage, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+    // Stamp crop tool onto the current (pre-crop) history entry so undo restores it
+    const toolBeforeCrop = state.activeTool;
+    {
+      const s0 = get();
+      const hist = [...s0._history];
+      const idx = s0._historyIndex;
+      if (hist[idx]) {
+        hist[idx] = { ...hist[idx], activeTool: toolBeforeCrop };
+        set({ _history: hist });
+      }
+    }
+
+    const dataUrl = canvas.toDataURL('image/png');
+    const img = new Image();
+    img.onload = () => {
+      // Shift annotations captured at crop time so they stay aligned
+      const shifted = elements.map((el) => {
+        const next = { ...el, x: el.x - cropX, y: el.y - cropY } as EditorElement;
+        if (el.type === 'pencil' || el.type === 'highlighter') {
+          const pts = [...(el as any).points] as number[];
+          for (let i = 0; i < pts.length; i += 2) {
+            pts[i] -= cropX;
+            pts[i + 1] -= cropY;
+          }
+          return { ...next, x: 0, y: 0, points: pts } as EditorElement;
+        }
+        return next;
+      });
+      const size = { width: cropW, height: cropH };
+      const s = get();
+      // Stay on crop tool so further crops / undo keep the same tool
+      set({
+        backgroundImage: img,
+        selectedElementIds: [],
+        activeTool: 'crop',
+        ...pushHistory(
+          { ...s, activeTool: 'crop' },
+          shifted,
+          { imageDataURL: dataUrl, imageSize: size },
+        ),
+      });
+      setTimeout(() => get().resetView(), 30);
+    };
+    img.src = dataUrl;
   },
 }));
 

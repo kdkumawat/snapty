@@ -88,7 +88,7 @@ const WelcomeScreen: React.FC = () => {
     setUrlLoading(true);
     setUrlError('');
     try {
-      // Privacy-first: image is fetched only by your browser, never uploaded to SnapKit
+      // Privacy-first: image is fetched only by your browser, never uploaded to Snapty
       const img = await loadImageFromUrlClient(urlInput.trim());
       setBackgroundImage(img);
       setUrlInput('');
@@ -111,7 +111,7 @@ const WelcomeScreen: React.FC = () => {
       <div className="w-16 h-16 rounded-2xl bg-accent/10 text-accent flex items-center justify-center mb-6">
         <ScissorLogo size={32} />
       </div>
-      <h1 className="text-2xl font-bold text-foreground mb-2">SnapKit</h1>
+      <h1 className="text-2xl font-bold text-foreground mb-2">Snapty</h1>
       <p className="text-muted-foreground text-sm mb-8">Capture. Annotate. Share.</p>
 
       <div className={cn('w-full max-w-md border-2 border-dashed rounded-2xl p-10 flex flex-col items-center gap-4 transition-all mb-6', dragOver ? 'border-accent bg-accent/5' : 'border-border hover:border-muted-foreground bg-secondary/30')}>

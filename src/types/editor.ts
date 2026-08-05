@@ -13,7 +13,8 @@ export type ToolType =
   | 'pixelate'
   | 'spotlight'
   | 'step'
-  | 'eraser';
+  | 'eraser'
+  | 'crop';
 
 export type ExportFormat = 'png' | 'jpg' | 'webp';
 

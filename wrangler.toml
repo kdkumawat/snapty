@@ -1,4 +1,4 @@
-name = "snapkit"
+name = "snapty"
 pages_build_output_dir = ".open-next/assets"
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]

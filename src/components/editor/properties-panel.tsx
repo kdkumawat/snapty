@@ -12,16 +12,22 @@ import { cn } from '@/lib/utils';
 import {
   ChevronDown, ChevronRight, Palette, Layers, Frame, Sparkles,
   Trash2, Copy, ArrowUpToLine, ArrowDownToLine, ArrowUp, ArrowDown,
-  RotateCcw, ImagePlus, PanelRightClose, PanelRightOpen,
+  RotateCcw, ImagePlus, PanelRightClose, PanelRightOpen, ImageOff,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip';
 
 function loadPanelSections(): Record<string, boolean> {
-  try { return JSON.parse(localStorage.getItem('snapkit-panel-sections') || '{}'); } catch { return {}; }
+  try {
+    return JSON.parse(
+      localStorage.getItem('snapty-panel-sections')
+        ?? localStorage.getItem('snapkit-panel-sections')
+        ?? '{}'
+    );
+  } catch { return {}; }
 }
 function savePanelSections(sections: Record<string, boolean>) {
-  try { localStorage.setItem('snapkit-panel-sections', JSON.stringify(sections)); } catch {}
+  try { localStorage.setItem('snapty-panel-sections', JSON.stringify(sections)); } catch {}
 }
 
 function Section({ title, icon, children, defaultOpen = true }: { title: string; icon: React.ReactNode; children: React.ReactNode; defaultOpen?: boolean }) {
@@ -58,7 +64,7 @@ function sizeModeFor(tool: ToolType, selectedTypes: string[]): 'stroke' | 'font'
     if (t === 'blur') return 'blur';
     if (t === 'pixelate') return 'pixel';
     if (t === 'highlighter') return 'highlighter';
-    if (['blur', 'pixelate', 'spotlight', 'select', 'hand', 'eraser'].includes(t)) return 'none';
+    if (['blur', 'pixelate', 'spotlight', 'select', 'hand', 'eraser', 'crop'].includes(t)) return 'none';
     if (['arrow', 'rectangle', 'rounded-rect', 'circle', 'line', 'pencil'].includes(t)) return 'stroke';
   }
   switch (tool) {
@@ -70,6 +76,7 @@ function sizeModeFor(tool: ToolType, selectedTypes: string[]): 'stroke' | 'font'
     case 'select':
     case 'hand':
     case 'eraser':
+    case 'crop':
     case 'spotlight':
       return selectedTypes.some((t) => ['arrow', 'rectangle', 'rounded-rect', 'circle', 'line', 'pencil'].includes(t))
         ? 'stroke'
@@ -87,7 +94,7 @@ function showsStrokeColor(tool: ToolType, selectedTypes: string[]): boolean {
   if (selectedTypes.length) {
     return selectedTypes.some((t) => !['blur', 'pixelate', 'spotlight'].includes(t));
   }
-  return !['blur', 'pixelate', 'spotlight', 'hand', 'eraser', 'select'].includes(tool);
+  return !['blur', 'pixelate', 'spotlight', 'hand', 'eraser', 'select', 'crop'].includes(tool);
 }
 
 function showsFill(tool: ToolType, selectedTypes: string[]): boolean {
@@ -105,10 +112,10 @@ const PropertiesPanel: React.FC = () => {
     const apply = () => {
       if (mq.matches && !useEditorStore.getState().panelCollapsed) {
         // Only auto-collapse once per narrow session if not already collapsed by user
-        const flag = sessionStorage.getItem('snapkit-auto-collapsed');
+        const flag = sessionStorage.getItem('snapty-auto-collapsed');
         if (!flag) {
           useEditorStore.getState().setPanelCollapsed(true);
-          sessionStorage.setItem('snapkit-auto-collapsed', '1');
+          sessionStorage.setItem('snapty-auto-collapsed', '1');
         }
       }
     };
@@ -151,6 +158,8 @@ const PropertiesPanel: React.FC = () => {
   const setStepStartNumber = useEditorStore((s) => s.setStepStartNumber);
   const setPanelCollapsed = useEditorStore((s) => s.setPanelCollapsed);
   const resetToolSettings = useEditorStore((s) => s.resetToolSettings);
+  const resetAll = useEditorStore((s) => s.resetAll);
+  const hasImage = useEditorStore((s) => s.backgroundImage !== null);
   const hasSelection = selectedElementIds.length > 0;
 
   const selectedTypes = React.useMemo(
@@ -180,7 +189,7 @@ const PropertiesPanel: React.FC = () => {
     { icon: <ArrowDown className="w-3.5 h-3.5" />, label: 'Backward', fn: () => selectedElementIds.forEach(sendBackward) },
   ];
 
-  // Collapsed: thin strip with expand + reset
+  // Collapsed: thin strip with expand + reset tools + reset image
   if (panelCollapsed) {
     return (
       <TooltipProvider delayDuration={200}>
@@ -188,9 +197,10 @@ const PropertiesPanel: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
+                type="button"
                 className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
                 onClick={() => setPanelCollapsed(false)}
-                aria-label="Show settings panel"
+                aria-label="Show panel"
               >
                 <PanelRightOpen className="w-4 h-4" />
               </button>
@@ -200,15 +210,31 @@ const PropertiesPanel: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
+                type="button"
                 className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
                 onClick={resetToolSettings}
-                aria-label="Reset settings"
+                aria-label="Reset tool defaults"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="left" className="z-[200]">Reset settings</TooltipContent>
+            <TooltipContent side="left" className="z-[200]">Reset tools</TooltipContent>
           </Tooltip>
+          {hasImage && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+                  onClick={resetAll}
+                  aria-label="Reset image"
+                >
+                  <ImageOff className="w-3.5 h-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="z-[200]">Reset image</TooltipContent>
+            </Tooltip>
+          )}
         </div>
       </TooltipProvider>
     );
@@ -223,21 +249,38 @@ const PropertiesPanel: React.FC = () => {
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
+                  type="button"
                   className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
                   onClick={resetToolSettings}
-                  aria-label="Reset settings"
+                  aria-label="Reset tool defaults"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="bottom" className="z-[200]">Reset settings</TooltipContent>
+              <TooltipContent side="bottom" className="z-[200]">Reset tools</TooltipContent>
             </Tooltip>
+            {hasImage && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+                    onClick={resetAll}
+                    aria-label="Reset image"
+                  >
+                    <ImageOff className="w-3.5 h-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="z-[200]">Reset image</TooltipContent>
+              </Tooltip>
+            )}
           </TooltipProvider>
           <button
+            type="button"
             className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
             onClick={() => setPanelCollapsed(true)}
             title="Collapse settings"
-            aria-label="Collapse settings panel"
+            aria-label="Collapse settings"
           >
             <PanelRightClose className="w-3.5 h-3.5" />
           </button>

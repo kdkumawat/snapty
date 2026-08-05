@@ -1,6 +1,6 @@
 {
-  "name": "SnapKit",
-  "short_name": "SnapKit",
+  "name": "Snapty",
+  "short_name": "Snapty",
   "description": "Privacy-first browser screenshot editor. Annotate, style, and export — all on your device.",
   "start_url": "/editor",
   "scope": "/",

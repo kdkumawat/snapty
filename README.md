@@ -1,4 +1,4 @@
-# SnapKit
+# Snapty
 
 Browser-native screenshot editor. Annotate, style, and export — all in your browser.
 
@@ -38,7 +38,7 @@ Browser-native screenshot editor. Annotate, style, and export — all in your br
 
 ```bash
 git clone <your-repo-url>
-cd snapkit
+cd Snapty
 bun install
 ```
 
@@ -59,7 +59,7 @@ bun start
 
 ## Direct Editor Link
 
-Bookmark `https://snapkit.pages.dev/#editor` to go directly to the editor, skipping the landing page.
+Bookmark `https://snapty.pages.dev/#editor` to go directly to the editor, skipping the landing page.
 
 ## Deployment
 
@@ -67,12 +67,12 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed deployment guides.
 
 ## Screen Capture Integration
 
-SnapKit works seamlessly with your OS screen capture tools:
+Snapty works seamlessly with your OS screen capture tools:
 
-- **macOS**: `Cmd+Ctrl+Shift+4` captures a region to clipboard. Then paste into SnapKit with `Cmd+V`.
-- **Windows**: `Win+Shift+S` captures a region to clipboard. Then paste into SnapKit with `Ctrl+V`.
+- **macOS**: `Cmd+Ctrl+Shift+4` captures a region to clipboard. Then paste into Snapty with `Cmd+V`.
+- **Windows**: `Win+Shift+S` captures a region to clipboard. Then paste into Snapty with `Ctrl+V`.
 - **Browser Extension**: Use extensions like GoFullPage or FireShot for full-page captures.
-- **PWA**: Install SnapKit as a browser app (Chrome/Edge: click install icon in address bar). On macOS, it appears in the dock for quick access.
+- **PWA**: Install Snapty as a browser app (Chrome/Edge: click install icon in address bar). On macOS, it appears in the dock for quick access.
 
 ## Project Structure
 
