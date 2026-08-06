@@ -48,7 +48,7 @@ bun install
 bun dev
 ```
 
-The app opens at `http://localhost:3000`.
+The app opens at `http://localhost:3001`.
 
 ### Production Build
 
