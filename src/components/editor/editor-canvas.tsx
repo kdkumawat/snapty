@@ -6,7 +6,7 @@ import {
   Image as KonvaImage, Circle, Transformer,
 } from 'react-konva';
 import Konva from 'konva';
-import { ZoomIn, ZoomOut, Maximize } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize, ScanText, Copy, Check, X } from 'lucide-react';
 import { useEditorStore, generateId, getImageToolScale } from '@/store/editor-store';
 import { loadImageFileIntoEditor } from '@/lib/image-load';
 import type {
@@ -59,18 +59,18 @@ function toolCursorSVG(tool: ToolType, opts: CursorOpts = {}): string {
       </svg>`;
     case 'rectangle':
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-        <rect x="5" y="7" width="22" height="18" fill="none" stroke="${halo}" stroke-width="4"/>
-        <rect x="5" y="7" width="22" height="18" fill="none" stroke="${color}" stroke-width="2"/>
+        <path d="M16 4v24M4 16h24" stroke="${halo}" stroke-width="4" stroke-linecap="round"/><path d="M16 4v24M4 16h24" stroke="${color}" stroke-width="1.75" stroke-linecap="round"/>
+        <rect x="19" y="5" width="8" height="7" fill="${halo}"/><rect x="20" y="6" width="6" height="5" fill="none" stroke="${color}" stroke-width="1.5"/>
       </svg>`;
     case 'rounded-rect':
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-        <rect x="5" y="7" width="22" height="18" rx="5" fill="none" stroke="${halo}" stroke-width="4"/>
-        <rect x="5" y="7" width="22" height="18" rx="5" fill="none" stroke="${color}" stroke-width="2"/>
+        <path d="M16 4v24M4 16h24" stroke="${halo}" stroke-width="4" stroke-linecap="round"/><path d="M16 4v24M4 16h24" stroke="${color}" stroke-width="1.75" stroke-linecap="round"/>
+        <rect x="19" y="5" width="8" height="7" rx="2" fill="${halo}"/><rect x="20" y="6" width="6" height="5" rx="1.5" fill="none" stroke="${color}" stroke-width="1.5"/>
       </svg>`;
     case 'circle':
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-        <circle cx="${half}" cy="${half}" r="11" fill="none" stroke="${halo}" stroke-width="4"/>
-        <circle cx="${half}" cy="${half}" r="11" fill="none" stroke="${color}" stroke-width="2"/>
+        <path d="M16 4v24M4 16h24" stroke="${halo}" stroke-width="4" stroke-linecap="round"/><path d="M16 4v24M4 16h24" stroke="${color}" stroke-width="1.75" stroke-linecap="round"/>
+        <circle cx="23" cy="9" r="4" fill="${halo}"/><circle cx="23" cy="9" r="3" fill="none" stroke="${color}" stroke-width="1.5"/>
       </svg>`;
     case 'line':
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
@@ -201,6 +201,12 @@ const EditorCanvas: React.FC = () => {
   const [textInput, setTextInput] = useState<{ x: number; y: number; visible: boolean; editId?: string; initialText?: string }>({ x: 0, y: 0, visible: false });
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [ocrOpen, setOcrOpen] = useState(false);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrText, setOcrText] = useState('');
+  const [ocrCopied, setOcrCopied] = useState(false);
+  const hoverPreviousToolRef = useRef<ToolType | null>(null);
+  const hoveredAnnotationRef = useRef<string | null>(null);
   const [isHandDragging, setIsHandDragging] = useState(false);
   const [isErasing, setIsErasing] = useState(false);
   const [eraserStart, setEraserStart] = useState<{ x: number; y: number } | null>(null);
@@ -235,6 +241,47 @@ const EditorCanvas: React.FC = () => {
   const setStagePosition = useEditorStore((s) => s.setStagePosition);
   const resetView = useEditorStore((s) => s.resetView);
 
+  async function runOCR() {
+    if (!backgroundImage || ocrBusy) return;
+    setOcrOpen(true);
+    setOcrBusy(true);
+    setOcrText('');
+    let worker: { recognize: (image: Blob) => Promise<{ data: { text: string } }>; terminate: () => Promise<unknown> } | null = null;
+    try {
+      const source = document.createElement('canvas');
+      source.width = backgroundImage.naturalWidth || backgroundImage.width;
+      source.height = backgroundImage.naturalHeight || backgroundImage.height;
+      const sourceCtx = source.getContext('2d');
+      if (!sourceCtx) throw new Error('Could not prepare OCR image');
+      sourceCtx.drawImage(backgroundImage, 0, 0, source.width, source.height);
+      const imageBlob = await new Promise<Blob>((resolve, reject) => {
+        source.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not prepare OCR image')), 'image/png');
+      });
+      const { createWorker } = await import('tesseract.js');
+      worker = await createWorker('eng', 1, {
+        workerPath: '/tesseract/worker.min.js',
+        corePath: '/tesseract',
+        langPath: '/tesseract/lang-data',
+        cachePath: 'tesseract-cache',
+      });
+      const result = await worker.recognize(imageBlob);
+      setOcrText(result.data.text.trim());
+    } catch (error) {
+      console.error('OCR failed:', error);
+      setOcrText('OCR could not read this image. Try a higher-resolution screenshot.');
+    } finally {
+      await worker?.terminate();
+      setOcrBusy(false);
+    }
+  }
+
+  async function copyOCRText() {
+    if (!ocrText) return;
+    await navigator.clipboard.writeText(ocrText);
+    setOcrCopied(true);
+    window.setTimeout(() => setOcrCopied(false), 1500);
+  }
+
   // Cursor based on tool (+ next step number for the stepper tool)
   const cursorCSS = useMemo(
     () => getToolCursorCSS(activeTool, isHandDragging, {
@@ -258,9 +305,11 @@ const EditorCanvas: React.FC = () => {
       });
     };
     apply();
-    // Konva may recreate canvases after resize / image load
-    const t = window.setTimeout(apply, 50);
-    return () => window.clearTimeout(t);
+    // Konva may recreate canvases after resize / image load; apply after both
+    // layout frames so the cursor hotspot remains aligned with the draw point.
+    const frame = window.requestAnimationFrame(apply);
+    const t = window.setTimeout(apply, 100);
+    return () => { window.cancelAnimationFrame(frame); window.clearTimeout(t); };
   }, [cursorCSS, dimensions, backgroundImage, activeTool]);
 
   // Grid pattern (created once)
@@ -599,19 +648,16 @@ const EditorCanvas: React.FC = () => {
     const st = stageRef.current;
     if (!st) return;
 
-    // Hand tool does nothing on mousedown (handled by drag)
-    if (s.activeTool === 'hand') return;
-
     const isBg = e.target === st
       || e.target.name() === 'background'
       || e.target.name() === 'background-darkened'
       || e.target.id() === 'grid-bg';
 
-    // Only the Select tool can pick / edit existing annotations.
-    // Drawing tools always draw through annotations (no accidental reselection).
-    if (s.activeTool === 'select') {
-      const clickedId = findAnnotationId(e.target);
-      if (clickedId && !isBg) {
+    // Annotations are always directly selectable. This keeps selection predictable
+    // even when a drawing tool is active; the drawing gesture only starts on empty
+    // canvas, while an existing annotation receives the click/drag interaction.
+    const clickedId = findAnnotationId(e.target);
+    if (clickedId && !isBg) {
         if (e.evt.shiftKey) {
           const currentIds = s.selectedElementIds;
           s.setSelectedElementIds(
@@ -643,9 +689,20 @@ const EditorCanvas: React.FC = () => {
           if (Object.keys(patch).length) useEditorStore.setState(patch as any);
         }
         return;
-      }
+    }
+
+    // Hand tool does nothing on mousedown (handled by drag)
+    if (s.activeTool === 'hand') return;
+
+    if (s.activeTool === 'select') {
       // Empty area → deselect
-      if (isBg || !clickedId) s.setSelectedElementIds([]);
+      if (isBg || !clickedId) {
+        s.setSelectedElementIds([]);
+        const previous = hoverPreviousToolRef.current;
+        hoveredAnnotationRef.current = null;
+        hoverPreviousToolRef.current = null;
+        if (previous) s.setActiveTool(previous);
+      }
       return;
     }
 
@@ -782,7 +839,24 @@ const EditorCanvas: React.FC = () => {
     }
   }
 
-  function handleMouseMove() {
+  function handleMouseMove(e?: Konva.KonvaEventObject<any>) {
+    // If the pointer is over an existing annotation, make Select the active
+    // interaction before the next press. This avoids the classic "why didn't
+    // my click select it?" problem while keeping drawing gestures untouched.
+    if (e && !isDrawing && !isErasing) {
+      const s = useEditorStore.getState();
+      const hoveredId = findAnnotationId(e.target);
+      if (hoveredId && !['select', 'hand', 'eraser', 'crop'].includes(s.activeTool)) {
+        if (!hoveredAnnotationRef.current) hoverPreviousToolRef.current = s.activeTool;
+        hoveredAnnotationRef.current = hoveredId;
+        s.setActiveTool('select');
+      } else if (!hoveredId && hoveredAnnotationRef.current && s.activeTool === 'select' && s.selectedElementIds.length === 0) {
+        const previous = hoverPreviousToolRef.current;
+        hoveredAnnotationRef.current = null;
+        hoverPreviousToolRef.current = null;
+        if (previous) s.setActiveTool(previous);
+      }
+    }
     // Eraser: update selection rectangle
     if (isErasing) {
       const pos = getCanvasPoint();
@@ -811,6 +885,15 @@ const EditorCanvas: React.FC = () => {
         height: pos.y - drawingElement.y,
       } as ShapeElement | CircleElement);
     }
+  }
+
+  function handleMouseLeave() {
+    const s = useEditorStore.getState();
+    if (s.selectedElementIds.length) return;
+    const previous = hoverPreviousToolRef.current;
+    hoveredAnnotationRef.current = null;
+    hoverPreviousToolRef.current = null;
+    if (previous && s.activeTool === 'select') s.setActiveTool(previous);
   }
 
   async function handleMouseUp() {
@@ -1045,8 +1128,8 @@ const EditorCanvas: React.FC = () => {
 
   function handleSelect(id: string, e: Konva.KonvaEventObject<MouseEvent>) {
     const s = useEditorStore.getState();
-    // Allow selection from select tool (drawing tools handled in mousedown)
-    if (s.activeTool !== 'select') return;
+    // Selection is intentionally tool-independent: clicking an annotation always
+    // selects it, which makes quick corrections much less frustrating.
     e.cancelBubble = true;
     if (e.evt.shiftKey) {
       const currentIds = s.selectedElementIds;
@@ -1124,9 +1207,8 @@ const EditorCanvas: React.FC = () => {
   function renderElement(el: EditorElement, isDraft = false) {
     const s = useEditorStore.getState();
     const isSelect = s.activeTool === 'select';
-    const draggable = !isDraft && isSelect;
-    // Only Select tool listens on existing shapes so drawing tools can draw over them
-    const listening = !isDraft && isSelect;
+    const draggable = !isDraft && (isSelect || s.selectedElementIds.includes(el.id));
+    const listening = !isDraft;
     const baseProps = {
       id: el.id,
       x: el.x,
@@ -1161,6 +1243,37 @@ const EditorCanvas: React.FC = () => {
           );
         }
         const isCropMarquee = shape.id === '__crop_marquee__';
+        // If hand-drawn style is enabled, render a jittered polygon instead
+        if (s.handDrawn && !shape.imageDataURL && !isCropMarquee) {
+          const seed = shape.id;
+          let rnd = (() => {
+            let h = 2166136261 >>> 0;
+            for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
+            return () => { h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0; return (h & 0xfffffff) / 0x10000000; };
+          })();
+          const w = Math.abs(shape.width || 0);
+          const h = Math.abs(shape.height || 0);
+          const amp = Math.max(1, Math.min(8, (shape.strokeWidth || 2) * 1.5));
+          const jitter = (x: number, y: number) => [x + (rnd() - 0.5) * amp, y + (rnd() - 0.5) * amp];
+          const p0 = jitter(0, 0);
+          const p1 = jitter(w, 0);
+          const p2 = jitter(w, h);
+          const p3 = jitter(0, h);
+          const points = [p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]];
+          return (
+            <Line
+              key={shape.id}
+              {...baseProps}
+              points={points}
+              closed
+              fill={shape.fill}
+              stroke={shape.stroke}
+              strokeWidth={shape.strokeWidth}
+              lineJoin="round"
+              tension={0.2}
+            />
+          );
+        }
         return (
           <Rect
             key={shape.id}
@@ -1215,6 +1328,38 @@ const EditorCanvas: React.FC = () => {
 
       case 'circle': {
         const circle = el as CircleElement;
+        if (s.handDrawn) {
+          const seed = circle.id;
+          let rnd = (() => {
+            let h = 2166136261 >>> 0;
+            for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
+            return () => { h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0; return (h & 0xfffffff) / 0x10000000; };
+          })();
+          const rx = Math.abs(circle.width) / 2;
+          const ry = Math.abs(circle.height) / 2;
+          const amp = Math.max(1, Math.min(6, (circle.strokeWidth || 2) * 1.2));
+          const points: number[] = [];
+          const steps = 24;
+          for (let i = 0; i < steps; i++) {
+            const a = (i / steps) * Math.PI * 2;
+            const x = Math.cos(a) * rx + (rnd() - 0.5) * amp;
+            const y = Math.sin(a) * ry + (rnd() - 0.5) * amp;
+            points.push(x, y);
+          }
+          return (
+            <Line
+              key={circle.id}
+              {...baseProps}
+              points={points}
+              closed
+              fill={circle.fill}
+              stroke={circle.stroke}
+              strokeWidth={circle.strokeWidth}
+              lineJoin="round"
+              tension={0.15}
+            />
+          );
+        }
         return (
           <Ellipse
             key={circle.id}
@@ -1232,29 +1377,96 @@ const EditorCanvas: React.FC = () => {
 
       case 'arrow': {
         const arrow = el as ArrowElement;
+        const [sx, sy, ex, ey] = arrow.points;
+        const length = Math.max(1, Math.hypot(ex - sx, ey - sy));
+        const bend = arrow.bend ?? 0;
+        const controlX = (sx + ex) / 2 + (-ey + sy) / length * bend * length * 0.55;
+        const controlY = (sy + ey) / 2 + (ex - sx) / length * bend * length * 0.55;
+        const points = bend === 0
+          ? arrow.points
+          : [0, 0, controlX, controlY, ex, ey];
+        // Slight hand-drawn jitter for arrows
+        let renderPoints = points;
+        if (s.handDrawn) {
+          const seed = arrow.id;
+          let rnd = (() => {
+            let h = 2166136261 >>> 0;
+            for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
+            return () => { h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0; return (h & 0xfffffff) / 0x10000000; };
+          })();
+          const amp = Math.max(1, Math.min(6, (arrow.strokeWidth || 2) * 1.2));
+          renderPoints = points.map((v, i) => {
+            // keep endpoints a bit more stable
+            const t = (i === 0 || i === points.length - 1) ? 0.2 : 1;
+            return v + (rnd() - 0.5) * amp * t;
+          });
+        }
+        const showBendHandle = !isDraft && s.selectedElementIds.includes(arrow.id);
+        const updateBendFromHandle = (node: Konva.Node) => {
+          const midX = (sx + ex) / 2;
+          const midY = (sy + ey) / 2;
+          const normalX = (-ey + sy) / length;
+          const normalY = (ex - sx) / length;
+          const localX = node.x() - arrow.x;
+          const localY = node.y() - arrow.y;
+          const next = ((localX - midX) * normalX + (localY - midY) * normalY) / (length * 0.55);
+          updateElement(arrow.id, { bend: Math.max(-1, Math.min(1, next)) });
+        };
         return (
-          <Arrow
-            key={arrow.id}
-            {...baseProps}
-            points={arrow.points}
-            stroke={arrow.stroke}
-            strokeWidth={arrow.strokeWidth}
-            fill={arrow.fill}
-            pointerLength={arrow.pointerLength ?? 12}
-            pointerWidth={arrow.pointerWidth ?? 12}
-          />
+          <React.Fragment key={arrow.id}>
+            <Arrow
+              {...baseProps}
+              points={renderPoints}
+              stroke={arrow.stroke}
+              strokeWidth={arrow.strokeWidth}
+              fill={arrow.fill}
+              pointerLength={arrow.pointerLength ?? 12}
+              pointerWidth={arrow.pointerWidth ?? 12}
+              tension={s.handDrawn ? (bend === 0 ? 0.15 : 0.45) : (bend === 0 ? 0 : 0.5)}
+            />
+            {showBendHandle && (
+              <>
+                <Circle x={arrow.x + sx} y={arrow.y + sy} radius={4} fill="#fff7ed" stroke="#f97316" strokeWidth={1.5} listening={false} />
+                <Circle
+                  x={arrow.x + controlX}
+                  y={arrow.y + controlY}
+                  radius={7}
+                  fill="#fff7ed"
+                  stroke="#f97316"
+                  strokeWidth={2}
+                  draggable
+                  onMouseDown={(e) => { e.cancelBubble = true; }}
+                  onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target); }}
+                  onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target); }}
+                />
+                <Circle x={arrow.x + ex} y={arrow.y + ey} radius={4} fill="#fff7ed" stroke="#f97316" strokeWidth={1.5} listening={false} />
+              </>
+            )}
+          </React.Fragment>
         );
       }
 
       case 'line': {
         const line = el as LineElement;
+        let pts = line.points;
+        if (s.handDrawn) {
+          const seed = line.id;
+          let rnd = (() => {
+            let h = 2166136261 >>> 0;
+            for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
+            return () => { h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0; return (h & 0xfffffff) / 0x10000000; };
+          })();
+          const amp = Math.max(1, Math.min(6, (line.strokeWidth || 2) * 1.2));
+          pts = line.points.map((v, i) => v + (rnd() - 0.5) * amp);
+        }
         return (
           <Line
             key={line.id}
             {...baseProps}
-            points={line.points}
+            points={pts}
             stroke={line.stroke}
             strokeWidth={line.strokeWidth}
+            tension={s.handDrawn ? 0.2 : 0}
           />
         );
       }
@@ -1435,6 +1647,7 @@ const EditorCanvas: React.FC = () => {
         y={stagePosition.y}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
         onMouseUp={handleMouseUp}
         onTouchStart={handleMouseDown}
         onTouchMove={handleMouseMove}
@@ -1501,11 +1714,17 @@ const EditorCanvas: React.FC = () => {
               if (newBox.width < 5 || newBox.height < 5) return oldBox;
               return newBox;
             }}
-            anchorSize={8}
-            anchorCornerRadius={2}
-            borderStroke="#3b82f6"
-            anchorStroke="#3b82f6"
-            anchorFill="#ffffff"
+            padding={6}
+            anchorSize={10}
+            anchorCornerRadius={4}
+            borderStroke="#f97316"
+            borderDash={[5, 4]}
+            anchorStroke="#f97316"
+            anchorFill="#fff7ed"
+            rotateEnabled
+            rotateAnchorOffset={24}
+            rotateAnchorSize={11}
+            rotateAnchorCursor="grab"
             enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right', 'top-center', 'bottom-center']}
           />
         </Layer>
@@ -1543,14 +1762,25 @@ const EditorCanvas: React.FC = () => {
       {/* Zoom controls: percentage on top, zoom in/out/fit below */}
       {backgroundImage && (
         <div className="absolute bottom-3 right-3 z-20 flex flex-col items-stretch gap-1 select-none">
-          <button
-            type="button"
-            className="px-2.5 py-1 rounded-md bg-black/60 hover:bg-black/75 text-white text-xs font-medium backdrop-blur-sm cursor-pointer font-mono transition-colors"
-            onClick={() => setZoom(1)}
-            title="Reset to 100%"
-          >
-            {Math.round(zoom * 100)}%
-          </button>
+          <div className="flex items-center justify-center gap-1 rounded-md bg-black/60 backdrop-blur-sm p-0.5">
+            <button
+              type="button"
+              className="px-2 py-1 rounded text-white text-xs font-medium hover:bg-white/15 cursor-pointer font-mono transition-colors"
+              onClick={() => setZoom(1)}
+              title="Reset to 100%"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              type="button"
+              className="h-7 w-7 flex items-center justify-center rounded text-white/90 hover:bg-white/15 cursor-pointer transition-colors"
+              onClick={runOCR}
+              title="Recognize text (OCR)"
+              aria-label="Recognize text in image"
+            >
+              <ScanText className="w-3.5 h-3.5" />
+            </button>
+          </div>
           <div className="flex items-center justify-center gap-0.5 rounded-md bg-black/60 backdrop-blur-sm p-0.5">
             <button
               type="button"
@@ -1592,6 +1822,30 @@ const EditorCanvas: React.FC = () => {
               <Maximize className="w-3.5 h-3.5" />
             </button>
           </div>
+        </div>
+      )}
+      {ocrOpen && (
+        <div className="absolute bottom-3 right-3 z-30 w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-border bg-background/95 shadow-xl backdrop-blur-md p-3">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <p className="text-sm font-semibold">Recognized text</p>
+              <p className="text-[10px] text-muted-foreground">Runs locally in your browser</p>
+            </div>
+            <button type="button" className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:bg-secondary cursor-pointer" onClick={() => setOcrOpen(false)} aria-label="Close OCR panel">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <textarea
+            value={ocrBusy ? 'Reading text…' : ocrText}
+            readOnly
+            placeholder="OCR text will appear here"
+            className="w-full min-h-32 max-h-56 resize-y rounded-lg border border-border bg-secondary/30 p-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-accent"
+            onFocus={(e) => e.currentTarget.select()}
+          />
+          <button type="button" disabled={ocrBusy || !ocrText} onClick={() => void copyOCRText()} className="mt-2 h-8 px-3 inline-flex items-center gap-1.5 rounded-md bg-accent text-accent-foreground text-xs font-medium disabled:opacity-50 cursor-pointer">
+            {ocrCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+            {ocrCopied ? 'Copied' : 'Copy text'}
+          </button>
         </div>
       )}
     </div>

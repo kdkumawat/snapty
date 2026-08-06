@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
-import { Download, Copy, Check, Loader2 } from 'lucide-react';
+import { Download, Copy, Check, Loader2, Share2 } from 'lucide-react';
 import { useEditorStore } from '@/store/editor-store';
 import type {
   ExportFormat, CanvasStyle, EditorElement, ShapeElement, ArrowElement,
@@ -51,6 +51,14 @@ function getElementBounds(el: EditorElement): { x: number; y: number; w: number;
       const pts = (el as ArrowElement | LineElement).points;
       const xs = [el.x, el.x + (pts?.[2] ?? 0)];
       const ys = [el.y, el.y + (pts?.[3] ?? 0)];
+      if (el.type === 'arrow' && (el as ArrowElement).bend) {
+        const bend = (el as ArrowElement).bend ?? 0;
+        const dx = pts[2] - pts[0];
+        const dy = pts[3] - pts[1];
+        const length = Math.max(1, Math.hypot(dx, dy));
+        xs.push(el.x + (pts[0] + pts[2]) / 2 + (-dy / length) * bend * length * 0.55);
+        ys.push(el.y + (pts[1] + pts[3]) / 2 + (dx / length) * bend * length * 0.55);
+      }
       const extra = el.type === 'arrow'
         ? Math.max((el as ArrowElement).pointerLength ?? 12, (el as ArrowElement).pointerWidth ?? 12)
         : 0;
@@ -429,6 +437,27 @@ async function copyToClipboard() {
   }
 }
 
+async function shareImage(format: ExportFormat, quality: number) {
+  const blob = await exportImage(format, quality);
+  if (!blob) throw new Error('Could not prepare image');
+  const ext = formats.find((f) => f.id === format)?.ext || '.png';
+  const mime = formats.find((f) => f.id === format)?.mime || 'image/png';
+  const file = new File([blob], `snapty-export${ext}`, { type: mime });
+  if (typeof navigator.share !== 'function') {
+    await copyToClipboard();
+    return 'copied' as const;
+  }
+  try {
+    await navigator.share({ title: 'Snapty screenshot', files: [file] });
+    return 'shared' as const;
+  } catch (error) {
+    // User cancellation is not an error; other share failures get a useful fallback.
+    if ((error as DOMException)?.name === 'AbortError') return 'cancelled' as const;
+    await copyToClipboard();
+    return 'copied' as const;
+  }
+}
+
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '-';
   if (bytes < 1024) return `${bytes} B`;
@@ -534,6 +563,19 @@ const ExportDialog: React.FC = () => {
     }
   };
 
+  const handleShare = async () => {
+    setExporting(true);
+    try {
+      const result = await shareImage(exportFormat, exportFormat === 'png' ? 1 : exportQuality / 100);
+      if (result === 'shared') toastSuccess('Shared', 'Screenshot sent to the app you chose');
+      if (result === 'copied') toastSuccess('Copied', 'Sharing is unavailable, so the image is on your clipboard');
+    } catch {
+      toastError('Share failed', 'Couldn’t prepare the image');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
       <DialogContent className="bg-background border-border text-foreground max-w-sm">
@@ -612,7 +654,7 @@ const ExportDialog: React.FC = () => {
               />
             </div>
           )}
-          <div className="flex gap-2 pt-2">
+          <div className="grid grid-cols-3 gap-2 pt-2">
             <Button
               variant="outline"
               className="flex-1 bg-secondary border-border text-foreground hover:bg-accent hover:text-accent-foreground h-10 min-w-[7.5rem] justify-center cursor-pointer"
@@ -629,6 +671,16 @@ const ExportDialog: React.FC = () => {
                 )}
               </span>
               <span className="tabular-nums">{exporting ? 'Copying…' : copied ? 'Copied' : 'Copy'}</span>
+            </Button>
+            <Button
+              variant="outline"
+              className="bg-secondary border-border text-foreground hover:bg-accent hover:text-accent-foreground h-10 justify-center cursor-pointer"
+              onClick={handleShare}
+              disabled={exporting}
+              title="Share to another app"
+            >
+              <Share2 className="w-4 h-4 mr-2" />
+              Share
             </Button>
             <Button
               className="flex-1 bg-accent text-accent-foreground hover:bg-accent/90 h-10 cursor-pointer"
@@ -649,5 +701,5 @@ const ExportDialog: React.FC = () => {
   );
 };
 
-export { exportImage, copyToClipboard };
+export { exportImage, copyToClipboard, shareImage };
 export default ExportDialog;

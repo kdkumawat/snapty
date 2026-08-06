@@ -102,6 +102,8 @@ interface EditorState {
   setHighlighterWidth: (w: number) => void;
   setStepStartNumber: (n: number) => void;
   setPanelCollapsed: (collapsed: boolean) => void;
+  handDrawn: boolean;
+  setHandDrawn: (v: boolean) => void;
   /** Reset stroke/fill/size prefs to factory defaults (keeps image + annotations). */
   resetToolSettings: () => void;
   addElement: (element: EditorElement) => void;
@@ -372,10 +374,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   showHelpDialog: false,
   panelCollapsed: typeof window !== 'undefined' && window.innerWidth < 900,
   imageLoading: false,
+  // Hand-drawn mode: default true unless explicitly disabled in previous settings
+  handDrawn: (typeof window !== 'undefined')
+    ? ((): boolean => { try { return JSON.parse(localStorage.getItem('snapty-tool-settings') || '{"handDrawn":true}').handDrawn !== false; } catch { return true; } })()
+    : true,
 
   launchEditor: () => {
     syncEditorRoute(true);
     set({ isEditorLaunched: true });
+  },
+
+  setHandDrawn: (v) => {
+    try { if (typeof window !== 'undefined') localStorage.setItem('snapty-tool-settings', JSON.stringify({ handDrawn: v })); } catch {}
+    set({ handDrawn: v });
   },
 
   setImageLoading: (loading) => set({ imageLoading: loading }),
@@ -635,6 +646,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     };
     set(next);
     savePersisted({ ...get(), ...next });
+    // Keep editor chrome defaults together with the global tool reset.
+    try {
+      localStorage.setItem('snapty-toolbar', JSON.stringify({ orientation: 'horizontal' }));
+      localStorage.setItem('snapty-tool-settings', JSON.stringify({ handDrawn: true }));
+      window.dispatchEvent(new Event('snapty-toolbar-settings'));
+    } catch { /* storage is optional */ }
   },
 
   addElement: (element) => {

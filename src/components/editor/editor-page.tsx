@@ -290,13 +290,11 @@ const EditorPage: React.FC = () => {
   if (!isEditorLaunched && !backgroundImage) return <LandingPage />;
 
   return (
-    <div className="flex-1 min-h-0 h-full w-full flex flex-col bg-background overflow-hidden select-none touch-manipulation">
+    <div className="relative flex-1 min-h-0 h-full w-full flex flex-col bg-background overflow-hidden select-none touch-manipulation" data-snapty-root>
       <TopBar />
       <div className="flex flex-1 min-h-0 min-w-0 flex-col md:flex-row overflow-hidden">
-        {/* Tools: side rail on md+, bottom bar on mobile (see Toolbar) */}
-        <div className="hidden md:flex md:h-full md:min-h-0 shrink-0 z-30">
-          <Toolbar />
-        </div>
+        {/* Floating toolbar: orientation and position are user-controlled and persisted. */}
+        <Toolbar />
         {backgroundImage ? (
           <>
             <div className="flex flex-1 min-h-0 min-w-0 order-1 md:order-none overflow-hidden">
@@ -308,10 +306,6 @@ const EditorPage: React.FC = () => {
               <div className="shrink-0 z-20 h-full max-h-full min-h-0 max-w-[min(100%,16rem)]">
                 <PropertiesPanel />
               </div>
-            </div>
-            {/* Mobile / narrow: bottom toolbar */}
-            <div className="md:hidden shrink-0 z-30 order-3 border-t border-border bg-background safe-bottom">
-              <Toolbar />
             </div>
           </>
         ) : (

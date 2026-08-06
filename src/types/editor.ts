@@ -50,6 +50,8 @@ export interface ShapeElement extends BaseElement {
 export interface ArrowElement extends BaseElement {
   type: 'arrow';
   points: [number, number, number, number];
+  /** Curvature for Shottr-style bendable arrows. 0 is a straight arrow. */
+  bend?: number;
   stroke?: string;
   strokeWidth?: number;
   fill?: string;

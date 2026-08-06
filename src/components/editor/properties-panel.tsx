@@ -13,8 +13,10 @@ import {
   ChevronDown, ChevronRight, Palette, Layers, Frame, Sparkles,
   Trash2, Copy, ArrowUpToLine, ArrowDownToLine, ArrowUp, ArrowDown,
   RotateCcw, ImagePlus, PanelRightClose, PanelRightOpen, ImageOff,
+  MoveUpRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip';
 import { modKey } from '@/hooks/use-keyboard-shortcuts';
 import { useResponsivePanel } from '@/hooks/use-responsive-panel';
@@ -142,6 +144,7 @@ const PropertiesPanel: React.FC = () => {
   const setStepRadius = useEditorStore((s) => s.setStepRadius);
   const setStepStartNumber = useEditorStore((s) => s.setStepStartNumber);
   const resetToolSettings = useEditorStore((s) => s.resetToolSettings);
+  const updateSelectedElements = useEditorStore((s) => s.updateSelectedElements);
 
   const handleClearAll = () => {
     const n = useEditorStore.getState().elements.length;
@@ -162,6 +165,12 @@ const PropertiesPanel: React.FC = () => {
     () => elements.filter((el) => selectedElementIds.includes(el.id)).map((el) => el.type),
     [elements, selectedElementIds]
   );
+  const selectedArrow = React.useMemo(
+    () => selectedElementIds.length === 1
+      ? elements.find((el) => el.id === selectedElementIds[0] && el.type === 'arrow') as { bend?: number } | undefined
+      : undefined,
+    [elements, selectedElementIds]
+  );
 
   const sizeMode = sizeModeFor(activeTool, selectedTypes);
   const showStroke = showsStrokeColor(activeTool, selectedTypes);
@@ -170,6 +179,21 @@ const PropertiesPanel: React.FC = () => {
     activeTool === 'rounded-rect'
     || selectedTypes.includes('rounded-rect')
     || selectedTypes.includes('rectangle');
+  const [toolbarOrientation, setToolbarOrientation] = React.useState<'horizontal' | 'vertical'>(() => {
+    if (typeof window === 'undefined') return 'horizontal';
+    try { return JSON.parse(localStorage.getItem('snapty-toolbar') || '{}').orientation === 'vertical' ? 'vertical' : 'horizontal'; } catch { return 'horizontal'; }
+  });
+  const handDrawn = useEditorStore((s) => s.handDrawn);
+  const setHandDrawn = useEditorStore((s) => s.setHandDrawn);
+
+  const saveToolbar = (orientation: 'horizontal' | 'vertical', resetPosition = false) => {
+    const current = JSON.parse(localStorage.getItem('snapty-toolbar') || '{}');
+    if (resetPosition) { delete current.rx; delete current.ry; }
+    localStorage.setItem('snapty-toolbar', JSON.stringify({ ...current, orientation }));
+    setToolbarOrientation(orientation);
+    window.dispatchEvent(new Event('snapty-toolbar-settings'));
+  };
+  const saveHandDrawn = (value: boolean) => setHandDrawn(value);
 
   const selectionActions = [
     { icon: <Trash2 className="w-3.5 h-3.5" />, label: 'Delete', fn: () => removeElements(selectedElementIds) },
@@ -397,15 +421,49 @@ const PropertiesPanel: React.FC = () => {
           </Section>
         )}
 
+        {selectedArrow && (
+          <Section title="Arrow Bend" icon={<MoveUpRight className="w-3 h-3" />} defaultOpen>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <Label className="text-[10px] text-muted-foreground">Curve</Label>
+                <span className="text-[10px] text-muted-foreground">{Math.round((selectedArrow.bend ?? 0) * 100)}%</span>
+              </div>
+              <Slider
+                value={[selectedArrow.bend ?? 0]}
+                onValueChange={([v]) => updateSelectedElements({ bend: v } as any)}
+                min={-1}
+                max={1}
+                step={0.05}
+              />
+            </div>
+          </Section>
+        )}
+
+        <Section title="Tool Settings" icon={<Sparkles className="w-3 h-3" />} defaultOpen={false}>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between rounded-lg border border-border bg-secondary/30 px-2.5 py-2">
+              <Label htmlFor="toolbar-orientation" className="text-xs cursor-pointer">Vertical toolbar</Label>
+              <Switch id="toolbar-orientation" checked={toolbarOrientation === 'vertical'} onCheckedChange={(checked) => saveToolbar(checked ? 'vertical' : 'horizontal', checked)} />
+            </div>
+            <div className="flex items-center justify-between rounded-lg border border-border bg-secondary/30 px-2.5 py-2">
+              <Label htmlFor="hand-drawn-style" className="text-xs cursor-pointer">Hand-drawn style</Label>
+              <Switch id="hand-drawn-style" checked={handDrawn} onCheckedChange={saveHandDrawn} />
+            </div>
+          </div>
+        </Section>
+
         <Separator className="bg-border" />
 
         <Section title="Images" icon={<ImagePlus className="w-3 h-3" />} defaultOpen={false}>
           <div className="space-y-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="w-full text-[10px] text-muted-foreground hover:text-foreground hover:bg-secondary cursor-pointer"
-              onClick={() => {
+            <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full text-[10px] text-muted-foreground hover:text-foreground hover:bg-secondary cursor-pointer"
+                  onClick={() => {
                 const input = document.createElement('input');
                 input.type = 'file';
                 input.accept = 'image/png,image/jpeg,image/webp,image/svg+xml';
@@ -438,12 +496,15 @@ const PropertiesPanel: React.FC = () => {
                     reader.readAsDataURL(file);
                   }
                 };
-                input.click();
-              }}
-            >
-              <ImagePlus className="w-3 h-3 mr-1" />Add Images
-            </Button>
-            <p className="text-[9px] text-muted-foreground/60">Paste or drop images onto the canvas. All processing stays on your device.</p>
+                    input.click();
+                  }}
+                >
+                  <ImagePlus className="w-3 h-3 mr-1" />Add Images
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="z-[200]">Add local images. Paste or drop also works; nothing is uploaded.</TooltipContent>
+            </Tooltip>
+            </TooltipProvider>
           </div>
         </Section>
       </div>

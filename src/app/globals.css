@@ -226,8 +226,55 @@
 
 /* Ensure chrome sits above the Konva stage (tool icons were clipped / covered) */
 [data-snapty-toolbar] {
-  position: relative;
-  z-index: 30;
+  position: absolute;
+  z-index: 100;
+  cursor: grab;
+}
+[data-snapty-toolbar]:active { cursor: grabbing; }
+[data-snapty-toolbar].toolbar-horizontal {
+  width: max-content !important;
+  height: 3.25rem !important;
+  min-height: 3.25rem;
+  max-width: calc(100vw - 1rem);
+  max-height: 3.25rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-wrap: nowrap;
+}
+[data-snapty-toolbar].toolbar-vertical {
+  width: 3.25rem !important;
+  height: min(46rem, calc(100vh - 7rem)) !important;
+  max-width: 3.25rem;
+  max-height: calc(100vh - 7rem);
+  overflow-x: hidden;
+  overflow-y: auto;
+  flex-wrap: nowrap;
+}
+[data-snapty-toolbar]::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+[data-snapty-toolbar]:hover::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+[data-snapty-toolbar]::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted-foreground) 45%, transparent);
+  border-radius: 999px;
+}
+[data-snapty-toolbar] {
+  scrollbar-width: none;
+}
+[data-snapty-toolbar]:hover {
+  scrollbar-width: thin;
+}
+@media (max-width: 640px), (max-height: 560px) {
+  [data-snapty-toolbar][data-default-position="true"] {
+    top: auto;
+    bottom: 0.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+  }
 }
 [data-snapty-canvas] {
   position: relative;
