@@ -8,6 +8,13 @@ export default function UpdateToast() {
 
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
+    // Avoid stale SW caches fighting Turbopack HMR during local development
+    if (process.env.NODE_ENV === 'development') {
+      void navigator.serviceWorker.getRegistrations().then((regs) => {
+        for (const reg of regs) void reg.unregister();
+      });
+      return;
+    }
 
     let isMounted = true;
     const showToast = () => {

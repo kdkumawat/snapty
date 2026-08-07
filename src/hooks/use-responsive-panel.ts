@@ -75,6 +75,7 @@ export function useResponsivePanel() {
     if (next !== current) {
       // Auto updates must not write localStorage pin / fight user - use silent set
       useEditorStore.setState({ panelCollapsed: next });
+      window.dispatchEvent(new Event('snapty-panel-change'));
     }
   }, []);
 
@@ -103,6 +104,7 @@ export function useResponsivePanel() {
     pinRef.current = pin;
     writePin(pin);
     setPanelCollapsed(next);
+    window.dispatchEvent(new Event('snapty-panel-change'));
   }, [setPanelCollapsed]);
 
   return {

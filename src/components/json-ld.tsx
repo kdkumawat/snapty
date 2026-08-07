@@ -6,7 +6,7 @@ export default function JsonLd() {
     name: "Snapty",
     url: siteUrl,
     description:
-      "Free browser-based screenshot editor with professional annotations. No installation required.",
+      "Free browser screenshot editor with professional annotations. Privacy-first PWA, no installation required, nothing uploaded.",
     applicationCategory: "DesignApplication",
     operatingSystem: "Any",
     offers: {

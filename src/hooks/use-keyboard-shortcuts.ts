@@ -7,53 +7,86 @@ import { loadImageFileIntoEditor } from '@/lib/image-load';
 import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
 import { captureScreenRegion, isScreenCaptureSupported } from '@/lib/screen-capture';
 import type { ToolType } from '@/types/editor';
+import { letterToTool, digitToTool } from '@/lib/tool-shortcuts';
 
-// Mac detection helper
 const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.userAgent);
 const modKey = isMac ? 'Cmd' : 'Ctrl';
 export { modKey, isMac };
 
-const toolShortcuts: Record<string, ToolType> = {
-  v: 'select', h: 'hand', a: 'arrow', r: 'rectangle', u: 'rounded-rect',
-  o: 'circle', l: 'line', p: 'pencil', i: 'highlighter', t: 'text',
-  n: 'step', b: 'blur', x: 'pixelate', s: 'spotlight', e: 'eraser', c: 'crop',
-};
-
 export function useKeyboardShortcuts() {
   const backgroundImage = useEditorStore((s) => s.backgroundImage);
-  // Track the tool that was active before Space was pressed
   const preSpaceTool = useRef<ToolType | null>(null);
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       const tgt = e.target as HTMLElement;
       if (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable) return;
-      const isCtrl = e.ctrlKey || e.metaKey, isShift = e.shiftKey;
+      const isCtrl = e.ctrlKey || e.metaKey;
+      const isShift = e.shiftKey;
+      const key = e.key.toLowerCase();
+      const st = useEditorStore.getState();
 
-      // Undo: Ctrl+Z (no shift)
-      if (isCtrl && !isShift && e.key.toLowerCase() === 'z') { e.preventDefault(); useEditorStore.getState().undo(); return; }
-      // Redo: Ctrl+Shift+Z
-      if (isCtrl && isShift && e.key.toLowerCase() === 'z') { e.preventDefault(); useEditorStore.getState().redo(); return; }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !isCtrl) {
-        const { selectedElementIds, removeElements } = useEditorStore.getState();
-        if (selectedElementIds.length) { e.preventDefault(); removeElements(selectedElementIds); }
+      if (isCtrl && key === 'o') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('snapty-open-file'));
         return;
       }
-      if (e.key === 'Escape') { useEditorStore.getState().setSelectedElementIds([]); useEditorStore.getState().setActiveTool('select'); return; }
-      if (!isCtrl && !isShift && backgroundImage) {
-        const tool = toolShortcuts[e.key.toLowerCase()];
-        if (tool) { useEditorStore.getState().setActiveTool(tool); return; }
+      if (isCtrl && key === 'k') {
+        e.preventDefault();
+        st.setShowCommandPalette(!st.showCommandPalette);
+        return;
       }
-      if (isCtrl && (e.key === '=' || e.key === '+')) { e.preventDefault(); const { zoom, setZoom } = useEditorStore.getState(); setZoom(zoom * 1.2); return; }
-      if (isCtrl && e.key === '-') { e.preventDefault(); const { zoom, setZoom } = useEditorStore.getState(); setZoom(zoom / 1.2); return; }
-      if (isCtrl && isShift && (e.key === '0' || e.key === ')')) { e.preventDefault(); useEditorStore.getState().setStepStartNumber(1); return; }
-      if (isCtrl && !isShift && e.key === '0') { e.preventDefault(); useEditorStore.getState().resetView(); return; }
-      if (isCtrl && e.key.toLowerCase() === 'e' && !isShift) { e.preventDefault(); useEditorStore.getState().setShowExportDialog(true); return; }
-      if (isCtrl && e.key.toLowerCase() === 'a' && !isShift) { e.preventDefault(); const { elements, setSelectedElementIds } = useEditorStore.getState(); setSelectedElementIds(elements.map(el => el.id)); return; }
-      // Clear all annotations
+      if (isCtrl && !isShift && key === 'z') { e.preventDefault(); st.undo(); return; }
+      if (isCtrl && isShift && key === 'z') { e.preventDefault(); st.redo(); return; }
+      if (isCtrl && key === 'd') { e.preventDefault(); st.duplicateSelected(); return; }
+      if (isCtrl && !isShift && key === 'g') { e.preventDefault(); st.groupSelected(); return; }
+      if (isCtrl && isShift && key === 'g') { e.preventDefault(); st.ungroupSelected(); return; }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !isCtrl) {
+        if (st.selectedElementIds.length) {
+          e.preventDefault();
+          st.removeElements(st.selectedElementIds);
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        st.setSelectedElementIds([]);
+        st.setActiveTool('select');
+        st.setStickyTool(false);
+        st.setShowCommandPalette(false);
+        return;
+      }
+
+      if (!isCtrl && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && st.selectedElementIds.length) {
+        if (st.annotationsLocked) return;
+        e.preventDefault();
+        const step = isShift ? 10 : 1;
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+        st.nudgeSelected(dx, dy);
+        return;
+      }
+
+      if (!isCtrl && !isShift && (backgroundImage || ['v', 'h', '1', '2'].includes(key))) {
+        const tool = letterToTool[key] || digitToTool[key];
+        if (tool) {
+          e.preventDefault();
+          st.setActiveTool(tool);
+          return;
+        }
+      }
+      if (isCtrl && (e.key === '=' || e.key === '+')) { e.preventDefault(); st.setZoom(st.zoom * 1.2); return; }
+      if (isCtrl && e.key === '-') { e.preventDefault(); st.setZoom(st.zoom / 1.2); return; }
+      if (isCtrl && isShift && (e.key === '0' || e.key === ')')) { e.preventDefault(); st.setStepStartNumber(1); return; }
+      if (isCtrl && !isShift && e.key === '0') { e.preventDefault(); st.resetView(); return; }
+      if (isCtrl && !isShift && e.key === '1') { e.preventDefault(); st.zoomToActual(); return; }
+      if (isCtrl && key === 'e' && !isShift) { e.preventDefault(); st.setShowExportDialog(true); return; }
+      if (isCtrl && key === 'a' && !isShift) {
+        e.preventDefault();
+        st.setSelectedElementIds(st.elements.filter((el) => !el.locked).map((el) => el.id));
+        return;
+      }
       if (isCtrl && isShift && (e.key === 'Backspace' || e.key === 'Delete')) {
         e.preventDefault();
-        const st = useEditorStore.getState();
         const n = st.elements.length;
         if (n) {
           st.clearElements();
@@ -61,14 +94,12 @@ export function useKeyboardShortcuts() {
         }
         return;
       }
-      // Capture screen (Mod+Shift+S) - keep current tool
-      if (isCtrl && isShift && e.key.toLowerCase() === 's') {
+      if (isCtrl && isShift && key === 's') {
         e.preventDefault();
         if (!isScreenCaptureSupported()) {
           toastError('Capture unavailable', 'Not supported in this browser');
           return;
         }
-        const st = useEditorStore.getState();
         st.setImageLoading(true);
         void captureScreenRegion()
           .then((result) => {
@@ -84,28 +115,20 @@ export function useKeyboardShortcuts() {
           .finally(() => useEditorStore.getState().setImageLoading(false));
         return;
       }
-      if (isCtrl && e.key.toLowerCase() === 'c' && !isShift) {
-        const st = useEditorStore.getState();
+      if (isCtrl && key === 'c' && !isShift) {
         if (st.backgroundImage) {
           e.preventDefault();
           void copyToClipboard()
             .then(() => toastSuccess('Copied', 'Image on clipboard - ready to paste'))
-            .catch((error) => {
-              console.error('Failed to copy image to clipboard via keyboard shortcut:', error);
-              toastError('Couldn’t copy', 'Allow clipboard access and try again');
-            });
+            .catch(() => toastError('Couldn’t copy', 'Allow clipboard access and try again'));
         }
         return;
       }
-      if (e.key === '?' && !isCtrl) { e.preventDefault(); useEditorStore.getState().setShowHelpDialog(true); return; }
-      // Space: save current tool, switch to hand
+      if (e.key === '?' && !isCtrl) { e.preventDefault(); st.setShowHelpDialog(true); return; }
       if (e.key === ' ' && !isCtrl) {
         e.preventDefault();
-        const st = useEditorStore.getState();
-        if (st.activeTool !== 'hand') {
-          preSpaceTool.current = st.activeTool;
-        }
-        useEditorStore.getState().setActiveTool('hand');
+        if (st.activeTool !== 'hand') preSpaceTool.current = st.activeTool;
+        st.setActiveTool('hand', { clearSelection: false });
         return;
       }
     };
@@ -115,10 +138,9 @@ export function useKeyboardShortcuts() {
       if (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable) return;
       if (e.key === ' ') {
         e.preventDefault();
-        // Restore the tool that was active before Space was pressed
         const restore = preSpaceTool.current;
         if (restore) {
-          useEditorStore.getState().setActiveTool(restore);
+          useEditorStore.getState().setActiveTool(restore, { clearSelection: false });
           preSpaceTool.current = null;
         }
       }
@@ -126,24 +148,75 @@ export function useKeyboardShortcuts() {
 
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
-    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
   }, [backgroundImage]);
 }
 
+async function pasteImageFromClipboardEvent(e: ClipboardEvent): Promise<boolean> {
+  const items = e.clipboardData?.items;
+  if (items) {
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) {
+          await loadImageFileIntoEditor(file, { mode: 'auto' });
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+async function pasteImageFromAsyncClipboard(): Promise<boolean> {
+  if (!navigator.clipboard?.read) return false;
+  try {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      for (const type of item.types) {
+        if (type.startsWith('image/')) {
+          const blob = await item.getType(type);
+          await loadImageFileIntoEditor(new File([blob], 'paste.png', { type }), { mode: 'auto' });
+          return true;
+        }
+      }
+    }
+  } catch {
+    /* permission denied or empty */
+  }
+  return false;
+}
+
+/** Paste images onto the canvas (overlay when a background already exists). */
 export function useClipboardPaste() {
   useEffect(() => {
     const handler = async (e: ClipboardEvent) => {
       const tgt = e.target as HTMLElement;
       if (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable) return;
-      const items = e.clipboardData?.items; if (!items) return;
-      for (const item of items) {
-        if (item.type.startsWith('image/')) {
-          e.preventDefault();
-          const file = item.getAsFile(); if (!file) continue;
-          // Skeleton while decoding large screenshots
-          void loadImageFileIntoEditor(file);
-          return;
+
+      const hasImageItem = e.clipboardData
+        ? Array.from(e.clipboardData.items || []).some((i) => i.type.startsWith('image/'))
+        : false;
+
+      if (hasImageItem) {
+        e.preventDefault();
+        try {
+          const ok = await pasteImageFromClipboardEvent(e);
+          if (!ok) await pasteImageFromAsyncClipboard();
+        } catch (err) {
+          toastError('Paste failed', err instanceof Error ? err.message : 'Could not paste image');
         }
+        return;
+      }
+
+      // Some browsers expose screenshots only via async clipboard API
+      if (e.clipboardData && Array.from(e.clipboardData.types || []).length === 0) {
+        e.preventDefault();
+        const ok = await pasteImageFromAsyncClipboard();
+        if (!ok) toastInfo('Nothing to paste', 'Copy an image first');
       }
     };
     document.addEventListener('paste', handler);

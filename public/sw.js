@@ -1,4 +1,4 @@
-const CACHE_NAME = 'snapty-v4.4';
+const CACHE_NAME = 'snapty-v4.7';
 
 // Static assets to precache (minimal - most loaded on-demand)
 // Prefetch editor route so installed PWA opens offline-ready
