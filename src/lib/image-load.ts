@@ -1,4 +1,7 @@
-import { useEditorStore } from '@/store/editor-store';
+import { useEditorStore, generateId } from '@/store/editor-store';
+import type { ShapeElement } from '@/types/editor';
+import { toastSuccess } from '@/lib/app-toast';
+import { preloadHtmlImage } from '@/hooks/use-html-image';
 
 /** Decode a File/Blob into an HTMLImageElement. */
 export function blobToImage(blob: Blob): Promise<HTMLImageElement> {
@@ -26,19 +29,108 @@ export function dataUrlToImage(dataUrl: string): Promise<HTMLImageElement> {
   });
 }
 
+function blobToDataURL(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('Failed to read image'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function imageToPngDataURL(img: HTMLImageElement): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+  ctx.drawImage(img, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
 /**
- * Load an image file into the editor with native-feeling skeleton state.
- * Shows loading immediately, then swaps in the image when ready.
+ * Place an image as a movable annotation on top of the current background.
+ * Scales to a readable size and selects it for immediate transform.
+ */
+export async function addImageOverlay(file: File | Blob): Promise<void> {
+  const store = useEditorStore.getState();
+  if (!store.backgroundImage || !store.imageSize.width) {
+    await loadImageFileIntoEditor(file, { mode: 'background' });
+    return;
+  }
+  if (store.annotationsLocked) {
+    throw new Error('Annotations are locked');
+  }
+
+  const img = await blobToImage(file);
+  const dataURL = file instanceof Blob
+    ? await blobToDataURL(file).catch(() => imageToPngDataURL(img))
+    : imageToPngDataURL(img);
+
+  const { imageSize } = useEditorStore.getState();
+  const natW = img.naturalWidth || img.width;
+  const natH = img.naturalHeight || img.height;
+  const maxW = Math.max(120, imageSize.width * 0.42);
+  const maxH = Math.max(120, imageSize.height * 0.42);
+  const scale = Math.min(1, maxW / natW, maxH / natH);
+  const w = Math.max(24, Math.round(natW * scale));
+  const h = Math.max(24, Math.round(natH * scale));
+  const id = generateId();
+
+  const el: ShapeElement = {
+    id,
+    type: 'rectangle',
+    x: Math.round((imageSize.width - w) / 2),
+    y: Math.round((imageSize.height - h) / 2),
+    width: w,
+    height: h,
+    imageDataURL: dataURL,
+    fill: 'transparent',
+    stroke: 'transparent',
+    strokeWidth: 0,
+    cornerRadius: 0,
+    opacity: 1,
+  };
+
+  useEditorStore.getState().addElement(el);
+  useEditorStore.getState().setSelectedElementIds([id]);
+  useEditorStore.getState().setActiveTool('select');
+  // Prefetch so CachedKonvaImage hits cache and Transformer attaches immediately
+  void preloadHtmlImage(dataURL).then(() => {
+    window.dispatchEvent(new CustomEvent('snapty-overlay-image-ready', { detail: { id } }));
+  });
+  toastSuccess('Image added', 'Drag the corners to resize');
+}
+
+export type LoadImageMode = 'auto' | 'background' | 'overlay';
+
+/**
+ * Load an image into the editor.
+ * - auto: sets background when empty; otherwise adds as an overlay on the canvas
+ * - background: replaces/sets the main screenshot
+ * - overlay: always places on top of the existing image
  */
 export async function loadImageFileIntoEditor(
   file: File | Blob,
-  opts?: { clearAnnotations?: boolean },
+  opts?: { clearAnnotations?: boolean; mode?: LoadImageMode },
 ): Promise<void> {
   const store = useEditorStore.getState();
+  if (store.imageLocked && store.backgroundImage) {
+    throw new Error('Image is locked');
+  }
+
+  const mode = opts?.mode ?? 'auto';
+  if (
+    (mode === 'overlay' || (mode === 'auto' && store.backgroundImage))
+    && store.backgroundImage
+  ) {
+    await addImageOverlay(file);
+    return;
+  }
+
   store.setImageLoading(true);
   try {
     const img = await blobToImage(file);
-    // Yield so the skeleton paints at least one frame on fast machines
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
     useEditorStore.getState().setBackgroundImage(img, opts);
   } finally {
@@ -48,9 +140,20 @@ export async function loadImageFileIntoEditor(
 
 export async function loadImageFromDataUrl(
   dataUrl: string,
-  opts?: { clearAnnotations?: boolean },
+  opts?: { clearAnnotations?: boolean; mode?: LoadImageMode },
 ): Promise<void> {
   const store = useEditorStore.getState();
+  const mode = opts?.mode ?? 'auto';
+  if (
+    (mode === 'overlay' || (mode === 'auto' && store.backgroundImage))
+    && store.backgroundImage
+  ) {
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    await addImageOverlay(blob);
+    return;
+  }
+
   store.setImageLoading(true);
   try {
     const img = await dataUrlToImage(dataUrl);
@@ -59,4 +162,78 @@ export async function loadImageFromDataUrl(
   } finally {
     useEditorStore.getState().setImageLoading(false);
   }
+}
+
+function loadHtmlImage(src: string, crossOrigin = false): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    if (crossOrigin) img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = src;
+  });
+}
+
+/**
+ * Load a remote image entirely in the browser (no server proxy).
+ * Requires the image host to allow CORS.
+ */
+export async function loadImageFromUrl(
+  url: string,
+  opts?: { clearAnnotations?: boolean; mode?: LoadImageMode },
+): Promise<void> {
+  const store = useEditorStore.getState();
+  store.setImageLoading(true);
+  try {
+    let img: HTMLImageElement;
+    let blob: Blob | null = null;
+    try {
+      const res = await fetch(url, { mode: 'cors', credentials: 'omit', cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType && !contentType.startsWith('image/') && !contentType.includes('octet-stream')) {
+        throw new Error('URL is not an image');
+      }
+      blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        img = await loadHtmlImage(objectUrl);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    } catch {
+      img = await loadHtmlImage(url, true);
+    }
+
+    const mode = opts?.mode ?? 'auto';
+    const st = useEditorStore.getState();
+    if (
+      (mode === 'overlay' || (mode === 'auto' && st.backgroundImage))
+      && st.backgroundImage
+    ) {
+      st.setImageLoading(false);
+      if (blob) await addImageOverlay(blob);
+      else {
+        const dataUrl = imageToPngDataURL(img);
+        const res = await fetch(dataUrl);
+        await addImageOverlay(await res.blob());
+      }
+      return;
+    }
+
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    useEditorStore.getState().setBackgroundImage(img, opts);
+  } finally {
+    useEditorStore.getState().setImageLoading(false);
+  }
+}
+
+/** Trigger the shared open-file picker (background or overlay via auto mode). */
+export function openImagePicker() {
+  window.dispatchEvent(new CustomEvent('snapty-open-file'));
+}
+
+/** Explicit overlay picker event. */
+export function openOverlayImagePicker() {
+  window.dispatchEvent(new CustomEvent('snapty-add-image'));
 }

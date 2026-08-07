@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { Download, Copy, Check, Loader2, Share2 } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
 import { useEditorStore } from '@/store/editor-store';
 import type {
   ExportFormat, CanvasStyle, EditorElement, ShapeElement, ArrowElement,
@@ -18,6 +19,7 @@ const formats: { id: ExportFormat; label: string; ext: string; mime: string }[] 
   { id: 'png', label: 'PNG', ext: '.png', mime: 'image/png' },
   { id: 'jpg', label: 'JPG', ext: '.jpg', mime: 'image/jpeg' },
   { id: 'webp', label: 'WEBP', ext: '.webp', mime: 'image/webp' },
+  { id: 'svg', label: 'SVG', ext: '.svg', mime: 'image/svg+xml' },
 ];
 
 /** Bounding box of a single annotation (includes stroke / pointer padding). */
@@ -44,6 +46,14 @@ function getElementBounds(el: EditorElement): { x: number; y: number; w: number;
       const h = Math.abs(c.height);
       const x = c.width < 0 ? c.x + c.width : c.x;
       const y = c.height < 0 ? c.y + c.height : c.y;
+      return { x: x - pad, y: y - pad, w: w + pad * 2, h: h + pad * 2 };
+    }
+    case 'diamond': {
+      const d = el as import('@/types/editor').DiamondElement;
+      const w = Math.abs(d.width);
+      const h = Math.abs(d.height);
+      const x = d.width < 0 ? d.x + d.width : d.x;
+      const y = d.height < 0 ? d.y + d.height : d.y;
       return { x: x - pad, y: y - pad, w: w + pad * 2, h: h + pad * 2 };
     }
     case 'arrow':
@@ -95,9 +105,23 @@ function getElementBounds(el: EditorElement): { x: number; y: number; w: number;
       const r = (el as StepElement).radius ?? 16;
       return { x: el.x - r - 4, y: el.y - r - 4, w: r * 2 + 8, h: r * 2 + 8 };
     }
-    default:
-      return { x: el.x, y: el.y, w: 0, h: 0 };
+    case 'magnifier': {
+      const m = el as import('@/types/editor').MagnifierElement;
+      const w = Math.abs(m.width);
+      const h = Math.abs(m.height);
+      const x = m.width < 0 ? m.x + m.width : m.x;
+      const y = m.height < 0 ? m.y + m.height : m.y;
+      const mag = m.magnification ?? 2.25;
+      const gap = 18;
+      return {
+        x: x - pad,
+        y: y - pad,
+        w: w + gap + w * mag + pad * 2,
+        h: h + gap + h * mag + pad * 2,
+      };
+    }
   }
+  return { x: (el as EditorElement).x, y: (el as EditorElement).y, w: 0, h: 0 };
 }
 
 /**
@@ -417,6 +441,10 @@ async function exportImage(format: ExportFormat, quality: number): Promise<Blob 
   const fmt = formats.find((f) => f.id === format);
   if (!fmt) return null;
   try {
+    if (format === 'svg') {
+      const svg = await buildSvgExport();
+      return new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+    }
     const { dataURL } = await buildExportDataURL();
     if (format === 'png') return dataUrlToBlob(dataURL);
     return dataUrlToBlob(dataURL, fmt.mime, quality);
@@ -424,6 +452,68 @@ async function exportImage(format: ExportFormat, quality: number): Promise<Blob 
     console.error('Export failed:', error);
     return null;
   }
+}
+
+async function exportCanvasBlob(format: ExportFormat = 'png', quality = 0.92): Promise<Blob | null> {
+  return exportImage(format, quality);
+}
+
+async function buildSvgExport(): Promise<string> {
+  const store = useEditorStore.getState();
+  const { imageSize, imageDataURL, elements, canvasStyle } = store;
+  const w = imageSize.width || 800;
+  const h = imageSize.height || 600;
+  const transparent = canvasStyle.transparentExport;
+  const parts: string[] = [
+    `<?xml version="1.0" encoding="UTF-8"?>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
+  ];
+  if (!transparent) {
+    parts.push(`<rect width="100%" height="100%" fill="#ffffff"/>`);
+  }
+  if (imageDataURL) {
+    parts.push(`<image href="${imageDataURL}" x="0" y="0" width="${w}" height="${h}" preserveAspectRatio="xMidYMid meet"/>`);
+  }
+  for (const el of elements) {
+    const opacity = el.opacity ?? 1;
+    const stroke = ('stroke' in el ? (el as { stroke?: string }).stroke : undefined) || '#ef4444';
+    const fill = ('fill' in el ? (el as { fill?: string }).fill : undefined) || 'none';
+    const sw = ('strokeWidth' in el ? (el as { strokeWidth?: number }).strokeWidth : 2) || 2;
+    if (el.type === 'rectangle' || el.type === 'rounded-rect') {
+      const r = el.type === 'rounded-rect' ? (el.cornerRadius || 8) : 0;
+      parts.push(`<rect x="${el.x}" y="${el.y}" width="${Math.abs(el.width)}" height="${Math.abs(el.height)}" rx="${r}" fill="${fill === 'transparent' ? 'none' : fill}" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}"/>`);
+    } else if (el.type === 'circle') {
+      parts.push(`<ellipse cx="${el.x + Math.abs(el.width) / 2}" cy="${el.y + Math.abs(el.height) / 2}" rx="${Math.abs(el.width) / 2}" ry="${Math.abs(el.height) / 2}" fill="${fill === 'transparent' ? 'none' : fill}" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}"/>`);
+    } else if (el.type === 'diamond') {
+      const dw = Math.abs(el.width);
+      const dh = Math.abs(el.height);
+      const cx = el.x + dw / 2;
+      const cy = el.y + dh / 2;
+      parts.push(`<polygon points="${cx},${el.y} ${el.x + dw},${cy} ${cx},${el.y + dh} ${el.x},${cy}" fill="${fill === 'transparent' ? 'none' : fill}" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}"/>`);
+    } else if (el.type === 'line' || el.type === 'arrow') {
+      const pts = el.points;
+      parts.push(`<line x1="${el.x + pts[0]}" y1="${el.y + pts[1]}" x2="${el.x + pts[2]}" y2="${el.y + pts[3]}" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" stroke-linecap="round"/>`);
+    } else if (el.type === 'pencil' || el.type === 'highlighter') {
+      const pts = el.points;
+      if (pts.length >= 4) {
+        let d = `M ${pts[0]} ${pts[1]}`;
+        for (let i = 2; i < pts.length; i += 2) d += ` L ${pts[i]} ${pts[i + 1]}`;
+        parts.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${el.type === 'highlighter' ? 0.4 : opacity}" stroke-linecap="round" stroke-linejoin="round"/>`);
+      }
+    } else if (el.type === 'text') {
+      parts.push(`<text x="${el.x}" y="${el.y + (el.fontSize || 24)}" font-size="${el.fontSize || 24}" font-family="${el.fontFamily || 'sans-serif'}" fill="${el.fill || stroke}" opacity="${opacity}">${escapeXml(el.text || '')}</text>`);
+    } else if (el.type === 'step') {
+      const r = el.radius || 16;
+      parts.push(`<circle cx="${el.x}" cy="${el.y}" r="${r}" fill="${el.fill || stroke}" opacity="${opacity}"/>`);
+      parts.push(`<text x="${el.x}" y="${el.y + r * 0.35}" text-anchor="middle" font-size="${el.fontSize || r * 0.8}" fill="#fff" font-weight="700" font-family="sans-serif">${el.stepNumber}</text>`);
+    }
+  }
+  parts.push('</svg>');
+  return parts.join('\n');
+}
+
+function escapeXml(s: string) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 async function copyToClipboard() {
@@ -474,6 +564,7 @@ const ExportDialog: React.FC = () => {
   const setExportQuality = useEditorStore((s) => s.setExportQuality);
   const imageSize = useEditorStore((s) => s.imageSize);
   const canvasStyle = useEditorStore((s) => s.canvasStyle);
+  const setCanvasStyle = useEditorStore((s) => s.setCanvasStyle);
   const elements = useEditorStore((s) => s.elements);
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -578,45 +669,60 @@ const ExportDialog: React.FC = () => {
 
   return (
     <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
-      <DialogContent className="bg-background border-border text-foreground max-w-sm">
-        <DialogHeader><DialogTitle className="text-lg">Export Image</DialogTitle></DialogHeader>
-        <div className="space-y-5 py-2">
-          <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2.5 space-y-1">
-            <p className="text-xs text-muted-foreground">
-              Dimensions:{' '}
-              <span className="text-foreground font-medium tabular-nums">
-                {imageSize.width} × {imageSize.height}px
+      <DialogContent
+        className={cn(
+          'bg-surface border-border text-foreground p-0 gap-0 overflow-hidden',
+          'max-w-md w-[min(26rem,calc(100vw-1.5rem))]',
+          'top-[max(10vh,1.5rem)] translate-y-0 max-h-[min(90dvh,36rem)] flex flex-col',
+        )}
+      >
+        <div className="shrink-0 px-5 pt-5 pb-3 border-b border-border">
+          <DialogHeader>
+            <DialogTitle className="text-lg tracking-tight">Export options</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground mt-1">
+            Choose format, quality, and transparency before download
+          </p>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-5">
+          <div className="rounded-2xl border border-border bg-secondary/25 px-3.5 py-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Dimensions</span>
+              <span className="font-medium tabular-nums text-foreground">
+                {imageSize.width} x {imageSize.height}px
+                {hasPadding && (
+                  <span className="text-muted-foreground font-normal">
+                    {' '}(+pad {exportW} x {exportH})
+                  </span>
+                )}
               </span>
-              {hasPadding && (
-                <span className="text-muted-foreground">
-                  {' '}→ {exportW} × {exportH}px
-                </span>
-              )}
-            </p>
-            <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-              Estimated size:{' '}
-              <span className="text-foreground font-medium tabular-nums">
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Estimated size</span>
+              <span className="font-medium tabular-nums text-foreground inline-flex items-center gap-1.5">
                 {estimating && estimatedBytes == null
-                  ? 'Calculating…'
+                  ? 'Calculating...'
                   : formatBytes(estimatedBytes ?? 0)}
+                {estimating && estimatedBytes != null && (
+                  <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                )}
               </span>
-              {estimating && estimatedBytes != null && (
-                <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-              )}
-            </p>
+            </div>
           </div>
+
           <div className="space-y-2">
             <Label className="text-xs text-muted-foreground">Format</Label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-1.5">
               {formats.map((f) => (
                 <button
                   key={f.id}
                   type="button"
                   className={cn(
-                    'px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-center cursor-pointer',
+                    'px-2 py-3 rounded-xl text-sm font-semibold transition-all text-center cursor-pointer border',
                     exportFormat === f.id
-                      ? 'bg-accent text-accent-foreground border border-accent'
-                      : 'bg-secondary text-muted-foreground border border-border hover:border-muted-foreground',
+                      ? 'bg-accent/15 text-accent border-accent/40'
+                      : 'bg-secondary/40 text-muted-foreground border-border hover:border-muted-foreground/40 hover:text-foreground',
                   )}
                   onClick={() => setExportFormat(f.id)}
                 >
@@ -624,8 +730,18 @@ const ExportDialog: React.FC = () => {
                 </button>
               ))}
             </div>
+            {exportFormat === 'png' && (
+              <p className="text-[11px] text-muted-foreground">Lossless. Best for crisp UI shots.</p>
+            )}
+            {exportFormat === 'svg' && (
+              <p className="text-[11px] text-muted-foreground">Vector annotations with optional embedded image.</p>
+            )}
+            {(exportFormat === 'jpg' || exportFormat === 'webp') && (
+              <p className="text-[11px] text-muted-foreground">Smaller files. Adjust quality below.</p>
+            )}
           </div>
-          {exportFormat !== 'png' && (
+
+          {exportFormat !== 'png' && exportFormat !== 'svg' && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-xs text-muted-foreground">Quality</Label>
@@ -638,61 +754,57 @@ const ExportDialog: React.FC = () => {
                 max={100}
                 step={5}
               />
-              <p className="text-[11px] text-muted-foreground/60">
-                Preference is saved for next export
-              </p>
             </div>
           )}
-          {exportFormat === 'png' && (
-            <p className="text-[11px] text-muted-foreground/60">PNG is lossless - always full quality</p>
-          )}
-          {exporting && progress > 0 && (
-            <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-              <div
-                className="h-full bg-accent rounded-full transition-all duration-300 ease-out"
-                style={{ width: `${progress}%` }}
-              />
+
+          <label className="flex items-center justify-between gap-3 rounded-2xl border border-border px-3.5 py-3 cursor-pointer hover:bg-secondary/30 transition-colors">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Transparent background</p>
+              <p className="text-[11px] text-muted-foreground">Useful for overlays (PNG / SVG)</p>
+            </div>
+            <Switch
+              checked={!!canvasStyle.transparentExport}
+              onCheckedChange={(v) => setCanvasStyle({ transparentExport: v })}
+            />
+          </label>
+
+          {exporting && (
+            <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
+              <div className="h-full bg-accent transition-all duration-300" style={{ width: `${progress}%` }} />
             </div>
           )}
-          <div className="grid grid-cols-3 gap-2 pt-2">
+        </div>
+
+        <div className="shrink-0 px-5 py-4 border-t border-border flex flex-col gap-2">
+          <Button
+            type="button"
+            className="w-full h-11 rounded-xl"
+            disabled={exporting || !imageSize.width}
+            onClick={() => void handleDownload()}
+          >
+            {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            Download {exportFormat.toUpperCase()}
+          </Button>
+          <div className="grid grid-cols-2 gap-2">
             <Button
+              type="button"
               variant="outline"
-              className="flex-1 bg-secondary border-border text-foreground hover:bg-accent hover:text-accent-foreground h-10 min-w-[7.5rem] justify-center cursor-pointer"
-              onClick={handleCopy}
-              disabled={exporting}
+              className="h-10 rounded-xl"
+              disabled={exporting || !imageSize.width}
+              onClick={() => void handleCopy()}
             >
-              <span className="relative w-4 h-4 mr-2 shrink-0">
-                {exporting ? (
-                  <Loader2 className="w-4 h-4 absolute inset-0 animate-spin" />
-                ) : copied ? (
-                  <Check className="w-3.5 h-3.5 absolute inset-0 m-auto" />
-                ) : (
-                  <Copy className="w-3.5 h-3.5 absolute inset-0 m-auto" />
-                )}
-              </span>
-              <span className="tabular-nums">{exporting ? 'Copying…' : copied ? 'Copied' : 'Copy'}</span>
+              {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+              {copied ? 'Copied' : 'Copy'}
             </Button>
             <Button
+              type="button"
               variant="outline"
-              className="bg-secondary border-border text-foreground hover:bg-accent hover:text-accent-foreground h-10 justify-center cursor-pointer"
-              onClick={handleShare}
-              disabled={exporting}
-              title="Share to another app"
+              className="h-10 rounded-xl"
+              disabled={exporting || !imageSize.width}
+              onClick={() => void handleShare()}
             >
-              <Share2 className="w-4 h-4 mr-2" />
+              <Share2 className="w-4 h-4" />
               Share
-            </Button>
-            <Button
-              className="flex-1 bg-accent text-accent-foreground hover:bg-accent/90 h-10 cursor-pointer"
-              onClick={handleDownload}
-              disabled={exporting}
-            >
-              {exporting ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Download className="w-4 h-4 mr-2" />
-              )}
-              Download
             </Button>
           </div>
         </div>
@@ -701,5 +813,5 @@ const ExportDialog: React.FC = () => {
   );
 };
 
-export { exportImage, copyToClipboard, shareImage };
+export { exportImage, copyToClipboard, shareImage, exportCanvasBlob };
 export default ExportDialog;

@@ -6,14 +6,27 @@ import {
   Image as KonvaImage, Circle, Transformer,
 } from 'react-konva';
 import Konva from 'konva';
-import { ZoomIn, ZoomOut, Maximize, ScanText, Copy, Check, X } from 'lucide-react';
+import { ScanText, Copy, Check, X } from 'lucide-react';
 import { useEditorStore, generateId, getImageToolScale } from '@/store/editor-store';
 import { loadImageFileIntoEditor } from '@/lib/image-load';
+import {
+  handDrawnPolyline,
+  handDrawnEllipsePoints,
+  wobbleFreehandPoint,
+} from '@/lib/hand-drawn';
+import { getSelectionTheme, styleSelectionAnchor, selectionHandleProps } from '@/lib/selection-theme';
+import RoughKonvaShape from '@/components/editor/canvas/rough-konva-shape';
+import CachedKonvaImage from '@/components/editor/canvas/cached-konva-image';
+import MagnifierKonva from '@/components/editor/canvas/magnifier-konva';
+import { arrowHeadPoints } from '@/lib/rough-renderer';
+import { snapBounds, type GuideLine } from '@/lib/editor/snap-guides';
+import { getElementBounds, boundsIntersect } from '@/lib/editor/selection';
 import type {
   EditorElement, ShapeElement, ArrowElement, LineElement,
-  PencilElement, CircleElement, TextElement, StepElement,
-  ToolType,
+  PencilElement, CircleElement, TextElement, StepElement, DiamondElement,
+  MagnifierElement, ToolType,
 } from '@/types/editor';
+import { HANDWRITTEN_FONT } from '@/types/editor';
 
 /**
  * Tool cursors: high-contrast SVG (white halo + solid color) encoded as base64
@@ -71,6 +84,11 @@ function toolCursorSVG(tool: ToolType, opts: CursorOpts = {}): string {
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
         <path d="M16 4v24M4 16h24" stroke="${halo}" stroke-width="4" stroke-linecap="round"/><path d="M16 4v24M4 16h24" stroke="${color}" stroke-width="1.75" stroke-linecap="round"/>
         <circle cx="23" cy="9" r="4" fill="${halo}"/><circle cx="23" cy="9" r="3" fill="none" stroke="${color}" stroke-width="1.5"/>
+      </svg>`;
+    case 'diamond':
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <path d="M16 4v24M4 16h24" stroke="${halo}" stroke-width="4" stroke-linecap="round"/><path d="M16 4v24M4 16h24" stroke="${color}" stroke-width="1.75" stroke-linecap="round"/>
+        <path d="M23 5 L28 9 L23 13 L18 9 Z" fill="${halo}"/><path d="M23 6 L27 9 L23 12 L19 9 Z" fill="none" stroke="${color}" stroke-width="1.5"/>
       </svg>`;
     case 'line':
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
@@ -135,6 +153,13 @@ function toolCursorSVG(tool: ToolType, opts: CursorOpts = {}): string {
         <rect x="8" y="10" width="14" height="12" rx="2" transform="rotate(-28 15 16)" fill="#f87171"/>
         <rect x="10" y="12" width="10" height="5" rx="1" transform="rotate(-28 15 16)" fill="#fecaca"/>
       </svg>`;
+    case 'magnifier':
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <circle cx="14" cy="14" r="9" fill="none" stroke="${halo}" stroke-width="4"/>
+        <circle cx="14" cy="14" r="9" fill="none" stroke="${color}" stroke-width="2"/>
+        <line x1="21" y1="21" x2="28" y2="28" stroke="${halo}" stroke-width="4" stroke-linecap="round"/>
+        <line x1="21" y1="21" x2="28" y2="28" stroke="${color}" stroke-width="2" stroke-linecap="round"/>
+      </svg>`;
     default:
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
         <line x1="${half}" y1="4" x2="${half}" y2="28" stroke="${halo}" stroke-width="3"/>
@@ -157,20 +182,26 @@ function svgToCursor(svg: string, hotspot: string): string {
   return `url("data:image/svg+xml;base64,${base64}") ${hotspot}, crosshair`;
 }
 
-function getToolCursorCSS(tool: ToolType, isDragging: boolean, opts: CursorOpts = {}): string {
+function getToolCursorCSS(
+  tool: ToolType,
+  isDragging: boolean,
+  opts: CursorOpts = {},
+  hoverSelect = false,
+): string {
   switch (tool) {
     case 'select':
       return 'default';
     case 'hand':
       return isDragging ? 'grabbing' : 'grab';
     default: {
+      if (hoverSelect) return 'default';
       const svg = toolCursorSVG(tool, opts);
       if (!svg) return 'crosshair';
       const hotspot =
         tool === 'pencil' || tool === 'highlighter' ? '4 28'
         : tool === 'text' ? '6 6'
         : tool === 'line' ? '5 27'
-        : tool === 'arrow' || tool === 'crop' || tool === 'step' ? '16 16'
+        : tool === 'arrow' || tool === 'crop' || tool === 'step' || tool === 'magnifier' ? '16 16'
         : '16 16';
       return svgToCursor(svg, hotspot);
     }
@@ -198,6 +229,10 @@ const EditorCanvas: React.FC = () => {
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawingElement, setDrawingElement] = useState<EditorElement | null>(null);
+  const drawOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const [guides, setGuides] = useState<GuideLine[]>([]);
+  const middlePanRef = useRef<{ lastX: number; lastY: number } | null>(null);
+  const altDuplicateRef = useRef<string | null>(null);
   const [textInput, setTextInput] = useState<{ x: number; y: number; visible: boolean; editId?: string; initialText?: string }>({ x: 0, y: 0, visible: false });
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -207,11 +242,43 @@ const EditorCanvas: React.FC = () => {
   const [ocrCopied, setOcrCopied] = useState(false);
   const hoverPreviousToolRef = useRef<ToolType | null>(null);
   const hoveredAnnotationRef = useRef<string | null>(null);
+  /** Temporary select-on-hover without changing toolbar activeTool. */
+  const [hoverSelectMode, setHoverSelectMode] = useState(false);
+  const hoverSelectModeRef = useRef(false);
+  useEffect(() => { hoverSelectModeRef.current = hoverSelectMode; }, [hoverSelectMode]);
+  const handDrawn = useEditorStore((s) => s.handDrawn);
   const [isHandDragging, setIsHandDragging] = useState(false);
+  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const marqueeOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const marqueeAdditiveRef = useRef(false);
   const [isErasing, setIsErasing] = useState(false);
   const [eraserStart, setEraserStart] = useState<{ x: number; y: number } | null>(null);
   const [eraserEnd, setEraserEnd] = useState<{ x: number; y: number } | null>(null);
   const [spotlightOverlayImage, setSpotlightOverlayImage] = useState<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!middlePanRef.current) return;
+      const s = useEditorStore.getState();
+      const dx = e.clientX - middlePanRef.current.lastX;
+      const dy = e.clientY - middlePanRef.current.lastY;
+      middlePanRef.current = { lastX: e.clientX, lastY: e.clientY };
+      s.setStagePosition({ x: s.stagePosition.x + dx, y: s.stagePosition.y + dy });
+    };
+    const onUp = () => { middlePanRef.current = null; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onOcr = () => { void runOCR(); };
+    window.addEventListener('snapty-ocr', onOcr);
+    return () => window.removeEventListener('snapty-ocr', onOcr);
+  }, []);
 
   // Use ref for textInput visibility to avoid stale closures in event handlers
   const textInputRef = useRef(textInput);
@@ -235,6 +302,8 @@ const EditorCanvas: React.FC = () => {
   const stepCounter = useEditorStore((s) => s.stepCounter);
   const addElement = useEditorStore((s) => s.addElement);
   const updateElement = useEditorStore((s) => s.updateElement);
+  const updateElementSilent = useEditorStore((s) => s.updateElementSilent);
+  const commitElementUpdate = useEditorStore((s) => s.commitElementUpdate);
   const removeElements = useEditorStore((s) => s.removeElements);
   const setSelectedElementIds = useEditorStore((s) => s.setSelectedElementIds);
   const setZoom = useEditorStore((s) => s.setZoom);
@@ -287,8 +356,8 @@ const EditorCanvas: React.FC = () => {
     () => getToolCursorCSS(activeTool, isHandDragging, {
       color: strokeColor,
       stepNumber: stepCounter,
-    }),
-    [activeTool, isHandDragging, strokeColor, stepCounter],
+    }, hoverSelectMode),
+    [activeTool, isHandDragging, strokeColor, stepCounter, hoverSelectMode],
   );
 
   // Apply cursor on container + every Konva canvas layer (they override parent cursor)
@@ -438,34 +507,51 @@ const EditorCanvas: React.FC = () => {
     };
   }, [backgroundImage]);
 
-  // Update transformer nodes when selection changes
+  // Update transformer nodes when selection changes (skip line-like shapes, custom handles)
   useEffect(() => {
-    const tr = transformerRef.current;
-    const st = stageRef.current;
-    if (!tr || !st) return;
-    if (!selectedElementIds.length) {
-      tr.nodes([]);
+    const attach = () => {
+      const tr = transformerRef.current;
+      const st = stageRef.current;
+      if (!tr || !st) return;
+      if (!selectedElementIds.length) {
+        tr.nodes([]);
+        tr.getLayer()?.batchDraw();
+        return;
+      }
+      const layer = st.findOne('.annotation-layer');
+      if (!layer) return;
+      const skipTypes = new Set(['arrow', 'line', 'magnifier', 'pencil', 'highlighter']);
+      const nodes = selectedElementIds
+        .filter((id) => {
+          const el = elements.find((e) => e.id === id);
+          return el && !skipTypes.has(el.type) && !el.locked;
+        })
+        .map((id) => (layer as Konva.Layer).findOne(`#${id}`))
+        .filter(Boolean) as Konva.Node[];
+      tr.nodes(nodes);
       tr.getLayer()?.batchDraw();
-      return;
-    }
-    const layer = st.findOne('.annotation-layer');
-    if (!layer) return;
-    const nodes = selectedElementIds
-      .map((id) => layer.findOne(`#${id}`))
-      .filter(Boolean) as Konva.Node[];
-    tr.nodes(nodes);
-    tr.getLayer()?.batchDraw();
+    };
+    attach();
+    const onReady = () => attach();
+    window.addEventListener('snapty-overlay-image-ready', onReady);
+    const t = window.setTimeout(attach, 50);
+    return () => {
+      window.removeEventListener('snapty-overlay-image-ready', onReady);
+      window.clearTimeout(t);
+    };
   }, [selectedElementIds, elements]);
+
+  const textIgnoreBlurRef = useRef(0);
 
   // Auto-focus text area when text input becomes visible
   useEffect(() => {
     if (textInput.visible && textAreaRef.current) {
+      textIgnoreBlurRef.current = Date.now() + 250;
       requestAnimationFrame(() => {
         if (textAreaRef.current) {
           textAreaRef.current.focus();
           textAreaRef.current.value = textInput.initialText ?? '';
           if (textInput.editId) {
-            // Select all when editing existing
             textAreaRef.current.select();
           }
         }
@@ -496,7 +582,7 @@ const EditorCanvas: React.FC = () => {
         y: ti.y,
         text: text.trim(),
         fontSize: Math.round(st.fontSize * scale),
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        fontFamily: HANDWRITTEN_FONT,
         fill: st.strokeColor,
         opacity: st.opacity,
       } as TextElement);
@@ -543,9 +629,10 @@ const EditorCanvas: React.FC = () => {
     const pos = st.getPointerPosition();
     if (!pos) return null;
     const s = useEditorStore.getState();
+    const pad = s.canvasStyle.padding || 0;
     return {
-      x: (pos.x - s.stagePosition.x) / s.zoom,
-      y: (pos.y - s.stagePosition.y) / s.zoom,
+      x: (pos.x - s.stagePosition.x) / s.zoom - pad,
+      y: (pos.y - s.stagePosition.y) / s.zoom - pad,
     };
   }
 
@@ -637,6 +724,15 @@ const EditorCanvas: React.FC = () => {
     // Read ALL values from the store to avoid stale closure issues with React Konva
     const s = useEditorStore.getState();
 
+    // Middle mouse button → pan
+    if (e.evt.button === 1) {
+      e.evt.preventDefault();
+      middlePanRef.current = { lastX: e.evt.clientX, lastY: e.evt.clientY };
+      return;
+    }
+
+    if (s.annotationsLocked && s.activeTool !== 'hand' && s.activeTool !== 'select') return;
+
     // If text input is visible, commit it first and stop propagation
     // so the container mousedown listener does NOT double-commit
     if (textInputRef.current.visible) {
@@ -653,11 +749,25 @@ const EditorCanvas: React.FC = () => {
       || e.target.name() === 'background-darkened'
       || e.target.id() === 'grid-bg';
 
+    // Double-click empty canvas deselects
+    if (e.evt.detail >= 2 && isBg) {
+      s.setSelectedElementIds([]);
+      return;
+    }
+
     // Annotations are always directly selectable. This keeps selection predictable
     // even when a drawing tool is active; the drawing gesture only starts on empty
     // canvas, while an existing annotation receives the click/drag interaction.
     const clickedId = findAnnotationId(e.target);
     if (clickedId && !isBg) {
+        const clicked = s.elements.find((x) => x.id === clickedId);
+        if (clicked?.locked) return;
+
+        // Alt+drag duplicate: mark for duplication on drag start
+        if (e.evt.altKey) {
+          altDuplicateRef.current = clickedId;
+        }
+
         if (e.evt.shiftKey) {
           const currentIds = s.selectedElementIds;
           s.setSelectedElementIds(
@@ -665,6 +775,9 @@ const EditorCanvas: React.FC = () => {
               ? currentIds.filter((i) => i !== clickedId)
               : [...currentIds, clickedId]
           );
+        } else if (clicked?.groupId) {
+          const groupIds = s.elements.filter((el) => el.groupId === clicked.groupId).map((el) => el.id);
+          s.setSelectedElementIds(groupIds);
         } else {
           s.setSelectedElementIds([clickedId]);
         }
@@ -686,22 +799,35 @@ const EditorCanvas: React.FC = () => {
             patch.stepRadius = Math.max(8, Math.round(((el as StepElement).radius || 16) / scale));
           }
           if (el.opacity != null) patch.opacity = el.opacity;
+          if (el.strokeStyle) patch.strokeStyle = el.strokeStyle;
+          if (el.fillStyle) patch.fillStyle = el.fillStyle;
+          if (el.roughness != null) patch.roughness = el.roughness;
           if (Object.keys(patch).length) useEditorStore.setState(patch as any);
         }
         return;
     }
 
-    // Hand tool does nothing on mousedown (handled by drag)
+    // Hand tool: pan only (Stage.draggable)
     if (s.activeTool === 'hand') return;
 
-    if (s.activeTool === 'select') {
-      // Empty area → deselect
+    const isSelectInteraction = s.activeTool === 'select' || hoverSelectModeRef.current;
+    if (isSelectInteraction) {
+      // Empty area → start marquee selection
       if (isBg || !clickedId) {
-        s.setSelectedElementIds([]);
+        const pos = getCanvasPoint();
+        if (pos) {
+          marqueeOriginRef.current = pos;
+          marqueeAdditiveRef.current = e.evt.shiftKey;
+          setMarquee({ x: pos.x, y: pos.y, w: 0, h: 0 });
+          if (!e.evt.shiftKey) s.setSelectedElementIds([]);
+        }
         const previous = hoverPreviousToolRef.current;
         hoveredAnnotationRef.current = null;
         hoverPreviousToolRef.current = null;
-        if (previous) s.setActiveTool(previous);
+        if (hoverSelectModeRef.current) {
+          setHoverSelectMode(false);
+        }
+        if (previous) s.setActiveTool(previous, { clearSelection: false });
       }
       return;
     }
@@ -741,7 +867,9 @@ const EditorCanvas: React.FC = () => {
     if (s.activeTool === 'text') {
       const pos = getCanvasPoint();
       if (!pos) return;
+      textIgnoreBlurRef.current = Date.now() + 250;
       setTextInput({ x: pos.x, y: pos.y, visible: true });
+      e.cancelBubble = true;
       return;
     }
 
@@ -774,7 +902,14 @@ const EditorCanvas: React.FC = () => {
     const pos = getCanvasPoint();
     if (!pos) return;
     setIsDrawing(true);
-    const base: Partial<EditorElement> = { id: generateId(), opacity: s.opacity };
+    drawOriginRef.current = { x: pos.x, y: pos.y };
+    const base: Partial<EditorElement> = {
+      id: generateId(),
+      opacity: s.opacity,
+      strokeStyle: s.strokeStyle,
+      fillStyle: s.fillStyle,
+      roughness: s.roughness,
+    };
 
     if (s.activeTool === 'pencil' || s.activeTool === 'highlighter') {
       setDrawingElement({
@@ -800,6 +935,8 @@ const EditorCanvas: React.FC = () => {
         fill: s.strokeColor,
         pointerLength: pointerSize,
         pointerWidth: pointerSize,
+        endArrowhead: s.endArrowhead,
+        startArrowhead: s.startArrowhead,
       } as ArrowElement);
     } else if (s.activeTool === 'line') {
       setDrawingElement({
@@ -809,17 +946,30 @@ const EditorCanvas: React.FC = () => {
         points: [0, 0, 0, 0],
         stroke: s.strokeColor,
         strokeWidth: sw,
+        endArrowhead: s.endArrowhead,
+        startArrowhead: s.startArrowhead,
       } as LineElement);
-    } else if (s.activeTool === 'circle') {
+    } else if (s.activeTool === 'circle' || s.activeTool === 'magnifier') {
       setDrawingElement({
         ...base,
-        type: 'circle',
+        type: s.activeTool === 'magnifier' ? 'magnifier' : 'circle',
+        x: pos.x, y: pos.y,
+        width: 0, height: 0,
+        stroke: s.strokeColor,
+        fill: s.activeTool === 'magnifier' ? 'transparent' : (s.fillColor === 'transparent' ? 'transparent' : s.fillColor),
+        strokeWidth: sw,
+        ...(s.activeTool === 'magnifier' ? { magnification: 2.25, roughness: s.roughness } : {}),
+      } as CircleElement | MagnifierElement);
+    } else if (s.activeTool === 'diamond') {
+      setDrawingElement({
+        ...base,
+        type: 'diamond',
         x: pos.x, y: pos.y,
         width: 0, height: 0,
         stroke: s.strokeColor,
         fill: s.fillColor === 'transparent' ? 'transparent' : s.fillColor,
         strokeWidth: sw,
-      } as CircleElement);
+      } as DiamondElement);
     } else {
       // rectangle, rounded-rect, blur, pixelate, spotlight
       setDrawingElement({
@@ -840,23 +990,41 @@ const EditorCanvas: React.FC = () => {
   }
 
   function handleMouseMove(e?: Konva.KonvaEventObject<any>) {
-    // If the pointer is over an existing annotation, make Select the active
-    // interaction before the next press. This avoids the classic "why didn't
-    // my click select it?" problem while keeping drawing gestures untouched.
+    // Hover-to-select: enable selection cursor/interaction without changing toolbar tool
     if (e && !isDrawing && !isErasing) {
       const s = useEditorStore.getState();
       const hoveredId = findAnnotationId(e.target);
-      if (hoveredId && !['select', 'hand', 'eraser', 'crop'].includes(s.activeTool)) {
+      const drawingTools = !['select', 'hand', 'eraser', 'crop', 'magnifier'].includes(s.activeTool);
+      if (hoveredId && drawingTools) {
         if (!hoveredAnnotationRef.current) hoverPreviousToolRef.current = s.activeTool;
         hoveredAnnotationRef.current = hoveredId;
-        s.setActiveTool('select');
-      } else if (!hoveredId && hoveredAnnotationRef.current && s.activeTool === 'select' && s.selectedElementIds.length === 0) {
-        const previous = hoverPreviousToolRef.current;
+        if (!hoverSelectModeRef.current) setHoverSelectMode(true);
+      } else if (
+        !hoveredId
+        && hoveredAnnotationRef.current
+        && s.selectedElementIds.length === 0
+      ) {
         hoveredAnnotationRef.current = null;
         hoverPreviousToolRef.current = null;
-        if (previous) s.setActiveTool(previous);
+        if (hoverSelectModeRef.current) setHoverSelectMode(false);
       }
     }
+
+    // Marquee multi-select
+    if (marqueeOriginRef.current) {
+      const pos = getCanvasPoint();
+      if (pos) {
+        const o = marqueeOriginRef.current;
+        setMarquee({
+          x: Math.min(o.x, pos.x),
+          y: Math.min(o.y, pos.y),
+          w: Math.abs(pos.x - o.x),
+          h: Math.abs(pos.y - o.y),
+        });
+      }
+      return;
+    }
+
     // Eraser: update selection rectangle
     if (isErasing) {
       const pos = getCanvasPoint();
@@ -869,34 +1037,105 @@ const EditorCanvas: React.FC = () => {
     if (!pos) return;
 
     if (drawingElement.type === 'pencil' || drawingElement.type === 'highlighter') {
+      const pencil = drawingElement as PencilElement;
+      const pts = pencil.points;
+      const ptCount = pts.length / 2;
+      let nx = pos.x;
+      let ny = pos.y;
+      if (handDrawn && ptCount > 0) {
+        [nx, ny] = wobbleFreehandPoint(pos.x, pos.y, ptCount, pencil.strokeWidth ?? 3);
+      }
       setDrawingElement({
         ...drawingElement,
-        points: [...(drawingElement as PencilElement).points, pos.x, pos.y],
+        points: [...pts, nx, ny],
       });
     } else if (drawingElement.type === 'arrow' || drawingElement.type === 'line') {
-      setDrawingElement({
-        ...drawingElement,
-        points: [0, 0, pos.x - drawingElement.x, pos.y - drawingElement.y],
-      } as ArrowElement | LineElement);
+      let dx = pos.x - drawingElement.x;
+      let dy = pos.y - drawingElement.y;
+      if (e?.evt?.shiftKey) {
+        const angle = Math.atan2(dy, dx);
+        const snap = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+        const len = Math.hypot(dx, dy);
+        dx = Math.cos(snap) * len;
+        dy = Math.sin(snap) * len;
+      }
+      if (e?.evt?.altKey && drawOriginRef.current) {
+        const ox = drawOriginRef.current.x;
+        const oy = drawOriginRef.current.y;
+        setDrawingElement({
+          ...drawingElement,
+          x: ox - dx,
+          y: oy - dy,
+          points: [0, 0, dx * 2, dy * 2],
+        } as ArrowElement | LineElement);
+      } else {
+        setDrawingElement({
+          ...drawingElement,
+          points: [0, 0, dx, dy],
+        } as ArrowElement | LineElement);
+      }
     } else {
-      setDrawingElement({
-        ...drawingElement,
-        width: pos.x - drawingElement.x,
-        height: pos.y - drawingElement.y,
-      } as ShapeElement | CircleElement);
+      const origin = drawOriginRef.current || { x: drawingElement.x, y: drawingElement.y };
+      let w = pos.x - origin.x;
+      let h = pos.y - origin.y;
+      if (e?.evt?.shiftKey || drawingElement.type === 'magnifier') {
+        const size = Math.max(Math.abs(w), Math.abs(h));
+        w = Math.sign(w || 1) * size;
+        h = Math.sign(h || 1) * size;
+      }
+      if (e?.evt?.altKey) {
+        setDrawingElement({
+          ...drawingElement,
+          x: origin.x - w,
+          y: origin.y - h,
+          width: w * 2,
+          height: h * 2,
+        } as ShapeElement | CircleElement | DiamondElement | MagnifierElement);
+      } else {
+        setDrawingElement({
+          ...drawingElement,
+          x: origin.x,
+          y: origin.y,
+          width: w,
+          height: h,
+        } as ShapeElement | CircleElement | DiamondElement | MagnifierElement);
+      }
     }
   }
 
   function handleMouseLeave() {
     const s = useEditorStore.getState();
     if (s.selectedElementIds.length) return;
-    const previous = hoverPreviousToolRef.current;
     hoveredAnnotationRef.current = null;
     hoverPreviousToolRef.current = null;
-    if (previous && s.activeTool === 'select') s.setActiveTool(previous);
+    if (hoverSelectModeRef.current) setHoverSelectMode(false);
   }
 
   async function handleMouseUp() {
+    // Marquee multi-select commit
+    if (marqueeOriginRef.current && marquee) {
+      const s = useEditorStore.getState();
+      const box = {
+        x: marquee.x,
+        y: marquee.y,
+        w: Math.max(marquee.w, 1),
+        h: Math.max(marquee.h, 1),
+      };
+      const hit = s.elements
+        .filter((el) => !el.locked && boundsIntersect(box, getElementBounds(el)))
+        .map((el) => el.id);
+      if (hit.length) {
+        const next = marqueeAdditiveRef.current
+          ? [...new Set([...s.selectedElementIds, ...hit])]
+          : hit;
+        s.setSelectedElementIds(next);
+      }
+      marqueeOriginRef.current = null;
+      marqueeAdditiveRef.current = false;
+      setMarquee(null);
+      return;
+    }
+
     // Eraser: commit - remove all elements that INTERSECT the selection rect
     if (isErasing && eraserStart && eraserEnd) {
       const s = useEditorStore.getState();
@@ -1024,6 +1263,8 @@ const EditorCanvas: React.FC = () => {
       }
     }
     setDrawingElement(null);
+    drawOriginRef.current = null;
+    // Keep the active drawing tool so consecutive annotations stay fast
   }
 
   // --- Zoom helpers (wheel + pinch) ---
@@ -1144,8 +1385,8 @@ const EditorCanvas: React.FC = () => {
   }
 
   function handleTextDblClick(el: TextElement, e: Konva.KonvaEventObject<any>) {
-    // Edit text only with the Select tool
-    if (useEditorStore.getState().activeTool !== 'select') return;
+    const st = useEditorStore.getState();
+    if (st.activeTool !== 'select' && !hoverSelectModeRef.current) return;
     e.cancelBubble = true;
     const s = useEditorStore.getState();
     s.setSelectedElementIds([]);
@@ -1167,19 +1408,56 @@ const EditorCanvas: React.FC = () => {
   // --- Transform ---
 
   function handleTransform(id: string, node: Konva.Node) {
+    const el = useEditorStore.getState().elements.find((e) => e.id === id);
+    const scaleX = node.scaleX();
+    const scaleY = node.scaleY();
+
+    if (el?.type === 'circle' && node.getClassName?.() === 'Ellipse') {
+      const ellipse = node as Konva.Ellipse;
+      const rx = Math.max(2.5, ellipse.radiusX() * scaleX);
+      const ry = Math.max(2.5, ellipse.radiusY() * scaleY);
+      ellipse.radiusX(rx);
+      ellipse.radiusY(ry);
+      ellipse.scaleX(1);
+      ellipse.scaleY(1);
+      updateElement(id, {
+        x: ellipse.x() - rx,
+        y: ellipse.y() - ry,
+        width: rx * 2,
+        height: ry * 2,
+        rotation: ellipse.rotation(),
+        scaleX: 1,
+        scaleY: 1,
+      });
+      return;
+    }
+
     const updates: Partial<EditorElement> = {
       x: node.x(),
       y: node.y(),
       rotation: node.rotation(),
-      scaleX: node.scaleX(),
-      scaleY: node.scaleY(),
+      scaleX: 1,
+      scaleY: 1,
     };
-    if (node.width()) {
-      (updates as Partial<ShapeElement>).width = Math.max(5, node.width() * node.scaleX());
+
+    if (el && ('width' in el)) {
+      const w = Math.max(5, Math.abs((node.width() || (el as ShapeElement).width || 0) * scaleX));
+      const h = Math.max(5, Math.abs((node.height() || (el as ShapeElement).height || 0) * scaleY));
+      (updates as Partial<ShapeElement>).width = w;
+      (updates as Partial<ShapeElement>).height = h;
+      node.width(w);
+      node.height(h);
+      // Keep overlay bitmap children in sync when transforming a Group
+      if (node.getClassName?.() === 'Group') {
+        (node as Konva.Group).getChildren().forEach((child) => {
+          child.width(w);
+          child.height(h);
+          child.scaleX(1);
+          child.scaleY(1);
+        });
+      }
     }
-    if (node.height()) {
-      (updates as Partial<ShapeElement>).height = Math.max(5, node.height() * node.scaleY());
-    }
+
     node.scaleX(1);
     node.scaleY(1);
     updateElement(id, updates);
@@ -1188,10 +1466,72 @@ const EditorCanvas: React.FC = () => {
   // --- Drag end ---
 
   function handleDragEnd(id: string, e: Konva.KonvaEventObject<DragEvent>) {
-    updateElement(id, {
+    setGuides([]);
+    let x = e.target.x();
+    let y = e.target.y();
+    const s = useEditorStore.getState();
+    const el = s.elements.find((item) => item.id === id);
+    if (el) {
+      const moving = { ...getElementBounds(el), x, y };
+      // Approximate: for positioned elements use node x/y as top-left when applicable
+      if ('width' in el) {
+        moving.x = x;
+        moving.y = y;
+        moving.w = Math.abs((el as ShapeElement).width || 0);
+        moving.h = Math.abs((el as ShapeElement).height || 0);
+      }
+      const others = s.elements
+        .filter((item) => item.id !== id && !s.selectedElementIds.includes(item.id))
+        .map(getElementBounds);
+      const snapped = snapBounds(moving, others);
+      x = snapped.x;
+      y = snapped.y;
+      e.target.position({ x, y });
+    }
+
+    if (altDuplicateRef.current === id) {
+      altDuplicateRef.current = null;
+      const source = s.elements.find((item) => item.id === id);
+      if (source) {
+        const clone = {
+          ...JSON.parse(JSON.stringify(source)),
+          id: generateId(),
+          x,
+          y,
+        } as EditorElement;
+        // Restore original position, add clone at new position
+        const orig = s.elements.find((item) => item.id === id);
+        if (orig) {
+          e.target.position({ x: orig.x, y: orig.y });
+          s.addElement(clone);
+          s.setSelectedElementIds([clone.id]);
+          return;
+        }
+      }
+    }
+
+    updateElement(id, { x, y });
+  }
+
+  function handleDragMove(id: string, e: Konva.KonvaEventObject<DragEvent>) {
+    const s = useEditorStore.getState();
+    const el = s.elements.find((item) => item.id === id);
+    if (!el || !('width' in el)) {
+      setGuides([]);
+      return;
+    }
+    const moving = {
       x: e.target.x(),
       y: e.target.y(),
-    });
+      w: Math.abs((el as ShapeElement).width || 0),
+      h: Math.abs((el as ShapeElement).height || 0),
+    };
+    const others = s.elements
+      .filter((item) => item.id !== id)
+      .map(getElementBounds);
+    const snapped = snapBounds(moving, others);
+    setGuides(snapped.guides);
+    e.target.position({ x: snapped.x, y: snapped.y });
   }
 
   // --- Element rendering ---
@@ -1206,8 +1546,9 @@ const EditorCanvas: React.FC = () => {
 
   function renderElement(el: EditorElement, isDraft = false) {
     const s = useEditorStore.getState();
-    const isSelect = s.activeTool === 'select';
-    const draggable = !isDraft && (isSelect || s.selectedElementIds.includes(el.id));
+    const isSelectMode = s.activeTool === 'select' || hoverSelectModeRef.current;
+    const isSelected = s.selectedElementIds.includes(el.id);
+    const draggable = !isDraft && (isSelectMode || isSelected) && !el.locked && !s.annotationsLocked;
     const listening = !isDraft;
     const baseProps = {
       id: el.id,
@@ -1217,11 +1558,12 @@ const EditorCanvas: React.FC = () => {
       rotation: el.rotation ?? 0,
       scaleX: el.scaleX ?? 1,
       scaleY: el.scaleY ?? 1,
-      draggable,
+      draggable: draggable && !el.locked,
       listening,
       onClick: (e: Konva.KonvaEventObject<MouseEvent>) => handleSelect(el.id, e),
-      onTap: (e: Konva.KonvaEventObject<MouseEvent>) => handleSelect(el.id, e),
+      onTap: ((e: Konva.KonvaEventObject<Event>) => handleSelect(el.id, e as Konva.KonvaEventObject<MouseEvent>)) as any,
       onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
+      onDragMove: (e: Konva.KonvaEventObject<DragEvent>) => handleDragMove(el.id, e),
       onTransformEnd: () => handleElementTransformEnd(el.id),
     };
 
@@ -1232,10 +1574,10 @@ const EditorCanvas: React.FC = () => {
         // If element has imageDataURL (pasted image), render as image
         if (shape.imageDataURL) {
           return (
-            <KonvaImage
+            <CachedKonvaImage
               key={shape.id}
               {...baseProps}
-              image={(() => { const img = new window.Image(); img.src = shape.imageDataURL!; return img; })()}
+              src={shape.imageDataURL}
               width={shape.width}
               height={shape.height}
               cornerRadius={shape.cornerRadius ?? 0}
@@ -1243,34 +1585,51 @@ const EditorCanvas: React.FC = () => {
           );
         }
         const isCropMarquee = shape.id === '__crop_marquee__';
-        // If hand-drawn style is enabled, render a jittered polygon instead
-        if (s.handDrawn && !shape.imageDataURL && !isCropMarquee) {
-          const seed = shape.id;
-          let rnd = (() => {
-            let h = 2166136261 >>> 0;
-            for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
-            return () => { h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0; return (h & 0xfffffff) / 0x10000000; };
-          })();
-          const w = Math.abs(shape.width || 0);
-          const h = Math.abs(shape.height || 0);
-          const amp = Math.max(1, Math.min(8, (shape.strokeWidth || 2) * 1.5));
-          const jitter = (x: number, y: number) => [x + (rnd() - 0.5) * amp, y + (rnd() - 0.5) * amp];
-          const p0 = jitter(0, 0);
-          const p1 = jitter(w, 0);
-          const p2 = jitter(w, h);
-          const p3 = jitter(0, h);
-          const points = [p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]];
+        if (isCropMarquee) {
           return (
-            <Line
+            <Rect
               key={shape.id}
               {...baseProps}
-              points={points}
-              closed
+              width={shape.width}
+              height={shape.height}
               fill={shape.fill}
               stroke={shape.stroke}
               strokeWidth={shape.strokeWidth}
-              lineJoin="round"
-              tension={0.2}
+              dash={[8, 4]}
+              listening={false}
+            />
+          );
+        }
+        if (handDrawn) {
+          const w = Math.abs(shape.width || 0);
+          const h = Math.abs(shape.height || 0);
+          return (
+            <RoughKonvaShape
+              key={shape.id}
+              kind="rectangle"
+              seed={shape.id}
+              id={shape.id}
+              x={shape.width < 0 ? shape.x + shape.width : shape.x}
+              y={shape.height < 0 ? shape.y + shape.height : shape.y}
+              width={w}
+              height={h}
+              stroke={shape.stroke}
+              fill={shape.fill}
+              strokeWidth={shape.strokeWidth}
+              strokeStyle={shape.strokeStyle}
+              fillStyle={shape.fillStyle}
+              roughness={shape.roughness ?? 1.25}
+              cornerRadius={shape.cornerRadius}
+              opacity={baseProps.opacity}
+              listening={baseProps.listening}
+              draggable={baseProps.draggable}
+              rotation={baseProps.rotation}
+              scaleX={baseProps.scaleX}
+              scaleY={baseProps.scaleY}
+              onClick={baseProps.onClick}
+              onTap={baseProps.onTap}
+              onDragEnd={baseProps.onDragEnd}
+              onTransformEnd={baseProps.onTransformEnd}
             />
           );
         }
@@ -1284,8 +1643,58 @@ const EditorCanvas: React.FC = () => {
             stroke={shape.stroke}
             strokeWidth={shape.strokeWidth}
             cornerRadius={shape.cornerRadius ?? 0}
-            dash={isCropMarquee ? [8, 4] : undefined}
-            listening={!isCropMarquee}
+            dash={shape.strokeStyle === 'dashed' ? [8, 6] : shape.strokeStyle === 'dotted' ? [2, 4] : undefined}
+          />
+        );
+      }
+
+      case 'diamond': {
+        const diamond = el as DiamondElement;
+        const w = Math.abs(diamond.width || 0);
+        const h = Math.abs(diamond.height || 0);
+        const x = diamond.width < 0 ? diamond.x + diamond.width : diamond.x;
+        const y = diamond.height < 0 ? diamond.y + diamond.height : diamond.y;
+        if (handDrawn) {
+          return (
+            <RoughKonvaShape
+              key={diamond.id}
+              kind="diamond"
+              seed={diamond.id}
+              id={diamond.id}
+              x={x}
+              y={y}
+              width={w}
+              height={h}
+              stroke={diamond.stroke}
+              fill={diamond.fill}
+              strokeWidth={diamond.strokeWidth}
+              strokeStyle={diamond.strokeStyle}
+              fillStyle={diamond.fillStyle}
+              roughness={diamond.roughness ?? 1.25}
+              opacity={baseProps.opacity}
+              listening={baseProps.listening}
+              draggable={baseProps.draggable}
+              rotation={baseProps.rotation}
+              scaleX={baseProps.scaleX}
+              scaleY={baseProps.scaleY}
+              onClick={baseProps.onClick}
+              onTap={baseProps.onTap}
+              onDragEnd={baseProps.onDragEnd}
+              onTransformEnd={baseProps.onTransformEnd}
+            />
+          );
+        }
+        return (
+          <Line
+            key={diamond.id}
+            {...baseProps}
+            x={x}
+            y={y}
+            points={[w / 2, 0, w, h / 2, w / 2, h, 0, h / 2]}
+            closed
+            fill={diamond.fill}
+            stroke={diamond.stroke}
+            strokeWidth={diamond.strokeWidth}
           />
         );
       }
@@ -1316,47 +1725,72 @@ const EditorCanvas: React.FC = () => {
         }
         if (!shape.imageDataURL) return null;
         return (
-          <KonvaImage
+          <CachedKonvaImage
             key={shape.id}
             {...baseProps}
-            image={(() => { const img = new window.Image(); img.src = shape.imageDataURL!; return img; })()}
+            src={shape.imageDataURL}
             width={shape.width}
             height={shape.height}
           />
         );
       }
 
+      case 'magnifier': {
+        const mag = el as MagnifierElement;
+        return (
+          <MagnifierKonva
+            key={mag.id}
+            el={mag}
+            backgroundImage={backgroundImage}
+            imageSize={imageSize}
+            selected={isSelected}
+            accent={getSelectionTheme().accent}
+            opacity={baseProps.opacity}
+            listening={baseProps.listening}
+            draggable={baseProps.draggable}
+            draft={isDraft}
+            handDrawn={handDrawn}
+            onClick={baseProps.onClick}
+            onTap={baseProps.onTap}
+            onDragEnd={baseProps.onDragEnd}
+            onDragMove={baseProps.onDragMove}
+          />
+        );
+      }
+
       case 'circle': {
         const circle = el as CircleElement;
-        if (s.handDrawn) {
-          const seed = circle.id;
-          let rnd = (() => {
-            let h = 2166136261 >>> 0;
-            for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
-            return () => { h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0; return (h & 0xfffffff) / 0x10000000; };
-          })();
-          const rx = Math.abs(circle.width) / 2;
-          const ry = Math.abs(circle.height) / 2;
-          const amp = Math.max(1, Math.min(6, (circle.strokeWidth || 2) * 1.2));
-          const points: number[] = [];
-          const steps = 24;
-          for (let i = 0; i < steps; i++) {
-            const a = (i / steps) * Math.PI * 2;
-            const x = Math.cos(a) * rx + (rnd() - 0.5) * amp;
-            const y = Math.sin(a) * ry + (rnd() - 0.5) * amp;
-            points.push(x, y);
-          }
+        const w = Math.abs(circle.width);
+        const h = Math.abs(circle.height);
+        const x = circle.width < 0 ? circle.x + circle.width : circle.x;
+        const y = circle.height < 0 ? circle.y + circle.height : circle.y;
+        if (handDrawn) {
           return (
-            <Line
+            <RoughKonvaShape
               key={circle.id}
-              {...baseProps}
-              points={points}
-              closed
-              fill={circle.fill}
+              kind="ellipse"
+              seed={circle.id}
+              id={circle.id}
+              x={x}
+              y={y}
+              width={w}
+              height={h}
               stroke={circle.stroke}
+              fill={circle.fill}
               strokeWidth={circle.strokeWidth}
-              lineJoin="round"
-              tension={0.15}
+              strokeStyle={circle.strokeStyle}
+              fillStyle={circle.fillStyle}
+              roughness={circle.roughness ?? 1.25}
+              opacity={baseProps.opacity}
+              listening={baseProps.listening}
+              draggable={baseProps.draggable}
+              rotation={baseProps.rotation}
+              scaleX={baseProps.scaleX}
+              scaleY={baseProps.scaleY}
+              onClick={baseProps.onClick}
+              onTap={baseProps.onTap}
+              onDragEnd={baseProps.onDragEnd}
+              onTransformEnd={baseProps.onTransformEnd}
             />
           );
         }
@@ -1364,13 +1798,14 @@ const EditorCanvas: React.FC = () => {
           <Ellipse
             key={circle.id}
             {...baseProps}
-            radiusX={Math.abs(circle.width) / 2}
-            radiusY={Math.abs(circle.height) / 2}
-            offsetX={-circle.width / 2}
-            offsetY={-circle.height / 2}
+            x={x + w / 2}
+            y={y + h / 2}
+            radiusX={Math.max(2.5, w / 2)}
+            radiusY={Math.max(2.5, h / 2)}
             fill={circle.fill}
             stroke={circle.stroke}
             strokeWidth={circle.strokeWidth}
+            dash={circle.strokeStyle === 'dashed' ? [8, 6] : circle.strokeStyle === 'dotted' ? [2, 4] : undefined}
           />
         );
       }
@@ -1382,27 +1817,10 @@ const EditorCanvas: React.FC = () => {
         const bend = arrow.bend ?? 0;
         const controlX = (sx + ex) / 2 + (-ey + sy) / length * bend * length * 0.55;
         const controlY = (sy + ey) / 2 + (ex - sx) / length * bend * length * 0.55;
-        const points = bend === 0
-          ? arrow.points
-          : [0, 0, controlX, controlY, ex, ey];
-        // Slight hand-drawn jitter for arrows
-        let renderPoints = points;
-        if (s.handDrawn) {
-          const seed = arrow.id;
-          let rnd = (() => {
-            let h = 2166136261 >>> 0;
-            for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
-            return () => { h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0; return (h & 0xfffffff) / 0x10000000; };
-          })();
-          const amp = Math.max(1, Math.min(6, (arrow.strokeWidth || 2) * 1.2));
-          renderPoints = points.map((v, i) => {
-            // keep endpoints a bit more stable
-            const t = (i === 0 || i === points.length - 1) ? 0.2 : 1;
-            return v + (rnd() - 0.5) * amp * t;
-          });
-        }
-        const showBendHandle = !isDraft && s.selectedElementIds.includes(arrow.id);
-        const updateBendFromHandle = (node: Konva.Node) => {
+        const showHandles = !isDraft && isSelected;
+        const handleProps = selectionHandleProps('endpoint');
+        const bendHandleProps = selectionHandleProps('bend');
+        const updateBendFromHandle = (node: Konva.Node, commit = false) => {
           const midX = (sx + ex) / 2;
           const midY = (sy + ey) / 2;
           const normalX = (-ey + sy) / length;
@@ -1410,8 +1828,82 @@ const EditorCanvas: React.FC = () => {
           const localX = node.x() - arrow.x;
           const localY = node.y() - arrow.y;
           const next = ((localX - midX) * normalX + (localY - midY) * normalY) / (length * 0.55);
-          updateElement(arrow.id, { bend: Math.max(-1, Math.min(1, next)) });
+          const bendVal = Math.max(-1, Math.min(1, next));
+          if (commit) commitElementUpdate(arrow.id, { bend: bendVal });
+          else updateElementSilent(arrow.id, { bend: bendVal });
         };
+        const updateEndpoint = (which: 'start' | 'end', node: Konva.Node, commit = false) => {
+          const localX = node.x() - arrow.x;
+          const localY = node.y() - arrow.y;
+          const newPoints: [number, number, number, number] = which === 'start'
+            ? [localX, localY, ex, ey]
+            : [sx, sy, localX, localY];
+          if (commit) commitElementUpdate(arrow.id, { points: newPoints, bend: arrow.bend ?? 0 });
+          else updateElementSilent(arrow.id, { points: newPoints });
+        };
+
+        const headSize = arrow.pointerLength ?? Math.max(10, (arrow.strokeWidth || 2) * 4);
+        const showHead = (arrow.endArrowhead ?? 'arrow') !== 'none';
+        const showStartHead = (arrow.startArrowhead ?? 'none') !== 'none';
+
+        if (handDrawn && bend === 0) {
+          return (
+            <React.Fragment key={arrow.id}>
+              <RoughKonvaShape
+                kind="arrow"
+                seed={arrow.id}
+                id={arrow.id}
+                x={arrow.x}
+                y={arrow.y}
+                points={[sx, sy, ex, ey]}
+                stroke={arrow.stroke}
+                strokeWidth={arrow.strokeWidth}
+                strokeStyle={arrow.strokeStyle}
+                roughness={arrow.roughness ?? 1.25}
+                arrowheadSize={showHead ? headSize : 0}
+                showArrowhead={showHead}
+                showStartArrowhead={showStartHead}
+                opacity={baseProps.opacity}
+                listening={baseProps.listening}
+                draggable={baseProps.draggable}
+                rotation={baseProps.rotation}
+                scaleX={baseProps.scaleX}
+                scaleY={baseProps.scaleY}
+                onClick={baseProps.onClick}
+                onTap={baseProps.onTap}
+                onDragEnd={baseProps.onDragEnd}
+                onDragMove={baseProps.onDragMove}
+                onTransformEnd={baseProps.onTransformEnd}
+                hitStrokeWidth={18}
+              />
+              {showHandles && (
+                <>
+                  <Circle x={arrow.x + sx} y={arrow.y + sy} {...handleProps} draggable
+                    onMouseDown={(e) => { e.cancelBubble = true; }}
+                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
+                  />
+                  <Circle x={arrow.x + controlX} y={arrow.y + controlY} {...bendHandleProps} draggable
+                    onMouseDown={(e) => { e.cancelBubble = true; }}
+                    onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
+                  />
+                  <Circle x={arrow.x + ex} y={arrow.y + ey} {...handleProps} draggable
+                    onMouseDown={(e) => { e.cancelBubble = true; }}
+                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true); }}
+                  />
+                </>
+              )}
+            </React.Fragment>
+          );
+        }
+
+        const points = bend === 0 ? arrow.points : [0, 0, controlX, controlY, ex, ey];
+        let renderPoints = points;
+        if (handDrawn) {
+          renderPoints = handDrawnPolyline(points, arrow.id, arrow.strokeWidth || 2, 0.2);
+        }
         return (
           <React.Fragment key={arrow.id}>
             <Arrow
@@ -1420,26 +1912,43 @@ const EditorCanvas: React.FC = () => {
               stroke={arrow.stroke}
               strokeWidth={arrow.strokeWidth}
               fill={arrow.fill}
-              pointerLength={arrow.pointerLength ?? 12}
-              pointerWidth={arrow.pointerWidth ?? 12}
-              tension={s.handDrawn ? (bend === 0 ? 0.15 : 0.45) : (bend === 0 ? 0 : 0.5)}
+              pointerLength={showHead ? headSize : 0}
+              pointerWidth={showHead ? (arrow.pointerWidth ?? headSize) : 0}
+              tension={handDrawn ? (bend === 0 ? 0.2 : 0.45) : (bend === 0 ? 0 : 0.5)}
             />
-            {showBendHandle && (
-              <>
-                <Circle x={arrow.x + sx} y={arrow.y + sy} radius={4} fill="#fff7ed" stroke="#f97316" strokeWidth={1.5} listening={false} />
-                <Circle
-                  x={arrow.x + controlX}
-                  y={arrow.y + controlY}
-                  radius={7}
-                  fill="#fff7ed"
-                  stroke="#f97316"
-                  strokeWidth={2}
-                  draggable
-                  onMouseDown={(e) => { e.cancelBubble = true; }}
-                  onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target); }}
-                  onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target); }}
+            {showStartHead && (() => {
+              const tri = arrowHeadPoints(ex, ey, sx, sy, headSize);
+              return (
+                <Line
+                  x={arrow.x}
+                  y={arrow.y}
+                  points={tri.flat()}
+                  closed
+                  fill={arrow.fill || arrow.stroke}
+                  stroke={arrow.stroke}
+                  strokeWidth={1}
+                  listening={false}
+                  perfectDrawEnabled={false}
                 />
-                <Circle x={arrow.x + ex} y={arrow.y + ey} radius={4} fill="#fff7ed" stroke="#f97316" strokeWidth={1.5} listening={false} />
+              );
+            })()}
+            {showHandles && (
+              <>
+                <Circle x={arrow.x + sx} y={arrow.y + sy} {...handleProps} draggable
+                  onMouseDown={(e) => { e.cancelBubble = true; }}
+                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
+                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
+                />
+                <Circle x={arrow.x + controlX} y={arrow.y + controlY} {...bendHandleProps} draggable
+                  onMouseDown={(e) => { e.cancelBubble = true; }}
+                  onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
+                  onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
+                />
+                <Circle x={arrow.x + ex} y={arrow.y + ey} {...handleProps} draggable
+                  onMouseDown={(e) => { e.cancelBubble = true; }}
+                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
+                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true); }}
+                />
               </>
             )}
           </React.Fragment>
@@ -1448,26 +1957,88 @@ const EditorCanvas: React.FC = () => {
 
       case 'line': {
         const line = el as LineElement;
-        let pts = line.points;
-        if (s.handDrawn) {
-          const seed = line.id;
-          let rnd = (() => {
-            let h = 2166136261 >>> 0;
-            for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
-            return () => { h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0; return (h & 0xfffffff) / 0x10000000; };
-          })();
-          const amp = Math.max(1, Math.min(6, (line.strokeWidth || 2) * 1.2));
-          pts = line.points.map((v, i) => v + (rnd() - 0.5) * amp);
+        const [sx, sy, ex, ey] = line.points;
+        const showHandles = !isDraft && isSelected;
+        const handleProps = selectionHandleProps('endpoint');
+        const updateEndpoint = (which: 'start' | 'end', node: Konva.Node, commit = false) => {
+          const localX = node.x() - line.x;
+          const localY = node.y() - line.y;
+          const newPoints: [number, number, number, number] = which === 'start'
+            ? [localX, localY, ex, ey]
+            : [sx, sy, localX, localY];
+          if (commit) commitElementUpdate(line.id, { points: newPoints });
+          else updateElementSilent(line.id, { points: newPoints });
+        };
+
+        if (handDrawn) {
+          return (
+            <React.Fragment key={line.id}>
+              <RoughKonvaShape
+                kind="line"
+                seed={line.id}
+                id={line.id}
+                x={line.x}
+                y={line.y}
+                points={[sx, sy, ex, ey]}
+                stroke={line.stroke}
+                strokeWidth={line.strokeWidth}
+                strokeStyle={line.strokeStyle}
+                roughness={line.roughness ?? 1.25}
+                opacity={baseProps.opacity}
+                listening={baseProps.listening}
+                draggable={baseProps.draggable}
+                rotation={baseProps.rotation}
+                scaleX={baseProps.scaleX}
+                scaleY={baseProps.scaleY}
+                onClick={baseProps.onClick}
+                onTap={baseProps.onTap}
+                onDragEnd={baseProps.onDragEnd}
+                onDragMove={baseProps.onDragMove}
+                onTransformEnd={baseProps.onTransformEnd}
+                hitStrokeWidth={18}
+              />
+              {showHandles && (
+                <>
+                  <Circle x={line.x + sx} y={line.y + sy} {...handleProps} draggable
+                    onMouseDown={(e) => { e.cancelBubble = true; }}
+                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
+                  />
+                  <Circle x={line.x + ex} y={line.y + ey} {...handleProps} draggable
+                    onMouseDown={(e) => { e.cancelBubble = true; }}
+                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true); }}
+                  />
+                </>
+              )}
+            </React.Fragment>
+          );
         }
+
         return (
-          <Line
-            key={line.id}
-            {...baseProps}
-            points={pts}
-            stroke={line.stroke}
-            strokeWidth={line.strokeWidth}
-            tension={s.handDrawn ? 0.2 : 0}
-          />
+          <React.Fragment key={line.id}>
+            <Line
+              {...baseProps}
+              points={line.points}
+              stroke={line.stroke}
+              strokeWidth={line.strokeWidth}
+              hitStrokeWidth={16}
+            />
+            {showHandles && (
+              <>
+                <Circle x={line.x + sx} y={line.y + sy} {...handleProps} draggable
+                  onMouseDown={(e) => { e.cancelBubble = true; }}
+                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
+                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
+                />
+                <Circle x={line.x + ex} y={line.y + ey} {...handleProps} draggable
+                  onMouseDown={(e) => { e.cancelBubble = true; }}
+                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
+                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true); }}
+                />
+              </>
+            )}
+          </React.Fragment>
         );
       }
 
@@ -1483,7 +2054,7 @@ const EditorCanvas: React.FC = () => {
             strokeWidth={pencil.strokeWidth}
             lineCap={pencil.lineCap ?? 'round'}
             lineJoin={pencil.lineJoin ?? 'round'}
-            tension={pencil.tension ?? 0.5}
+            tension={handDrawn ? 0.55 : (pencil.tension ?? 0.5)}
             hitStrokeWidth={20}
           />
         );
@@ -1499,7 +2070,7 @@ const EditorCanvas: React.FC = () => {
             {...baseProps}
             text={textEl.text}
             fontSize={textEl.fontSize ?? 24}
-            fontFamily={textEl.fontFamily ?? 'sans-serif'}
+            fontFamily={textEl.fontFamily ?? HANDWRITTEN_FONT}
             fontStyle={textEl.fontStyle}
             fill={textEl.fill ?? '#000000'}
             stroke={textEl.stroke}
@@ -1517,6 +2088,35 @@ const EditorCanvas: React.FC = () => {
         const step = el as StepElement;
         const r = step.radius ?? 16;
         const fs = step.fontSize ?? Math.round(r * 0.8);
+        if (handDrawn) {
+          const points = handDrawnEllipsePoints(r, r, step.id, 2, 24);
+          return (
+            <Group key={step.id} {...baseProps} listening={true}>
+              <Line
+                points={points}
+                closed
+                fill={step.fill ?? '#ef4444'}
+                stroke="#ffffff"
+                strokeWidth={2}
+                tension={0.15}
+                lineJoin="round"
+              />
+              <Text
+                text={String(step.stepNumber)}
+                fontSize={fs}
+                fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+                fontStyle="bold"
+                fill="#ffffff"
+                align="center"
+                verticalAlign="middle"
+                width={r * 2}
+                height={r * 2}
+                offsetX={r}
+                offsetY={r}
+              />
+            </Group>
+          );
+        }
         return (
           <Group key={step.id} {...baseProps} listening={true}>
             <Circle
@@ -1598,13 +2198,30 @@ const EditorCanvas: React.FC = () => {
     );
   }
 
-  // Background fill color based on canvas style (for live preview)
+  // Premium selection chrome follows theme tokens
+  const selectionTheme = useMemo(() => getSelectionTheme(), [activeTool, selectedElementIds]);
+
+  // Style transformer anchors when theme changes
+  useEffect(() => {
+    const tr = transformerRef.current;
+    if (!tr) return;
+    tr.anchorStyleFunc(styleSelectionAnchor);
+    tr.getLayer()?.batchDraw();
+  }, [selectionTheme, selectedElementIds]);
   const bgFill = useMemo(() => {
     const cs = canvasStyle;
-    if (cs.bgStyle === 'solid') return cs.bgColor;
+    if (cs.bgStyle === 'solid') return cs.bgColor || '#ffffff';
     if (cs.bgStyle === 'glass') return '#f0f0f0';
-    return '#ffffff';
-  }, [canvasStyle.bgStyle, canvasStyle.bgColor]);
+    if (cs.bgStyle === 'gradient') return undefined; // handled via linear gradient props
+    if (cs.padding > 0) return 'transparent';
+    return undefined;
+  }, [canvasStyle.bgStyle, canvasStyle.bgColor, canvasStyle.padding]);
+
+  const annotationsLocked = useEditorStore((s) => s.annotationsLocked);
+  const contentPad = canvasStyle.padding || 0;
+  const frameW = (imageSize.width || 0) + contentPad * 2;
+  const frameH = (imageSize.height || 0) + contentPad * 2;
+  const showFrame = !!backgroundImage && (contentPad > 0 || canvasStyle.bgStyle !== 'none' || canvasStyle.shadowEnabled || canvasStyle.borderRadius > 0);
 
   // Get current zoom/position for textarea positioning using fresh values
   const currentZoom = useEditorStore((s) => s.zoom);
@@ -1636,7 +2253,7 @@ const EditorCanvas: React.FC = () => {
       }}
     >
       {/* Workspace background - always visible behind everything, follows theme */}
-      <div className="absolute inset-0 bg-neutral-100 dark:bg-neutral-900" />
+      <div className="absolute inset-0 bg-canvas" />
       <Stage
         ref={stageRef}
         width={dimensions.width}
@@ -1649,13 +2266,18 @@ const EditorCanvas: React.FC = () => {
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
         onMouseUp={handleMouseUp}
-        onTouchStart={handleMouseDown}
-        onTouchMove={handleMouseMove}
-        onTouchEnd={handleMouseUp}
+        onTouchStart={handleMouseDown as any}
+        onTouchMove={handleMouseMove as any}
+        onTouchEnd={handleMouseUp as any}
         onWheel={handleWheel}
         draggable={activeTool === 'hand'}
         onDragStart={() => {
           if (useEditorStore.getState().activeTool === 'hand') setIsHandDragging(true);
+        }}
+        onDragMove={(e) => {
+          if (useEditorStore.getState().activeTool === 'hand') {
+            setStagePosition({ x: e.target.x(), y: e.target.y() });
+          }
         }}
         onDragEnd={(e) => {
           if (useEditorStore.getState().activeTool === 'hand') {
@@ -1664,22 +2286,53 @@ const EditorCanvas: React.FC = () => {
           }
         }}
       >
-        {/* Background layer with grid pattern */}
+        {/* Background + framed image (padding / bgStyle live preview) */}
         <Layer>
-          <Rect
-            name="background"
-            x={0}
-            y={0}
-            width={imageSize.width || dimensions.width}
-            height={imageSize.height || dimensions.height}
-            fillPatternImage={gridEnabled ? gridPattern : undefined}
-            fillPatternScale={{ x: 1, y: 1 }}
-            fill={bgFill}
-            id="grid-bg"
-          />
-          {backgroundImage && (
-            <>
-              {hasSpotlights && spotlightOverlayImage ? (
+          {showFrame && (
+            <Rect
+              x={0}
+              y={0}
+              width={frameW}
+              height={frameH}
+              fill={
+                canvasStyle.bgStyle === 'none'
+                  ? (contentPad > 0 ? '#ffffff' : undefined)
+                  : bgFill
+              }
+              fillLinearGradientStartPoint={
+                canvasStyle.bgStyle === 'gradient' ? { x: 0, y: 0 } : undefined
+              }
+              fillLinearGradientEndPoint={
+                canvasStyle.bgStyle === 'gradient' ? { x: frameW, y: frameH } : undefined
+              }
+              fillLinearGradientColorStops={
+                canvasStyle.bgStyle === 'gradient'
+                  ? [0, canvasStyle.bgGradientStart || '#ffffff', 1, canvasStyle.bgGradientEnd || '#e5e5e5']
+                  : undefined
+              }
+              cornerRadius={canvasStyle.borderRadius || 0}
+              shadowEnabled={canvasStyle.shadowEnabled}
+              shadowBlur={canvasStyle.shadowBlur || 24}
+              shadowOffsetX={canvasStyle.shadowOffsetX || 0}
+              shadowOffsetY={canvasStyle.shadowOffsetY || 12}
+              shadowColor={canvasStyle.shadowColor || 'rgba(0,0,0,0.25)'}
+              listening={false}
+            />
+          )}
+          <Group x={contentPad} y={contentPad}>
+            <Rect
+              name="background"
+              x={0}
+              y={0}
+              width={imageSize.width || dimensions.width}
+              height={imageSize.height || dimensions.height}
+              fillPatternImage={gridEnabled ? (gridPattern as unknown as HTMLImageElement) : undefined}
+              fillPatternScale={{ x: 1, y: 1 }}
+              fill={gridEnabled ? undefined : (showFrame ? undefined : '#ffffff')}
+              id="grid-bg"
+            />
+            {backgroundImage && (
+              hasSpotlights && spotlightOverlayImage ? (
                 <KonvaImage
                   image={spotlightOverlayImage}
                   x={0}
@@ -1697,35 +2350,83 @@ const EditorCanvas: React.FC = () => {
                   height={imageSize.height}
                   name="background"
                 />
-              )}
-            </>
-          )}
+              )
+            )}
+          </Group>
         </Layer>
 
-        {/* Annotation layer */}
-        <Layer name="annotation-layer">
+        {/* Annotation layer (same content pad as image) */}
+        <Layer name="annotation-layer" x={contentPad} y={contentPad}>
           {elements.map((el) => renderElement(el))}
           {drawingElement && renderElement(drawingElement, true)}
           {renderSpotlightDraft()}
           {renderEraserDraft()}
+          {guides.map((g, i) => (
+            g.orientation === 'vertical' ? (
+              <Line
+                key={`guide-v-${i}`}
+                points={[g.position, g.start, g.position, g.end]}
+                stroke="#F97316"
+                strokeWidth={1}
+                dash={[4, 4]}
+                listening={false}
+              />
+            ) : (
+              <Line
+                key={`guide-h-${i}`}
+                points={[g.start, g.position, g.end, g.position]}
+                stroke="#F97316"
+                strokeWidth={1}
+                dash={[4, 4]}
+                listening={false}
+              />
+            )
+          ))}
+          {marquee && (
+            <Rect
+              x={marquee.x}
+              y={marquee.y}
+              width={marquee.w}
+              height={marquee.h}
+              fill="rgba(234,88,12,0.08)"
+              stroke={selectionTheme.accent}
+              strokeWidth={1}
+              dash={[6, 4]}
+              listening={false}
+            />
+          )}
           <Transformer
             ref={transformerRef}
+            keepRatio={
+              selectedElementIds.length === 1
+              && !!((elements.find((e) => e.id === selectedElementIds[0]) as ShapeElement | undefined)?.imageDataURL)
+            }
             boundBoxFunc={(oldBox, newBox) => {
               if (newBox.width < 5 || newBox.height < 5) return oldBox;
               return newBox;
             }}
-            padding={6}
+            padding={8}
             anchorSize={10}
-            anchorCornerRadius={4}
-            borderStroke="#f97316"
-            borderDash={[5, 4]}
-            anchorStroke="#f97316"
-            anchorFill="#fff7ed"
-            rotateEnabled
-            rotateAnchorOffset={24}
-            rotateAnchorSize={11}
+            anchorCornerRadius={5}
+            borderStroke={selectionTheme.accent}
+            borderStrokeWidth={1.5}
+            borderDash={[6, 4]}
+            anchorStroke={selectionTheme.accent}
+            anchorFill={selectionTheme.surface}
+            rotateEnabled={!annotationsLocked}
+            resizeEnabled={!annotationsLocked}
+            rotateAnchorOffset={28}
+            rotateAnchorSize={12}
             rotateAnchorCursor="grab"
-            enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right', 'top-center', 'bottom-center']}
+            anchorStyleFunc={styleSelectionAnchor}
+            enabledAnchors={
+              annotationsLocked
+                ? []
+                : selectedElementIds.length === 1
+                  && !!((elements.find((e) => e.id === selectedElementIds[0]) as ShapeElement | undefined)?.imageDataURL)
+                  ? ['top-left', 'top-right', 'bottom-left', 'bottom-right']
+                  : ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right', 'top-center', 'bottom-center']
+            }
           />
         </Layer>
       </Stage>
@@ -1741,91 +2442,33 @@ const EditorCanvas: React.FC = () => {
         return (
           <textarea
             ref={textAreaRef}
-            className="absolute z-50 bg-transparent border-2 border-dashed border-blue-500 outline-none resize-none p-1"
+            className="absolute z-50 bg-transparent border-2 border-dashed border-accent outline-none resize-none p-1"
             style={{
-              left: currentStagePos.x + textInput.x * currentZoom,
-              top: currentStagePos.y + textInput.y * currentZoom,
+              left: currentStagePos.x + (textInput.x + contentPad) * currentZoom,
+              top: currentStagePos.y + (textInput.y + contentPad) * currentZoom,
               fontSize: displayFont * currentZoom,
-              fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+              fontFamily: HANDWRITTEN_FONT,
               color: displayColor,
               minWidth: 100,
               minHeight: 40,
               lineHeight: 1.2,
             }}
             onKeyDown={handleTextAreaKeyDown}
-            onBlur={() => commitTextRef.current()}
+            onBlur={() => {
+              // Ignore the synthetic blur that fires while the textarea mounts/focuses
+              if (Date.now() < textIgnoreBlurRef.current) {
+                requestAnimationFrame(() => textAreaRef.current?.focus());
+                return;
+              }
+              commitTextRef.current();
+            }}
             rows={2}
           />
         );
       })()}
 
-      {/* Zoom controls: percentage on top, zoom in/out/fit below */}
-      {backgroundImage && (
-        <div className="absolute bottom-3 right-3 z-20 flex flex-col items-stretch gap-1 select-none">
-          <div className="flex items-center justify-center gap-1 rounded-md bg-black/60 backdrop-blur-sm p-0.5">
-            <button
-              type="button"
-              className="px-2 py-1 rounded text-white text-xs font-medium hover:bg-white/15 cursor-pointer font-mono transition-colors"
-              onClick={() => setZoom(1)}
-              title="Reset to 100%"
-            >
-              {Math.round(zoom * 100)}%
-            </button>
-            <button
-              type="button"
-              className="h-7 w-7 flex items-center justify-center rounded text-white/90 hover:bg-white/15 cursor-pointer transition-colors"
-              onClick={runOCR}
-              title="Recognize text (OCR)"
-              aria-label="Recognize text in image"
-            >
-              <ScanText className="w-3.5 h-3.5" />
-            </button>
-          </div>
-          <div className="flex items-center justify-center gap-0.5 rounded-md bg-black/60 backdrop-blur-sm p-0.5">
-            <button
-              type="button"
-              className="h-7 w-7 flex items-center justify-center rounded text-white/90 hover:bg-white/15 cursor-pointer transition-colors"
-              onClick={() => {
-                const s = useEditorStore.getState();
-                const root = containerRef.current;
-                if (!root) { setZoom(s.zoom / 1.2); return; }
-                const r = root.getBoundingClientRect();
-                applyZoomAt(r.left + r.width / 2, r.top + r.height / 2, s.zoom / 1.2);
-              }}
-              title="Zoom out"
-              aria-label="Zoom out"
-            >
-              <ZoomOut className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              className="h-7 w-7 flex items-center justify-center rounded text-white/90 hover:bg-white/15 cursor-pointer transition-colors"
-              onClick={() => {
-                const s = useEditorStore.getState();
-                const root = containerRef.current;
-                if (!root) { setZoom(s.zoom * 1.2); return; }
-                const r = root.getBoundingClientRect();
-                applyZoomAt(r.left + r.width / 2, r.top + r.height / 2, s.zoom * 1.2);
-              }}
-              title="Zoom in"
-              aria-label="Zoom in"
-            >
-              <ZoomIn className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              className="h-7 w-7 flex items-center justify-center rounded text-white/90 hover:bg-white/15 cursor-pointer transition-colors"
-              onClick={resetView}
-              title="Fit to screen"
-              aria-label="Fit to screen"
-            >
-              <Maximize className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      )}
       {ocrOpen && (
-        <div className="absolute bottom-3 right-3 z-30 w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-border bg-background/95 shadow-xl backdrop-blur-md p-3">
+        <div className="absolute bottom-16 right-3 z-30 w-[min(24rem,calc(100vw-2rem))] rounded-2xl floating-surface p-3">
           <div className="flex items-center justify-between mb-2">
             <div>
               <p className="text-sm font-semibold">Recognized text</p>

@@ -1,11 +1,6 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-import dynamic from 'next/dynamic';
-
-const EditorPage = dynamic(() => import('@/components/editor/editor-page'), {
-  ssr: false,
-});
-
+/** Legacy /editor bookmarks → root editor. */
 export default function EditorRoutePage() {
-  return <EditorPage />;
+  redirect('/');
 }

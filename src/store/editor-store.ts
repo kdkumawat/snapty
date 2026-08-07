@@ -1,11 +1,16 @@
 import { create } from 'zustand';
-import type { EditorElement, ToolType, ExportFormat, CanvasStyle } from '@/types/editor';
+import type {
+  EditorElement, ToolType, ExportFormat, CanvasStyle,
+  StrokeStyle, FillStyle, Arrowhead,
+} from '@/types/editor';
+import { getElementBounds, unionBounds } from '@/lib/editor/selection';
 
 // Persisted settings (restored on refresh)
 const PERSIST_KEYS = [
   'activeTool', 'strokeColor', 'fillColor', 'strokeWidth', 'fontSize',
   'opacity', 'cornerRadius', 'exportFormat', 'stepStartNumber', 'stepRadius',
   'exportQuality', 'gridEnabled', 'blurRadius', 'pixelSize', 'highlighterWidth',
+  'strokeStyle', 'fillStyle', 'roughness', 'endArrowhead', 'startArrowhead',
   // panelCollapsed is responsive/session - not persisted across reloads
 ] as const;
 type PersistKey = typeof PERSIST_KEYS[number];
@@ -78,9 +83,19 @@ interface EditorState {
   exportQuality: number;
   showHelpDialog: boolean;
   showExportDialog: boolean;
+  showCommandPalette: boolean;
+  showSettings: boolean;
   panelCollapsed: boolean;
   /** True while a paste/URL/file image is decoding - drives skeleton UI */
   imageLoading: boolean;
+  stickyTool: boolean;
+  strokeStyle: StrokeStyle;
+  fillStyle: FillStyle;
+  roughness: number;
+  endArrowhead: Arrowhead;
+  startArrowhead: Arrowhead;
+  imageLocked: boolean;
+  annotationsLocked: boolean;
 
   launchEditor: () => void;
   setImageLoading: (loading: boolean) => void;
@@ -90,7 +105,28 @@ interface EditorState {
   setZoom: (zoom: number) => void;
   setStagePosition: (pos: { x: number; y: number }) => void;
   resetView: () => void;
-  setActiveTool: (tool: ToolType) => void;
+  zoomToActual: () => void;
+  zoomToSelection: () => void;
+  setActiveTool: (tool: ToolType, opts?: { clearSelection?: boolean }) => void;
+  setStickyTool: (v: boolean) => void;
+  setStrokeStyle: (v: StrokeStyle) => void;
+  setFillStyle: (v: FillStyle) => void;
+  setRoughness: (v: number) => void;
+  setEndArrowhead: (v: Arrowhead) => void;
+  setStartArrowhead: (v: Arrowhead) => void;
+  setImageLocked: (v: boolean) => void;
+  setAnnotationsLocked: (v: boolean) => void;
+  duplicateSelected: () => void;
+  groupSelected: () => void;
+  ungroupSelected: () => void;
+  lockSelected: () => void;
+  unlockSelected: () => void;
+  setShowCommandPalette: (show: boolean) => void;
+  setShowSettings: (show: boolean) => void;
+  /** Live preview during drag, does not push undo history. */
+  updateElementSilent: (id: string, updates: Partial<EditorElement>) => void;
+  /** Commit a previewed change as a single undo step. */
+  commitElementUpdate: (id: string, updates: Partial<EditorElement>) => void;
   setStrokeColor: (color: string) => void;
   setFillColor: (color: string) => void;
   setStrokeWidth: (width: number) => void;
@@ -110,6 +146,7 @@ interface EditorState {
   addElements: (elements: EditorElement[]) => void;
   updateElement: (id: string, updates: Partial<EditorElement>) => void;
   updateSelectedElements: (updates: Partial<EditorElement>) => void;
+  nudgeSelected: (dx: number, dy: number) => void;
   removeElements: (ids: string[]) => void;
   setSelectedElementIds: (ids: string[]) => void;
   clearElements: () => void;
@@ -136,9 +173,9 @@ interface EditorState {
 const initialCanvasStyle: CanvasStyle = {
   padding: 0, borderRadius: 0, shadowEnabled: false,
   shadowBlur: 20, shadowOffsetX: 0, shadowOffsetY: 4,
-  shadowColor: 'rgba(0,0,0,0.3)', bgStyle: 'glass',
+  shadowColor: 'rgba(0,0,0,0.3)', bgStyle: 'none',
   bgColor: '#ffffff', bgGradientStart: '#667eea', bgGradientEnd: '#764ba2',
-  deviceFrame: 'none', gridEnabled: false,
+  deviceFrame: 'none', gridEnabled: false, transparentExport: false,
 };
 
 const defaults: Record<string, any> = {
@@ -158,9 +195,14 @@ const defaults: Record<string, any> = {
   highlighterWidth: 24,
   exportQuality: 92,
   panelCollapsed: false,
+  strokeStyle: 'solid' as StrokeStyle,
+  fillStyle: 'hachure' as FillStyle,
+  roughness: 1.25,
+  endArrowhead: 'arrow' as Arrowhead,
+  startArrowhead: 'none' as Arrowhead,
 };
 
-/** Quality is 10–100. Legacy values were 0–1 fractions. */
+/** Quality is 10-100. Legacy values were 0-1 fractions. */
 function normalizeExportQuality(q: unknown): number {
   if (typeof q !== 'number' || !Number.isFinite(q)) return defaults.exportQuality as number;
   if (q > 0 && q <= 1) return Math.round(q * 100);
@@ -168,7 +210,8 @@ function normalizeExportQuality(q: unknown): number {
 }
 
 const persisted = loadPersisted();
-const editorPath = '/editor';
+const editorPath = '/';
+const infoPath = '/info';
 
 function isStandalonePwa(): boolean {
   if (typeof window === 'undefined') return false;
@@ -180,28 +223,27 @@ function isStandalonePwa(): boolean {
 
 function syncEditorRoute(launched: boolean) {
   if (typeof window === 'undefined') return;
-  // In installed PWA, stay on /editor - no landing route churn
+  // Installed PWA always stays on the editor root
   if (isStandalonePwa()) {
     if (window.location.pathname !== editorPath) {
       window.history.replaceState({}, '', editorPath);
     }
     return;
   }
-  const nextPath = launched ? editorPath : '/';
+  const nextPath = launched ? editorPath : infoPath;
   const samePath = window.location.pathname === nextPath;
   const hasLegacyHash = window.location.hash === '#editor';
-  if (!samePath || hasLegacyHash) {
-    const method = hasLegacyHash && window.location.pathname === '/' ? 'replaceState' : 'pushState';
+  const onLegacyEditor = window.location.pathname === '/editor';
+  if (!samePath || hasLegacyHash || onLegacyEditor) {
+    const method = (hasLegacyHash || onLegacyEditor) ? 'replaceState' : 'pushState';
     window.history[method]({}, '', nextPath);
   }
 }
 
-// Auto-launch: /editor path, legacy hash, or installed PWA (skip landing)
-const shouldAutoLaunch = typeof window !== 'undefined' && (
-  window.location.pathname === editorPath
-  || window.location.hash === '#editor'
-  || isStandalonePwa()
-);
+// Editor is the default surface (/ and legacy /editor). Landing lives at /info.
+const shouldAutoLaunch = typeof window === 'undefined'
+  ? true
+  : window.location.pathname !== infoPath;
 
 const generateId = () => Math.random().toString(36).substring(2, 11);
 const cloneElements = (els: EditorElement[]) => JSON.parse(JSON.stringify(els)) as EditorElement[];
@@ -372,8 +414,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   exportQuality: normalizeExportQuality(persisted.exportQuality ?? defaults.exportQuality),
   showExportDialog: false,
   showHelpDialog: false,
+  showCommandPalette: false,
+  showSettings: false,
   panelCollapsed: typeof window !== 'undefined' && window.innerWidth < 900,
   imageLoading: false,
+  stickyTool: false,
+  strokeStyle: persisted.strokeStyle ?? defaults.strokeStyle,
+  fillStyle: persisted.fillStyle ?? defaults.fillStyle,
+  roughness: persisted.roughness ?? defaults.roughness,
+  endArrowhead: persisted.endArrowhead ?? defaults.endArrowhead,
+  startArrowhead: persisted.startArrowhead ?? defaults.startArrowhead,
+  imageLocked: false,
+  annotationsLocked: false,
   // Hand-drawn mode: default true unless explicitly disabled in previous settings
   handDrawn: (typeof window !== 'undefined')
     ? ((): boolean => { try { return JSON.parse(localStorage.getItem('snapty-tool-settings') || '{"handDrawn":true}').handDrawn !== false; } catch { return true; } })()
@@ -382,6 +434,121 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   launchEditor: () => {
     syncEditorRoute(true);
     set({ isEditorLaunched: true });
+  },
+
+  setStickyTool: (v) => set({ stickyTool: v }),
+  setStrokeStyle: (v) => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      if (!ids.size) return { strokeStyle: v };
+      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, strokeStyle: v } as EditorElement : el);
+      return { strokeStyle: v, ...pushHistory(s, els) };
+    });
+    savePersisted({ ...get(), strokeStyle: v });
+  },
+  setFillStyle: (v) => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      if (!ids.size) return { fillStyle: v };
+      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, fillStyle: v } as EditorElement : el);
+      return { fillStyle: v, ...pushHistory(s, els) };
+    });
+    savePersisted({ ...get(), fillStyle: v });
+  },
+  setRoughness: (v) => {
+    const r = Math.max(0, Math.min(3, v));
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      if (!ids.size) return { roughness: r };
+      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, roughness: r } as EditorElement : el);
+      return { roughness: r, ...pushHistory(s, els) };
+    });
+    savePersisted({ ...get(), roughness: r });
+  },
+  setEndArrowhead: (v) => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      if (!ids.size) return { endArrowhead: v };
+      const els = s.elements.map((el) =>
+        ids.has(el.id) && (el.type === 'arrow' || el.type === 'line')
+          ? { ...el, endArrowhead: v } as EditorElement
+          : el,
+      );
+      return { endArrowhead: v, ...pushHistory(s, els) };
+    });
+    savePersisted({ ...get(), endArrowhead: v });
+  },
+  setStartArrowhead: (v) => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      if (!ids.size) return { startArrowhead: v };
+      const els = s.elements.map((el) =>
+        ids.has(el.id) && (el.type === 'arrow' || el.type === 'line')
+          ? { ...el, startArrowhead: v } as EditorElement
+          : el,
+      );
+      return { startArrowhead: v, ...pushHistory(s, els) };
+    });
+    savePersisted({ ...get(), startArrowhead: v });
+  },
+  setImageLocked: (v) => set({ imageLocked: v }),
+  setAnnotationsLocked: (v) => set({ annotationsLocked: v }),
+  setShowCommandPalette: (show) => set({ showCommandPalette: show }),
+  setShowSettings: (show) => set({ showSettings: show }),
+
+  duplicateSelected: () => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      if (!ids.size) return s;
+      const clones: EditorElement[] = [];
+      const newIds: string[] = [];
+      for (const el of s.elements) {
+        if (!ids.has(el.id)) continue;
+        const id = generateId();
+        newIds.push(id);
+        clones.push({ ...JSON.parse(JSON.stringify(el)), id, x: el.x + 16, y: el.y + 16 } as EditorElement);
+      }
+      return { ...pushHistory(s, [...s.elements, ...clones]), selectedElementIds: newIds };
+    });
+  },
+  groupSelected: () => {
+    set((s) => {
+      if (s.selectedElementIds.length < 2) return s;
+      const groupId = generateId();
+      const ids = new Set(s.selectedElementIds);
+      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, groupId } as EditorElement : el);
+      return pushHistory(s, els);
+    });
+  },
+  ungroupSelected: () => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      if (!ids.size) return s;
+      const groupIds = new Set(
+        s.elements.filter((el) => ids.has(el.id) && el.groupId).map((el) => el.groupId as string),
+      );
+      if (!groupIds.size) return s;
+      const els = s.elements.map((el) =>
+        el.groupId && groupIds.has(el.groupId) ? { ...el, groupId: undefined } as EditorElement : el,
+      );
+      return pushHistory(s, els);
+    });
+  },
+  lockSelected: () => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      if (!ids.size) return s;
+      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, locked: true, draggable: false } as EditorElement : el);
+      return pushHistory(s, els);
+    });
+  },
+  unlockSelected: () => {
+    set((s) => {
+      const ids = new Set(s.selectedElementIds);
+      if (!ids.size) return s;
+      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, locked: false, draggable: true } as EditorElement : el);
+      return pushHistory(s, els);
+    });
   },
 
   setHandDrawn: (v) => {
@@ -447,9 +614,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
 
-  // Clear image to show welcome/drop zone WITHOUT resetting tool or style settings
+  // Clear image to show empty state WITHOUT resetting tool or style settings
   replaceImage: () => {
+    if (get().imageLocked) return;
     syncEditorRoute(true);
+    void import('@/lib/editor/autosave').then(({ clearAutosave }) => clearAutosave());
     return set({
       backgroundImage: null,
       imageDataURL: null,
@@ -465,12 +634,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setZoom: (zoom) => set({ zoom: Math.max(0.1, Math.min(5, zoom)) }),
   setStagePosition: (pos) => set({ stagePosition: pos }),
   resetView: () => {
-    const { imageSize } = get();
+    const { imageSize, canvasStyle } = get();
     if (!imageSize.width || !imageSize.height) return;
     // Prefer measuring the actual canvas container when available
     const container = document.querySelector('[data-snapty-canvas]') as HTMLElement | null;
     const root = document.querySelector('[data-snapty-root]') as HTMLElement | null;
-    // Fallbacks subtract chrome (toolbar ~48 + top bar ~48 + settings ~0–224)
+    // Fallbacks subtract chrome (toolbar ~48 + top bar ~48 + settings ~0-224)
     const cw = (container && container.clientWidth > 0)
       ? container.clientWidth
       : Math.max(200, (root?.clientWidth || window.innerWidth) - 96);
@@ -478,18 +647,80 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ? container.clientHeight
       : Math.max(200, (root?.clientHeight || window.innerHeight) - 96);
     if (cw < 40 || ch < 40) return;
+    const framePad = canvasStyle.padding || 0;
+    const contentW = imageSize.width + framePad * 2;
+    const contentH = imageSize.height + framePad * 2;
     const pad = Math.min(80, Math.max(16, Math.min(cw, ch) * 0.08));
-    const z = Math.min((cw - pad) / imageSize.width, (ch - pad) / imageSize.height, 1);
+    const z = Math.min((cw - pad) / contentW, (ch - pad) / contentH, 1);
     set({
       zoom: Math.max(0.05, z),
       stagePosition: {
-        x: (cw - imageSize.width * z) / 2,
-        y: (ch - imageSize.height * z) / 2,
+        x: (cw - contentW * z) / 2,
+        y: (ch - contentH * z) / 2,
+      },
+    });
+  },
+  zoomToActual: () => {
+    const { imageSize, canvasStyle } = get();
+    if (!imageSize.width) return;
+    const container = document.querySelector('[data-snapty-canvas]') as HTMLElement | null;
+    const cw = container?.clientWidth || window.innerWidth;
+    const ch = container?.clientHeight || window.innerHeight;
+    const framePad = canvasStyle.padding || 0;
+    const contentW = imageSize.width + framePad * 2;
+    const contentH = imageSize.height + framePad * 2;
+    set({
+      zoom: 1,
+      stagePosition: {
+        x: (cw - contentW) / 2,
+        y: (ch - contentH) / 2,
+      },
+    });
+  },
+  zoomToSelection: () => {
+    const s = get();
+    if (!s.selectedElementIds.length) {
+      s.resetView();
+      return;
+    }
+    const bounds = unionBounds(
+      s.elements.filter((el) => s.selectedElementIds.includes(el.id)).map(getElementBounds),
+    );
+    if (!bounds || bounds.w < 1 || bounds.h < 1) return;
+    const container = document.querySelector('[data-snapty-canvas]') as HTMLElement | null;
+    const cw = container?.clientWidth || window.innerWidth;
+    const ch = container?.clientHeight || window.innerHeight;
+    const pad = 64;
+    const z = Math.min((cw - pad) / bounds.w, (ch - pad) / bounds.h, 5);
+    set({
+      zoom: Math.max(0.1, z),
+      stagePosition: {
+        x: (cw - bounds.w * z) / 2 - bounds.x * z,
+        y: (ch - bounds.h * z) / 2 - bounds.y * z,
       },
     });
   },
 
-  setActiveTool: (tool) => { set({ activeTool: tool, selectedElementIds: [] }); savePersisted({ ...get(), activeTool: tool }); },
+  setActiveTool: (tool, opts) => {
+    const clearSelection = opts?.clearSelection !== false;
+    set(clearSelection ? { activeTool: tool, selectedElementIds: [] } : { activeTool: tool });
+    savePersisted({ ...get(), activeTool: tool });
+  },
+  updateElementSilent: (id, updates) => {
+    set((s) => ({
+      elements: s.elements.map((el) =>
+        el.id === id ? { ...el, ...updates } as EditorElement : el
+      ),
+    }));
+  },
+  commitElementUpdate: (id, updates) => {
+    set((s) => {
+      const els = s.elements.map((el) =>
+        el.id === id ? { ...el, ...updates } as EditorElement : el
+      );
+      return pushHistory(s, els);
+    });
+  },
   setStrokeColor: (color) => {
     set((s) => {
       const ids = new Set(s.selectedElementIds);
@@ -519,7 +750,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (ids.size) {
         els = s.elements.map((el) => {
           if (!ids.has(el.id)) return el;
-          if (['rectangle', 'rounded-rect', 'circle'].includes(el.type)) return { ...el, fill: color } as EditorElement;
+          if (['rectangle', 'rounded-rect', 'circle', 'diamond'].includes(el.type)) return { ...el, fill: color } as EditorElement;
           return el;
         });
         historyExtra = true;
@@ -629,7 +860,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   resetToolSettings: () => {
-    // Preserve activeTool - only reset stroke/fill/size prefs
     const next = {
       strokeColor: defaults.strokeColor as string,
       fillColor: defaults.fillColor as string,
@@ -643,10 +873,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       stepRadius: defaults.stepRadius as number,
       stepStartNumber: defaults.stepStartNumber as number,
       stepCounter: defaults.stepStartNumber as number,
+      strokeStyle: defaults.strokeStyle as StrokeStyle,
+      fillStyle: defaults.fillStyle as FillStyle,
+      roughness: defaults.roughness as number,
+      endArrowhead: defaults.endArrowhead as Arrowhead,
+      startArrowhead: defaults.startArrowhead as Arrowhead,
+      handDrawn: true,
     };
     set(next);
     savePersisted({ ...get(), ...next });
-    // Keep editor chrome defaults together with the global tool reset.
     try {
       localStorage.setItem('snapty-toolbar', JSON.stringify({ orientation: 'horizontal' }));
       localStorage.setItem('snapty-tool-settings', JSON.stringify({ handDrawn: true }));
@@ -673,6 +908,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const els = s.elements.map((el) =>
         s.selectedElementIds.includes(el.id) ? { ...el, ...updates } as EditorElement : el
       );
+      return pushHistory(s, els);
+    });
+  },
+  nudgeSelected: (dx, dy) => {
+    set((s) => {
+      if (!s.selectedElementIds.length || (dx === 0 && dy === 0)) return s;
+      const ids = new Set(s.selectedElementIds);
+      const els = s.elements.map((el) => {
+        if (!ids.has(el.id) || el.locked) return el;
+        return { ...el, x: el.x + dx, y: el.y + dy } as EditorElement;
+      });
       return pushHistory(s, els);
     });
   },
@@ -733,11 +979,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   canRedo: () => get()._historyIndex < get()._history.length - 1,
 
   setCanvasStyle: (style) => {
+    const prevPad = get().canvasStyle.padding;
     set((s) => {
       const updated = { ...s.canvasStyle, ...style };
       if ('gridEnabled' in style) savePersisted({ ...get(), canvasStyle: updated, gridEnabled: updated.gridEnabled });
       return { canvasStyle: updated };
     });
+    if ('padding' in style && style.padding !== prevPad) {
+      // Re-fit so the framed image stays centered when padding changes
+      setTimeout(() => get().resetView(), 0);
+    }
   },
   setExportFormat: (format) => { set({ exportFormat: format }); savePersisted({ ...get(), exportFormat: format }); },
   setExportQuality: (quality) => {
