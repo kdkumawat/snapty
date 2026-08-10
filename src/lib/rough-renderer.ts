@@ -71,13 +71,14 @@ function buildOptions(input: RoughDrawInput): RoughOptions {
     fillStyle: fill ? mapFillStyle(input.fillStyle) : undefined,
     fillWeight: strokeWidth * 0.5,
     hachureGap: Math.max(4, strokeWidth * 3),
-    roughness,
-    bowing: roughness < 0.5 ? 0 : Math.max(1, roughness * 1.35),
+        roughness,
     strokeLineDash: dashArray(input.strokeStyle, strokeWidth),
     // Multi-stroke is the Excalidraw signature look
     disableMultiStroke: roughness < 0.5,
     disableMultiStrokeFill: roughness < 0.5,
-    preserveVertices: false,
+    // Crisp corners + gentler bowing for a cleaner, Excalidraw-style sketch
+    preserveVertices: true,
+    bowing: roughness < 0.5 ? 0 : Math.max(0.5, roughness * 0.8),
   };
 }
 

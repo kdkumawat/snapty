@@ -8,6 +8,12 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  /*
+    Registers a `font-hand` utility. Deliberately NOT named --font-handwritten:
+    that is the next/font variable, and a theme key of the same name would
+    resolve to `var(--font-handwritten)` referencing itself.
+  */
+  --font-hand: var(--font-handwritten), "Caveat", "Segoe Print", cursive;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -327,10 +333,28 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   position: relative;
   z-index: 100;
   height: 44px;
+  width: 100%;
   max-width: 100%;
   overflow-x: auto;
   overflow-y: visible;
   scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+}
+
+/*
+  Touch targets. Keyed on pointer type rather than viewport width so a touch
+  laptop gets them too, and a narrow desktop window does not.
+*/
+@media (pointer: coarse) {
+  .toolbar-btn,
+  .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+  [data-snapty-toolbar] {
+    height: 52px;
+  }
 }
 
 [data-snapty-toolbar]::-webkit-scrollbar {
@@ -345,6 +369,21 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   min-height: 0;
   min-width: 0;
   background: var(--canvas);
+}
+
+/*
+  Figma-style workspace dots. Painted on a div behind the Konva stage, so it is
+  purely a viewport affordance and never reaches stage.toDataURL() - the
+  in-image grid (canvasStyle.gridEnabled) is a separate, exported thing.
+  color-mix against --foreground keeps it correct in both themes with no JS.
+*/
+.canvas-dot-grid {
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in srgb, var(--foreground) 18%, transparent) 1px,
+    transparent 0
+  );
+  background-size: 20px 20px;
 }
 
 [data-snapty-canvas-wrap] {
@@ -542,6 +581,30 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
 }
 .snapty-toast-error::before {
   background: var(--destructive);
+}
+
+/* Below top chrome, above settings sidebar (z-250) */
+.snapty-toast-viewport {
+  position: fixed !important;
+  top: calc(env(safe-area-inset-top, 0px) + 4.25rem) !important;
+  bottom: auto !important;
+  left: 50% !important;
+  right: auto !important;
+  transform: translateX(-50%);
+  z-index: 270 !important;
+  flex-direction: column !important;
+  width: min(22rem, calc(100vw - 1.5rem));
+  max-width: min(22rem, calc(100vw - 1.5rem));
+  padding: 0 !important;
+  gap: 0.5rem;
+}
+
+@media (min-width: 640px) {
+  .snapty-toast-viewport {
+    left: auto !important;
+    right: 1rem !important;
+    transform: none;
+  }
 }
 
 .snapty-kbd {

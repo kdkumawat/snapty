@@ -106,6 +106,8 @@ export interface ArrowElement extends BaseElement {
 export interface LineElement extends BaseElement {
   type: 'line';
   points: [number, number, number, number];
+  /** Curvature, same convention as {@link ArrowElement.bend}. 0 is straight. */
+  bend?: number;
   stroke?: string;
   strokeWidth?: number;
   startArrowhead?: Arrowhead;
@@ -142,6 +144,8 @@ export interface TextElement extends BaseElement {
   strokeWidth?: number;
   width?: number;
   padding?: number;
+  /** Must match the edit overlay's line-height or multi-line text reflows on commit. */
+  lineHeight?: number;
   align?: 'left' | 'center' | 'right';
 }
 
@@ -187,8 +191,6 @@ export const DEFAULT_COLORS = [
   '#ffffff', '#000000',
 ];
 
-export const DEFAULT_STROKE_WIDTHS = [1, 2, 3, 4, 6, 8, 10, 16];
-
 export const DEFAULT_FONT_SIZES = [12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64, 72];
 
 export const ROUGHNESS_PRESETS: Record<RoughnessPreset, number> = {
@@ -197,9 +199,46 @@ export const ROUGHNESS_PRESETS: Record<RoughnessPreset, number> = {
   cartoonist: 2.6,
 };
 
-/** Handwritten-style font stack for text annotations */
+/** Handwritten-style font stack for text annotations (DOM / CSS). */
 export const HANDWRITTEN_FONT =
   'var(--font-handwritten), "Caveat", "Segoe Print", "Comic Sans MS", cursive';
+
+/**
+ * Canvas (Konva) cannot resolve CSS `var()` in font-family. Use this literal
+ * stack so committed text matches the HTML edit overlay.
+ */
+export const CANVAS_HANDWRITTEN_FONT =
+  '"Caveat", "Segoe Print", "Comic Sans MS", cursive';
+
+/** Plain sans stack, the alternative to {@link HANDWRITTEN_FONT}. */
+export const STANDARD_FONT = 'system-ui, sans-serif';
+
+/** Resolve a stored font stack for Konva `Text` nodes. */
+export function fontFamilyForCanvas(family?: string): string {
+  const f = family ?? HANDWRITTEN_FONT;
+  if (f === STANDARD_FONT) return STANDARD_FONT;
+  if (
+    f.includes('var(--font-handwritten)')
+    || f.includes('Caveat')
+    || f.includes('cursive')
+    || f === HANDWRITTEN_FONT
+  ) {
+    return CANVAS_HANDWRITTEN_FONT;
+  }
+  return f;
+}
+
+/** Numeric badge label font (step tool). Kept separate: digits need a stable sans. */
+export const BADGE_FONT = '-apple-system, BlinkMacSystemFont, sans-serif';
+
+/**
+ * Text box metrics shared by the Konva `Text` node and the HTML textarea
+ * overlay used to edit it. They must agree or the text jumps on commit: the
+ * overlay used to apply 4 *CSS* px of padding while Konva applied 4 *image*
+ * units, so the drift grew with zoom.
+ */
+export const TEXT_PADDING = 4;
+export const TEXT_LINE_HEIGHT = 1.25;
 
 export interface MagnifierElement extends BaseElement {
   type: 'magnifier';
@@ -207,6 +246,14 @@ export interface MagnifierElement extends BaseElement {
   height: number;
   /** How much to enlarge the captured region (default 2) */
   magnification?: number;
+  /**
+   * Legacy fixed-orbit placement: bubble direction from the source in radians,
+   * at an auto-computed distance. Superseded by `previewOffset`, still honoured
+   * so magnifiers saved before free placement render unchanged.
+   */
+  previewAngle?: number;
+  /** Free bubble placement: offset from the source center, in image units. */
+  previewOffset?: { x: number; y: number };
   stroke?: string;
   strokeWidth?: number;
 }

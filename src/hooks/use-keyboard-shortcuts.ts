@@ -8,6 +8,7 @@ import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
 import { captureScreenRegion, isScreenCaptureSupported } from '@/lib/screen-capture';
 import type { ToolType } from '@/types/editor';
 import { letterToTool, digitToTool } from '@/lib/tool-shortcuts';
+import { cycleToolSetting } from '@/lib/editor/tool-setting-cycle';
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.userAgent);
 const modKey = isMac ? 'Cmd' : 'Ctrl';
@@ -70,7 +71,8 @@ export function useKeyboardShortcuts() {
         const tool = letterToTool[key] || digitToTool[key];
         if (tool) {
           e.preventDefault();
-          st.setActiveTool(tool);
+          if (st.activeTool === tool) cycleToolSetting(tool);
+          else st.setActiveTool(tool);
           return;
         }
       }

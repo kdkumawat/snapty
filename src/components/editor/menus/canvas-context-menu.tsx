@@ -29,6 +29,7 @@ export default function CanvasContextMenu({ children }: { children: React.ReactN
   const unlockSelected = useEditorStore((s) => s.unlockSelected);
   const updateSelectedElements = useEditorStore((s) => s.updateSelectedElements);
   const hasSelection = selectedElementIds.length > 0;
+  const hasImage = useEditorStore((s) => s.backgroundImage !== null);
   const selected = elements.filter((el) => selectedElementIds.includes(el.id));
   const locked = selected.length > 0 && selected.every((el) => el.locked);
 
@@ -64,6 +65,13 @@ export default function CanvasContextMenu({ children }: { children: React.ReactN
           <ContextMenu.Item className={itemClass} onSelect={() => void pasteImage()}>
             Paste
           </ContextMenu.Item>
+          <ContextMenu.Item
+            className={itemClass}
+            disabled={!hasImage}
+            onSelect={() => window.dispatchEvent(new CustomEvent('snapty-ocr'))}
+          >
+            Extract text
+          </ContextMenu.Item>
           <ContextMenu.Item className={itemClass} disabled={!hasSelection} onSelect={duplicateSelected}>
             Duplicate
           </ContextMenu.Item>
@@ -87,14 +95,14 @@ export default function CanvasContextMenu({ children }: { children: React.ReactN
             disabled={!hasSelection}
             onSelect={() => selectedElementIds.forEach(bringForward)}
           >
-            Bring Forward
+            Bring forward
           </ContextMenu.Item>
           <ContextMenu.Item
             className={itemClass}
             disabled={!hasSelection}
             onSelect={() => selectedElementIds.forEach(sendBackward)}
           >
-            Send Back
+            Send back
           </ContextMenu.Item>
           <ContextMenu.Separator className="h-px my-1 bg-border" />
           <ContextMenu.Item className={itemClass} disabled={!hasSelection} onSelect={locked ? unlockSelected : lockSelected}>

@@ -13,12 +13,12 @@ export default function TopChrome({
   onOpenPalette?: () => void;
 }) {
   const modalOpen = useEditorStore((s) =>
-    s.showHelpDialog || s.showExportDialog || s.showCommandPalette || s.showSettings,
+    s.showHelpDialog || s.showExportDialog || s.showCommandPalette,
   );
   if (modalOpen) return null;
 
   return (
-    <div className="absolute top-0 inset-x-0 z-[100] pointer-events-none px-2 sm:px-3 pt-3">
+    <div className="absolute top-0 inset-x-0 z-[80] pointer-events-none px-2 sm:px-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))]">
       <div className="flex items-start gap-2 w-full">
         <div className="flex-1 min-w-0 overflow-hidden flex justify-center pointer-events-auto">
           <FloatingToolbar onOpenPalette={onOpenPalette} embedded />

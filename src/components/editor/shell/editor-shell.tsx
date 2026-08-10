@@ -7,8 +7,7 @@ import { useEditorStore } from '@/store/editor-store';
 import { useKeyboardShortcuts, useClipboardPaste } from '@/hooks/use-keyboard-shortcuts';
 import TopChrome from '@/components/editor/chrome/top-chrome';
 import { ToolbarTips } from '@/components/editor/toolbar/floating-toolbar';
-import ZoomControls from '@/components/editor/chrome/zoom-controls';
-import UtilityCluster from '@/components/editor/chrome/utility-cluster';
+import BottomChrome from '@/components/editor/chrome/bottom-chrome';
 import FloatingPropertiesPanel from '@/components/editor/panels/properties-panel';
 import EmptyState from '@/components/editor/empty/empty-state';
 import ExportDialog from '@/components/editor/export-dialog';
@@ -126,8 +125,7 @@ export default function EditorShell() {
         <TopChrome onOpenPalette={() => setShowCommandPalette(true)} />
         <ToolbarTips />
         <FloatingPropertiesPanel />
-        <ZoomControls />
-        <UtilityCluster />
+        <BottomChrome />
 
         <input
           ref={fileInputRef}

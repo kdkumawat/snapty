@@ -6,7 +6,8 @@ import {
   Image as KonvaImage, Circle, Transformer,
 } from 'react-konva';
 import Konva from 'konva';
-import { ScanText, Copy, Check, X } from 'lucide-react';
+import { useTheme } from 'next-themes';
+import OcrPanel from '@/components/editor/panels/ocr-panel';
 import { useEditorStore, generateId, getImageToolScale } from '@/store/editor-store';
 import { loadImageFileIntoEditor } from '@/lib/image-load';
 import {
@@ -21,12 +22,37 @@ import MagnifierKonva from '@/components/editor/canvas/magnifier-konva';
 import { arrowHeadPoints } from '@/lib/rough-renderer';
 import { snapBounds, type GuideLine } from '@/lib/editor/snap-guides';
 import { getElementBounds, boundsIntersect } from '@/lib/editor/selection';
+import { hydrateSettingsFromSelection } from '@/lib/editor/settings-sync';
+import { magnifierSourceCenter } from '@/lib/editor/magnifier-geometry';
+import {
+  controlPoint, renderPoints, bendFromHandle, tangentAtStart,
+} from '@/lib/editor/curve';
 import type {
   EditorElement, ShapeElement, ArrowElement, LineElement,
   PencilElement, CircleElement, TextElement, StepElement, DiamondElement,
   MagnifierElement, ToolType,
 } from '@/types/editor';
-import { HANDWRITTEN_FONT } from '@/types/editor';
+import {
+  HANDWRITTEN_FONT, BADGE_FONT, TEXT_PADDING, TEXT_LINE_HEIGHT, fontFamilyForCanvas,
+} from '@/types/editor';
+import { cn } from '@/lib/utils';
+
+/** Find a top-level annotation node by id (safe for ids that start with digits). */
+function findAnnotationNode(stage: Konva.Stage, id: string): Konva.Node | undefined {
+  const layer = stage.findOne('.annotation-layer') as Konva.Layer | undefined;
+  if (!layer) return undefined;
+  return layer.getChildren((node) => node.id() === id)[0];
+}
+
+/** True when the event target is a Transformer anchor, border, or rotation handle. */
+function isTransformerTarget(target: Konva.Node): boolean {
+  let node: Konva.Node | null = target;
+  while (node) {
+    if (node.getClassName?.() === 'Transformer') return true;
+    node = node.getParent();
+  }
+  return false;
+}
 
 /**
  * Tool cursors: high-contrast SVG (white halo + solid color) encoded as base64
@@ -208,14 +234,16 @@ function getToolCursorCSS(
   }
 }
 
-// Create a Figma-like dot grid pattern
-function createGridPattern(): HTMLCanvasElement {
+// Create a Figma-like dot grid pattern. The dot color is passed in (resolved
+// from the theme) rather than hardcoded, which used to leave it light grey and
+// effectively invisible on dark screenshots.
+function createGridPattern(dotColor: string): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   const gap = 20;
   canvas.width = gap;
   canvas.height = gap;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#d4d4d4';
+  ctx.fillStyle = dotColor;
   ctx.beginPath();
   ctx.arc(gap / 2, gap / 2, 1, 0, Math.PI * 2);
   ctx.fill();
@@ -274,8 +302,16 @@ const EditorCanvas: React.FC = () => {
     };
   }, []);
 
+  /*
+    OCR is triggered by a window event so the palette and context menu can reach
+    it without prop drilling. The handler is held in a ref: with `runOCR` closed
+    over directly and `[]` deps, the listener captured the first render's
+    `backgroundImage` (always null) and its own guard returned immediately,
+    which is why OCR silently did nothing.
+  */
+  const runOCRRef = useRef<() => void>(() => {});
   useEffect(() => {
-    const onOcr = () => { void runOCR(); };
+    const onOcr = () => { runOCRRef.current(); };
     window.addEventListener('snapty-ocr', onOcr);
     return () => window.removeEventListener('snapty-ocr', onOcr);
   }, []);
@@ -293,6 +329,7 @@ const EditorCanvas: React.FC = () => {
   const fillColor = useEditorStore((s) => s.fillColor);
   const strokeWidth = useEditorStore((s) => s.strokeWidth);
   const fontSize = useEditorStore((s) => s.fontSize);
+  const fontFamily = useEditorStore((s) => s.fontFamily);
   const opacity = useEditorStore((s) => s.opacity);
   const cornerRadius = useEditorStore((s) => s.cornerRadius);
   const elements = useEditorStore((s) => s.elements);
@@ -351,6 +388,9 @@ const EditorCanvas: React.FC = () => {
     window.setTimeout(() => setOcrCopied(false), 1500);
   }
 
+  // Keep the event listener pointing at the current closure.
+  runOCRRef.current = () => { void runOCR(); };
+
   // Cursor based on tool (+ next step number for the stepper tool)
   const cursorCSS = useMemo(
     () => getToolCursorCSS(activeTool, isHandDragging, {
@@ -382,7 +422,21 @@ const EditorCanvas: React.FC = () => {
   }, [cursorCSS, dimensions, backgroundImage, activeTool]);
 
   // Grid pattern (created once)
-  const gridPattern = useMemo(() => createGridPattern(), []);
+  // Grid pattern. Rebuilt when the theme flips so the dots stay readable on
+  // both light and dark screenshots.
+  const { resolvedTheme } = useTheme();
+  const gridPattern = useMemo(
+    () => {
+      if (typeof document === 'undefined') return null;
+      const fg = getComputedStyle(document.documentElement)
+        .getPropertyValue('--foreground')
+        .trim() || '#1C1917';
+      return createGridPattern(`color-mix(in srgb, ${fg} 20%, transparent)`);
+    },
+    // resolvedTheme is the trigger; the value itself is read from CSS.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [resolvedTheme],
+  );
 
   // Resize observer for container dimensions - update stage size without auto-resetting zoom
   // (auto resetView on every resize felt jumpy; fit-to-screen remains available on toolbar)
@@ -518,26 +572,28 @@ const EditorCanvas: React.FC = () => {
         tr.getLayer()?.batchDraw();
         return;
       }
-      const layer = st.findOne('.annotation-layer');
-      if (!layer) return;
-      const skipTypes = new Set(['arrow', 'line', 'magnifier', 'pencil', 'highlighter']);
+      const skipTypes = new Set(['arrow', 'line', 'magnifier']);
       const nodes = selectedElementIds
         .filter((id) => {
           const el = elements.find((e) => e.id === id);
           return el && !skipTypes.has(el.type) && !el.locked;
         })
-        .map((id) => (layer as Konva.Layer).findOne(`#${id}`))
+        .map((id) => findAnnotationNode(st, id))
         .filter(Boolean) as Konva.Node[];
       tr.nodes(nodes);
+      tr.forceUpdate();
       tr.getLayer()?.batchDraw();
     };
     attach();
-    const onReady = () => attach();
+    const onReady = () => {
+      attach();
+      requestAnimationFrame(attach);
+    };
     window.addEventListener('snapty-overlay-image-ready', onReady);
-    const t = window.setTimeout(attach, 50);
+    const retries = [16, 50, 120, 250].map((ms) => window.setTimeout(attach, ms));
     return () => {
       window.removeEventListener('snapty-overlay-image-ready', onReady);
-      window.clearTimeout(t);
+      retries.forEach((t) => window.clearTimeout(t));
     };
   }, [selectedElementIds, elements]);
 
@@ -581,10 +637,13 @@ const EditorCanvas: React.FC = () => {
         x: ti.x,
         y: ti.y,
         text: text.trim(),
-        fontSize: Math.round(st.fontSize * scale),
-        fontFamily: HANDWRITTEN_FONT,
+        // Unrounded: the settings <-> element round trip must be lossless.
+        fontSize: st.fontSize * scale,
+        fontFamily: st.fontFamily || HANDWRITTEN_FONT,
         fill: st.strokeColor,
         opacity: st.opacity,
+        padding: TEXT_PADDING,
+        lineHeight: TEXT_LINE_HEIGHT,
       } as TextElement);
     }
     setTextInput({ x: 0, y: 0, visible: false });
@@ -636,9 +695,12 @@ const EditorCanvas: React.FC = () => {
     };
   }
 
-  // Create a blurred or pixelated image data URL for a region
+  // Create a blurred or pixelated image data URL for a region.
+  // Intensity comes in as an argument rather than being read from the store, so
+  // an existing element can be re-baked with its own settings after the fact.
   function createBlurImage(
-    x: number, y: number, w: number, h: number, type: 'blur' | 'pixelate'
+    x: number, y: number, w: number, h: number, type: 'blur' | 'pixelate',
+    intensity?: number,
   ): Promise<string> {
     return new Promise((resolve) => {
       const s = useEditorStore.getState();
@@ -657,11 +719,11 @@ const EditorCanvas: React.FC = () => {
       const ctx = offscreen.getContext('2d')!;
 
       if (type === 'blur') {
-        const radius = Math.round((s.blurRadius || 12) * scale);
+        const radius = Math.round((intensity ?? s.blurRadius ?? 12) * scale);
         ctx.filter = `blur(${radius}px)`;
         ctx.drawImage(s.backgroundImage, ax, ay, aw, ah, 0, 0, aw, ah);
       } else {
-        const px = Math.max(2, Math.round((s.pixelSize || 10) * scale));
+        const px = Math.max(2, Math.round((intensity ?? s.pixelSize ?? 10) * scale));
         const sw = Math.max(1, Math.ceil(aw / px));
         const sh = Math.max(1, Math.ceil(ah / px));
         const smallCanvas = document.createElement('canvas');
@@ -674,6 +736,66 @@ const EditorCanvas: React.FC = () => {
       resolve(offscreen.toDataURL('image/png'));
     });
   }
+
+  /**
+   * Re-bake blur/pixelate regions when their geometry or intensity changes.
+   *
+   * The effect is rasterised into a PNG at commit time, which keeps raster and
+   * SVG export trivially correct but means the bitmap goes stale the moment the
+   * region is moved, resized, or its intensity is edited - previously a resized
+   * pixelate just stretched its old tile, and the intensity had no UI at all.
+   * Debounced so a drag produces one re-bake rather than one per frame, and
+   * written silently so a gesture stays a single undo step.
+   */
+  const rebakeRef = useRef<Map<string, string>>(new Map());
+  const rebakeTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    const targets = elements.filter(
+      (el): el is ShapeElement =>
+        (el.type === 'blur' || el.type === 'pixelate') && !!(el as ShapeElement).imageDataURL,
+    );
+    if (!targets.length || !backgroundImage) return;
+
+    // Signature of everything the baked bitmap depends on.
+    const signatureOf = (el: ShapeElement) =>
+      [
+        Math.round(el.x), Math.round(el.y),
+        Math.round(Math.abs(el.width)), Math.round(Math.abs(el.height)),
+        el.type === 'blur' ? el.blurRadius : el.pixelSize,
+      ].join(':');
+
+    const stale = targets.filter((el) => rebakeRef.current.get(el.id) !== signatureOf(el));
+    // First sight of an element is not stale: it was just baked at commit time.
+    const unseen = stale.filter((el) => !rebakeRef.current.has(el.id));
+    unseen.forEach((el) => rebakeRef.current.set(el.id, signatureOf(el)));
+    const needsWork = stale.filter((el) => !unseen.includes(el));
+    if (!needsWork.length) return;
+
+    if (rebakeTimerRef.current !== null) window.clearTimeout(rebakeTimerRef.current);
+    rebakeTimerRef.current = window.setTimeout(() => {
+      rebakeTimerRef.current = null;
+      void Promise.all(
+        needsWork.map(async (el) => {
+          const w = Math.abs(el.width);
+          const h = Math.abs(el.height);
+          const x = el.width < 0 ? el.x + el.width : el.x;
+          const y = el.height < 0 ? el.y + el.height : el.y;
+          const intensity = el.type === 'blur' ? el.blurRadius : el.pixelSize;
+          const url = await createBlurImage(x, y, w, h, el.type as 'blur' | 'pixelate', intensity);
+          rebakeRef.current.set(el.id, signatureOf(el));
+          if (url) updateElementSilent(el.id, { imageDataURL: url } as Partial<EditorElement>);
+        }),
+      );
+    }, 120);
+
+    return () => {
+      if (rebakeTimerRef.current !== null) {
+        window.clearTimeout(rebakeTimerRef.current);
+        rebakeTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elements, backgroundImage, updateElementSilent]);
 
   // Create a spotlight image: show only the selected area at full brightness, transparent elsewhere
   function createSpotlightImage(
@@ -724,6 +846,12 @@ const EditorCanvas: React.FC = () => {
     // Read ALL values from the store to avoid stale closure issues with React Konva
     const s = useEditorStore.getState();
 
+    // Let Konva Transformer own corner / edge / rotate handles (any active tool).
+    if (isTransformerTarget(e.target)) {
+      e.cancelBubble = true;
+      return;
+    }
+
     // Middle mouse button → pan
     if (e.evt.button === 1) {
       e.evt.preventDefault();
@@ -768,42 +896,19 @@ const EditorCanvas: React.FC = () => {
           altDuplicateRef.current = clickedId;
         }
 
+        let nextIds: string[];
         if (e.evt.shiftKey) {
           const currentIds = s.selectedElementIds;
-          s.setSelectedElementIds(
-            currentIds.includes(clickedId)
-              ? currentIds.filter((i) => i !== clickedId)
-              : [...currentIds, clickedId]
-          );
+          nextIds = currentIds.includes(clickedId)
+            ? currentIds.filter((i) => i !== clickedId)
+            : [...currentIds, clickedId];
         } else if (clicked?.groupId) {
-          const groupIds = s.elements.filter((el) => el.groupId === clicked.groupId).map((el) => el.id);
-          s.setSelectedElementIds(groupIds);
+          nextIds = s.elements.filter((el) => el.groupId === clicked.groupId).map((el) => el.id);
         } else {
-          s.setSelectedElementIds([clickedId]);
+          nextIds = [clickedId];
         }
-        // Sync property panel from selection (unscale so tool defaults don't double-scale)
-        const el = s.elements.find((x) => x.id === clickedId);
-        if (el) {
-          const scale = getImageToolScale(s.imageSize.width, s.imageSize.height) || 1;
-          const patch: Record<string, unknown> = {};
-          if ('stroke' in el && (el as any).stroke) patch.strokeColor = (el as any).stroke;
-          if (el.type === 'text' && (el as TextElement).fill) patch.strokeColor = (el as TextElement).fill;
-          if (el.type === 'step' && (el as StepElement).fill) patch.strokeColor = (el as StepElement).fill;
-          if ('strokeWidth' in el && (el as any).strokeWidth != null) {
-            patch.strokeWidth = Math.max(1, Math.round((el as any).strokeWidth / scale));
-          }
-          if (el.type === 'text' && (el as TextElement).fontSize) {
-            patch.fontSize = Math.max(8, Math.round(((el as TextElement).fontSize || 24) / scale));
-          }
-          if (el.type === 'step' && (el as StepElement).radius) {
-            patch.stepRadius = Math.max(8, Math.round(((el as StepElement).radius || 16) / scale));
-          }
-          if (el.opacity != null) patch.opacity = el.opacity;
-          if (el.strokeStyle) patch.strokeStyle = el.strokeStyle;
-          if (el.fillStyle) patch.fillStyle = el.fillStyle;
-          if (el.roughness != null) patch.roughness = el.roughness;
-          if (Object.keys(patch).length) useEditorStore.setState(patch as any);
-        }
+        s.setSelectedElementIds(nextIds);
+        syncSettingsFromSelection(nextIds);
         return;
     }
 
@@ -874,15 +979,18 @@ const EditorCanvas: React.FC = () => {
     }
 
     const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
-    const sw = Math.max(1, Math.round(s.strokeWidth * scale));
-    const hw = Math.max(4, Math.round((s.highlighterWidth || 24) * scale));
-    const pointerSize = Math.max(8, Math.round(12 * scale));
+    // Unrounded: settings are canonical, elements are settings*scale, and
+    // hydration divides straight back out. Rounding either leg made repeated
+    // select/deselect drift the value.
+    const sw = Math.max(0.5, s.strokeWidth * scale);
+    const hw = Math.max(2, (s.highlighterWidth || 24) * scale);
+    const pointerSize = Math.max(8, 12 * scale);
 
     // Step tool: place a numbered step circle
     if (s.activeTool === 'step') {
       const pos = getCanvasPoint();
       if (!pos) return;
-      const r = Math.max(8, Math.round(s.stepRadius * scale));
+      const r = Math.max(8, s.stepRadius * scale);
       const num = s.stepCounter;
       s.addElement({
         id: generateId(),
@@ -892,8 +1000,8 @@ const EditorCanvas: React.FC = () => {
         stepNumber: num,
         radius: r,
         fill: s.strokeColor,
-        fontSize: Math.round(r * 0.8),
-        opacity: 1,
+        fontSize: r * 0.8,
+        opacity: s.opacity,
       } as StepElement);
       return;
     }
@@ -958,7 +1066,7 @@ const EditorCanvas: React.FC = () => {
         stroke: s.strokeColor,
         fill: s.activeTool === 'magnifier' ? 'transparent' : (s.fillColor === 'transparent' ? 'transparent' : s.fillColor),
         strokeWidth: sw,
-        ...(s.activeTool === 'magnifier' ? { magnification: 2.25, roughness: s.roughness } : {}),
+        ...(s.activeTool === 'magnifier' ? { magnification: s.magnification, roughness: s.roughness } : {}),
       } as CircleElement | MagnifierElement);
     } else if (s.activeTool === 'diamond') {
       setDrawingElement({
@@ -982,7 +1090,7 @@ const EditorCanvas: React.FC = () => {
           ? undefined
           : (s.activeTool === 'spotlight' ? undefined : s.fillColor),
         strokeWidth: ['blur', 'pixelate', 'spotlight'].includes(s.activeTool) ? 0 : sw,
-        cornerRadius: s.activeTool === 'rounded-rect' ? Math.round(s.cornerRadius * scale) : 0,
+        cornerRadius: s.activeTool === 'rounded-rect' ? s.cornerRadius * scale : 0,
         blurRadius: s.activeTool === 'blur' ? s.blurRadius : undefined,
         pixelSize: s.activeTool === 'pixelate' ? s.pixelSize : undefined,
       } as ShapeElement);
@@ -990,6 +1098,8 @@ const EditorCanvas: React.FC = () => {
   }
 
   function handleMouseMove(e?: Konva.KonvaEventObject<any>) {
+    if (e && isTransformerTarget(e.target)) return;
+
     // Hover-to-select: enable selection cursor/interaction without changing toolbar tool
     if (e && !isDrawing && !isErasing) {
       const s = useEditorStore.getState();
@@ -1078,7 +1188,9 @@ const EditorCanvas: React.FC = () => {
       const origin = drawOriginRef.current || { x: drawingElement.x, y: drawingElement.y };
       let w = pos.x - origin.x;
       let h = pos.y - origin.y;
-      if (e?.evt?.shiftKey || drawingElement.type === 'magnifier') {
+      // Magnifiers draw elliptically like every other shape; Shift constrains
+      // to a circle rather than the tool being permanently square-locked.
+      if (e?.evt?.shiftKey) {
         const size = Math.max(Math.abs(w), Math.abs(h));
         w = Math.sign(w || 1) * size;
         h = Math.sign(h || 1) * size;
@@ -1122,13 +1234,14 @@ const EditorCanvas: React.FC = () => {
         h: Math.max(marquee.h, 1),
       };
       const hit = s.elements
-        .filter((el) => !el.locked && boundsIntersect(box, getElementBounds(el)))
+        .filter((el) => !el.locked && boundsIntersect(box, getElementBounds(el, s.imageSize)))
         .map((el) => el.id);
       if (hit.length) {
         const next = marqueeAdditiveRef.current
           ? [...new Set([...s.selectedElementIds, ...hit])]
           : hit;
         s.setSelectedElementIds(next);
+        syncSettingsFromSelection(next);
       }
       marqueeOriginRef.current = null;
       marqueeAdditiveRef.current = false;
@@ -1222,11 +1335,18 @@ const EditorCanvas: React.FC = () => {
         const y = Math.min(shape.y, shape.y + shape.height);
         const w = Math.abs(shape.width);
         const h = Math.abs(shape.height);
-        const url = await createBlurImage(x, y, w, h, drawingElement.type);
+        const s = useEditorStore.getState();
+        const intensity = drawingElement.type === 'blur' ? s.blurRadius : s.pixelSize;
+        const url = await createBlurImage(x, y, w, h, drawingElement.type, intensity);
         if (url) {
           addElement({
             ...shape, x, y, width: w, height: h,
             imageDataURL: url,
+            // Persisted so the region can be re-baked when it is moved,
+            // resized, or its intensity is changed from the panel.
+            ...(drawingElement.type === 'blur'
+              ? { blurRadius: intensity }
+              : { pixelSize: intensity }),
             stroke: undefined,
             fill: undefined,
           } as ShapeElement);
@@ -1308,8 +1428,10 @@ const EditorCanvas: React.FC = () => {
     applyZoomAt(rect.left + pointer.x, rect.top + pointer.y, s.zoom * factor);
   }
 
-  // Pinch-to-zoom (touch)
-  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
+  // Pinch-to-zoom + two-finger pan (touch)
+  const pinchRef = useRef<
+    { dist: number; zoom: number; cx: number; cy: number } | null
+  >(null);
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -1328,9 +1450,12 @@ const EditorCanvas: React.FC = () => {
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 2) {
         e.preventDefault();
+        const center = touchCenter(e.touches);
         pinchRef.current = {
           dist: touchDist(e.touches),
           zoom: useEditorStore.getState().zoom,
+          cx: center.x,
+          cy: center.y,
         };
         // Cancel any in-progress draw so pinch doesn't create a stroke
         setIsDrawing(false);
@@ -1345,8 +1470,21 @@ const EditorCanvas: React.FC = () => {
       e.preventDefault();
       const dist = touchDist(e.touches);
       if (dist < 1 || pinchRef.current.dist < 1) return;
-      const scale = dist / pinchRef.current.dist;
       const center = touchCenter(e.touches);
+
+      // Two-finger pan: the centroid's own movement translates the stage.
+      // Without this the canvas could only be panned with the hand tool, which
+      // is an awkward mode switch on a phone.
+      const dx = center.x - pinchRef.current.cx;
+      const dy = center.y - pinchRef.current.cy;
+      if (dx || dy) {
+        const s = useEditorStore.getState();
+        s.setStagePosition({ x: s.stagePosition.x + dx, y: s.stagePosition.y + dy });
+        pinchRef.current.cx = center.x;
+        pinchRef.current.cy = center.y;
+      }
+
+      const scale = dist / pinchRef.current.dist;
       applyZoomAt(center.x, center.y, pinchRef.current.zoom * scale);
     };
     const onTouchEnd = (e: TouchEvent) => {
@@ -1367,21 +1505,38 @@ const EditorCanvas: React.FC = () => {
 
   // --- Selection ---
 
+  /**
+   * Pull the selected elements' real values into the tool settings.
+   *
+   * Every path that changes the selection must call this. Previously only the
+   * stage-mousedown path hydrated (and only a subset of fields), so clicking a
+   * shape - the common case - left the panel showing whatever was set last.
+   */
+  const syncSettingsFromSelection = useCallback((ids: string[]) => {
+    const s = useEditorStore.getState();
+    const els = s.elements.filter((el) => ids.includes(el.id));
+    if (!els.length) return;
+    const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
+    const patch = hydrateSettingsFromSelection(els, scale);
+    if (Object.keys(patch).length) useEditorStore.setState(patch as Partial<typeof s>);
+  }, []);
+
   function handleSelect(id: string, e: Konva.KonvaEventObject<MouseEvent>) {
     const s = useEditorStore.getState();
     // Selection is intentionally tool-independent: clicking an annotation always
     // selects it, which makes quick corrections much less frustrating.
     e.cancelBubble = true;
+    let nextIds: string[];
     if (e.evt.shiftKey) {
       const currentIds = s.selectedElementIds;
-      s.setSelectedElementIds(
-        currentIds.includes(id)
-          ? currentIds.filter((i) => i !== id)
-          : [...currentIds, id]
-      );
+      nextIds = currentIds.includes(id)
+        ? currentIds.filter((i) => i !== id)
+        : [...currentIds, id];
     } else {
-      s.setSelectedElementIds([id]);
+      nextIds = [id];
     }
+    s.setSelectedElementIds(nextIds);
+    syncSettingsFromSelection(nextIds);
   }
 
   function handleTextDblClick(el: TextElement, e: Konva.KonvaEventObject<any>) {
@@ -1397,7 +1552,9 @@ const EditorCanvas: React.FC = () => {
       editId: el.id,
       initialText: el.text,
     });
-    if (el.fill) useEditorStore.setState({ strokeColor: el.fill });
+    // Hydrate before the overlay mounts so it renders in this element's own
+    // font and size rather than the last-used defaults.
+    syncSettingsFromSelection([el.id]);
   }
 
   function loadDroppedImage(file: File) {
@@ -1440,22 +1597,84 @@ const EditorCanvas: React.FC = () => {
       scaleY: 1,
     };
 
+    /*
+      Types whose size is not `width`/`height`. Without these branches the
+      generic path below silently discarded the resize (the `'width' in el`
+      guard was false), so text and step badges showed handles that did nothing.
+    */
+    if (el?.type === 'text') {
+      const textEl = el as TextElement;
+      const baseWidth = node.width() || textEl.width || 0;
+      // Side handles re-wrap; corner handles scale the type itself, which is
+      // what "make this label bigger" means.
+      const corner = Math.abs(scaleX - scaleY) < 0.01 && Math.abs(scaleX - 1) > 0.01;
+      const nextWidth = Math.max(20, baseWidth * scaleX);
+      updateElement(id, {
+        ...updates,
+        width: nextWidth,
+        ...(corner
+          ? { fontSize: Math.max(4, (textEl.fontSize ?? 24) * Math.sqrt(scaleX * scaleY)) }
+          : {}),
+      } as Partial<TextElement>);
+      node.scaleX(1);
+      node.scaleY(1);
+      node.width(nextWidth);
+      return;
+    }
+
+    if (el?.type === 'step') {
+      const stepEl = el as StepElement;
+      const r = Math.max(8, (stepEl.radius ?? 16) * Math.max(scaleX, scaleY));
+      updateElement(id, {
+        ...updates,
+        radius: r,
+        fontSize: r * 0.8,
+      } as Partial<StepElement>);
+      node.scaleX(1);
+      node.scaleY(1);
+      return;
+    }
+
+    if (el?.type === 'pencil' || el?.type === 'highlighter') {
+      // Freehand points are absolute image coordinates with the element pinned
+      // at 0,0 - an invariant cropToRegion relies on. Scale the points about
+      // their own bounding box and leave x/y alone.
+      const pencilEl = el as PencilElement;
+      const pts = pencilEl.points ?? [];
+      if (pts.length >= 2) {
+        let minX = Infinity;
+        let minY = Infinity;
+        for (let i = 0; i < pts.length; i += 2) {
+          minX = Math.min(minX, pts[i]);
+          minY = Math.min(minY, pts[i + 1]);
+        }
+        const scaled = pts.map((v, i) =>
+          i % 2 === 0 ? minX + (v - minX) * scaleX : minY + (v - minY) * scaleY,
+        );
+        updateElement(id, {
+          x: 0,
+          y: 0,
+          rotation: node.rotation(),
+          scaleX: 1,
+          scaleY: 1,
+          points: scaled,
+        } as Partial<PencilElement>);
+      }
+      node.scaleX(1);
+      node.scaleY(1);
+      node.position({ x: 0, y: 0 });
+      return;
+    }
+
     if (el && ('width' in el)) {
-      const w = Math.max(5, Math.abs((node.width() || (el as ShapeElement).width || 0) * scaleX));
-      const h = Math.max(5, Math.abs((node.height() || (el as ShapeElement).height || 0) * scaleY));
+      const baseW = node.width() || (el as ShapeElement).width || 0;
+      const baseH = node.height() || (el as ShapeElement).height || 0;
+      const w = Math.max(5, Math.abs(baseW * scaleX));
+      const h = Math.max(5, Math.abs(baseH * scaleY));
       (updates as Partial<ShapeElement>).width = w;
       (updates as Partial<ShapeElement>).height = h;
       node.width(w);
       node.height(h);
-      // Keep overlay bitmap children in sync when transforming a Group
-      if (node.getClassName?.() === 'Group') {
-        (node as Konva.Group).getChildren().forEach((child) => {
-          child.width(w);
-          child.height(h);
-          child.scaleX(1);
-          child.scaleY(1);
-        });
-      }
     }
 
     node.scaleX(1);
@@ -1482,7 +1701,7 @@ const EditorCanvas: React.FC = () => {
       }
       const others = s.elements
         .filter((item) => item.id !== id && !s.selectedElementIds.includes(item.id))
-        .map(getElementBounds);
+        .map((item) => getElementBounds(item, s.imageSize));
       const snapped = snapBounds(moving, others);
       x = snapped.x;
       y = snapped.y;
@@ -1528,7 +1747,7 @@ const EditorCanvas: React.FC = () => {
     };
     const others = s.elements
       .filter((item) => item.id !== id)
-      .map(getElementBounds);
+      .map((item) => getElementBounds(item, s.imageSize));
     const snapped = snapBounds(moving, others);
     setGuides(snapped.guides);
     e.target.position({ x: snapped.x, y: snapped.y });
@@ -1539,7 +1758,8 @@ const EditorCanvas: React.FC = () => {
   const handleElementTransformEnd = useCallback((id: string) => {
     requestAnimationFrame(() => {
       const stage = stageRef.current;
-      const node = stage?.findOne(`#${id}`);
+      if (!stage) return;
+      const node = findAnnotationNode(stage, id);
       if (node) handleTransform(id, node);
     });
   }, []);
@@ -1548,7 +1768,8 @@ const EditorCanvas: React.FC = () => {
     const s = useEditorStore.getState();
     const isSelectMode = s.activeTool === 'select' || hoverSelectModeRef.current;
     const isSelected = s.selectedElementIds.includes(el.id);
-    const draggable = !isDraft && (isSelectMode || isSelected) && !el.locked && !s.annotationsLocked;
+    const canManipulate = isSelectMode || isSelected;
+    const draggable = !isDraft && canManipulate && !el.locked && !s.annotationsLocked;
     const listening = !isDraft;
     const baseProps = {
       id: el.id,
@@ -1737,6 +1958,18 @@ const EditorCanvas: React.FC = () => {
 
       case 'magnifier': {
         const mag = el as MagnifierElement;
+        // Resizing keeps the source centered, so the magnified region stays put.
+        const resizeToRadii = (radii: { rx: number; ry: number }, commit: boolean) => {
+          const { cx, cy } = magnifierSourceCenter(mag);
+          const updates = {
+            x: cx - radii.rx,
+            y: cy - radii.ry,
+            width: radii.rx * 2,
+            height: radii.ry * 2,
+          };
+          if (commit) commitElementUpdate(mag.id, updates);
+          else updateElementSilent(mag.id, updates);
+        };
         return (
           <MagnifierKonva
             key={mag.id}
@@ -1754,6 +1987,10 @@ const EditorCanvas: React.FC = () => {
             onTap={baseProps.onTap}
             onDragEnd={baseProps.onDragEnd}
             onDragMove={baseProps.onDragMove}
+            onPreviewOffsetMove={(offset) => updateElementSilent(mag.id, { previewOffset: offset })}
+            onPreviewOffsetCommit={(offset) => commitElementUpdate(mag.id, { previewOffset: offset })}
+            onRadiiMove={(radii) => resizeToRadii(radii, false)}
+            onRadiiCommit={(radii) => resizeToRadii(radii, true)}
           />
         );
       }
@@ -1813,22 +2050,16 @@ const EditorCanvas: React.FC = () => {
       case 'arrow': {
         const arrow = el as ArrowElement;
         const [sx, sy, ex, ey] = arrow.points;
-        const length = Math.max(1, Math.hypot(ex - sx, ey - sy));
         const bend = arrow.bend ?? 0;
-        const controlX = (sx + ex) / 2 + (-ey + sy) / length * bend * length * 0.55;
-        const controlY = (sy + ey) / 2 + (ex - sx) / length * bend * length * 0.55;
+        const control = controlPoint(sx, sy, ex, ey, bend);
         const showHandles = !isDraft && isSelected;
         const handleProps = selectionHandleProps('endpoint');
         const bendHandleProps = selectionHandleProps('bend');
         const updateBendFromHandle = (node: Konva.Node, commit = false) => {
-          const midX = (sx + ex) / 2;
-          const midY = (sy + ey) / 2;
-          const normalX = (-ey + sy) / length;
-          const normalY = (ex - sx) / length;
-          const localX = node.x() - arrow.x;
-          const localY = node.y() - arrow.y;
-          const next = ((localX - midX) * normalX + (localY - midY) * normalY) / (length * 0.55);
-          const bendVal = Math.max(-1, Math.min(1, next));
+          const bendVal = bendFromHandle(
+            sx, sy, ex, ey,
+            node.x() - arrow.x, node.y() - arrow.y,
+          );
           if (commit) commitElementUpdate(arrow.id, { bend: bendVal });
           else updateElementSilent(arrow.id, { bend: bendVal });
         };
@@ -1883,7 +2114,7 @@ const EditorCanvas: React.FC = () => {
                     onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
                     onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
                   />
-                  <Circle x={arrow.x + controlX} y={arrow.y + controlY} {...bendHandleProps} draggable
+                  <Circle x={arrow.x + control.x} y={arrow.y + control.y} {...bendHandleProps} draggable
                     onMouseDown={(e) => { e.cancelBubble = true; }}
                     onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
                     onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
@@ -1899,16 +2130,15 @@ const EditorCanvas: React.FC = () => {
           );
         }
 
-        const points = bend === 0 ? arrow.points : [0, 0, controlX, controlY, ex, ey];
-        let renderPoints = points;
-        if (handDrawn) {
-          renderPoints = handDrawnPolyline(points, arrow.id, arrow.strokeWidth || 2, 0.2);
-        }
+        const basePoints = renderPoints(sx, sy, ex, ey, bend);
+        const drawPoints = handDrawn
+          ? handDrawnPolyline(basePoints, arrow.id, arrow.strokeWidth || 2, 0.2)
+          : basePoints;
         return (
           <React.Fragment key={arrow.id}>
             <Arrow
               {...baseProps}
-              points={renderPoints}
+              points={drawPoints}
               stroke={arrow.stroke}
               strokeWidth={arrow.strokeWidth}
               fill={arrow.fill}
@@ -1917,7 +2147,10 @@ const EditorCanvas: React.FC = () => {
               tension={handDrawn ? (bend === 0 ? 0.2 : 0.45) : (bend === 0 ? 0 : 0.5)}
             />
             {showStartHead && (() => {
-              const tri = arrowHeadPoints(ex, ey, sx, sy, headSize);
+              // Point the head along the curve's own tangent: using the straight
+              // chord aimed it visibly wrong on a bent arrow.
+              const t = tangentAtStart(sx, sy, ex, ey, bend);
+              const tri = arrowHeadPoints(sx + t.x, sy + t.y, sx, sy, headSize);
               return (
                 <Line
                   x={arrow.x}
@@ -1939,7 +2172,7 @@ const EditorCanvas: React.FC = () => {
                   onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
                   onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
                 />
-                <Circle x={arrow.x + controlX} y={arrow.y + controlY} {...bendHandleProps} draggable
+                <Circle x={arrow.x + control.x} y={arrow.y + control.y} {...bendHandleProps} draggable
                   onMouseDown={(e) => { e.cancelBubble = true; }}
                   onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
                   onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
@@ -1958,8 +2191,11 @@ const EditorCanvas: React.FC = () => {
       case 'line': {
         const line = el as LineElement;
         const [sx, sy, ex, ey] = line.points;
+        const bend = line.bend ?? 0;
+        const control = controlPoint(sx, sy, ex, ey, bend);
         const showHandles = !isDraft && isSelected;
         const handleProps = selectionHandleProps('endpoint');
+        const bendHandleProps = selectionHandleProps('bend');
         const updateEndpoint = (which: 'start' | 'end', node: Konva.Node, commit = false) => {
           const localX = node.x() - line.x;
           const localY = node.y() - line.y;
@@ -1969,8 +2205,25 @@ const EditorCanvas: React.FC = () => {
           if (commit) commitElementUpdate(line.id, { points: newPoints });
           else updateElementSilent(line.id, { points: newPoints });
         };
+        const updateBendFromHandle = (node: Konva.Node, commit = false) => {
+          const bendVal = bendFromHandle(
+            sx, sy, ex, ey,
+            node.x() - line.x, node.y() - line.y,
+          );
+          if (commit) commitElementUpdate(line.id, { bend: bendVal });
+          else updateElementSilent(line.id, { bend: bendVal });
+        };
+        const bendHandle = showHandles ? (
+          <Circle x={line.x + control.x} y={line.y + control.y} {...bendHandleProps} draggable
+            onMouseDown={(e) => { e.cancelBubble = true; }}
+            onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
+            onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
+          />
+        ) : null;
 
-        if (handDrawn) {
+        // Rough draws straight segments only; a bent line falls back to the
+        // jittered polyline the arrow tool already uses for its curves.
+        if (handDrawn && bend === 0) {
           return (
             <React.Fragment key={line.id}>
               <RoughKonvaShape
@@ -2004,6 +2257,7 @@ const EditorCanvas: React.FC = () => {
                     onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
                     onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
                   />
+                  {bendHandle}
                   <Circle x={line.x + ex} y={line.y + ey} {...handleProps} draggable
                     onMouseDown={(e) => { e.cancelBubble = true; }}
                     onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
@@ -2015,13 +2269,18 @@ const EditorCanvas: React.FC = () => {
           );
         }
 
+        const basePoints = renderPoints(sx, sy, ex, ey, bend);
+        const drawPoints = handDrawn
+          ? handDrawnPolyline(basePoints, line.id, line.strokeWidth || 2, 0.2)
+          : basePoints;
         return (
           <React.Fragment key={line.id}>
             <Line
               {...baseProps}
-              points={line.points}
+              points={drawPoints}
               stroke={line.stroke}
               strokeWidth={line.strokeWidth}
+              tension={handDrawn ? (bend === 0 ? 0.2 : 0.45) : (bend === 0 ? 0 : 0.5)}
               hitStrokeWidth={16}
             />
             {showHandles && (
@@ -2031,6 +2290,7 @@ const EditorCanvas: React.FC = () => {
                   onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
                   onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
                 />
+                {bendHandle}
                 <Circle x={line.x + ex} y={line.y + ey} {...handleProps} draggable
                   onMouseDown={(e) => { e.cancelBubble = true; }}
                   onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
@@ -2070,12 +2330,17 @@ const EditorCanvas: React.FC = () => {
             {...baseProps}
             text={textEl.text}
             fontSize={textEl.fontSize ?? 24}
-            fontFamily={textEl.fontFamily ?? HANDWRITTEN_FONT}
+            fontFamily={fontFamilyForCanvas(textEl.fontFamily)}
             fontStyle={textEl.fontStyle}
             fill={textEl.fill ?? '#000000'}
             stroke={textEl.stroke}
             strokeWidth={textEl.strokeWidth}
-            padding={textEl.padding ?? 4}
+            padding={textEl.padding ?? TEXT_PADDING}
+            // Konva defaults to 1, the edit overlay to 1.25: multi-line text
+            // reflowed the moment it was committed.
+            lineHeight={textEl.lineHeight ?? TEXT_LINE_HEIGHT}
+            width={textEl.width}
+            wrap={textEl.width ? 'word' : 'none'}
             align={textEl.align ?? 'left'}
             listening={true}
             onDblClick={(e) => handleTextDblClick(textEl, e)}
@@ -2104,7 +2369,7 @@ const EditorCanvas: React.FC = () => {
               <Text
                 text={String(step.stepNumber)}
                 fontSize={fs}
-                fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+                fontFamily={BADGE_FONT}
                 fontStyle="bold"
                 fill="#ffffff"
                 align="center"
@@ -2134,7 +2399,7 @@ const EditorCanvas: React.FC = () => {
             <Text
               text={String(step.stepNumber)}
               fontSize={fs}
-              fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+              fontFamily={BADGE_FONT}
               fontStyle="bold"
               fill="#ffffff"
               align="center"
@@ -2252,8 +2517,8 @@ const EditorCanvas: React.FC = () => {
         if (file) loadDroppedImage(file);
       }}
     >
-      {/* Workspace background - always visible behind everything, follows theme */}
-      <div className="absolute inset-0 bg-canvas" />
+      {/* Workspace dots follow the same toggle as the exported in-image grid */}
+      <div className={cn('absolute inset-0 bg-canvas', gridEnabled && 'canvas-dot-grid')} />
       <Stage
         ref={stageRef}
         width={dimensions.width}
@@ -2326,9 +2591,9 @@ const EditorCanvas: React.FC = () => {
               y={0}
               width={imageSize.width || dimensions.width}
               height={imageSize.height || dimensions.height}
-              fillPatternImage={gridEnabled ? (gridPattern as unknown as HTMLImageElement) : undefined}
+              fillPatternImage={gridEnabled && gridPattern ? (gridPattern as unknown as HTMLImageElement) : undefined}
               fillPatternScale={{ x: 1, y: 1 }}
-              fill={gridEnabled ? undefined : (showFrame ? undefined : '#ffffff')}
+              fill={gridEnabled ? undefined : '#ffffff'}
               id="grid-bg"
             />
             {backgroundImage && (
@@ -2397,10 +2662,16 @@ const EditorCanvas: React.FC = () => {
           )}
           <Transformer
             ref={transformerRef}
-            keepRatio={
-              selectedElementIds.length === 1
-              && !!((elements.find((e) => e.id === selectedElementIds[0]) as ShapeElement | undefined)?.imageDataURL)
-            }
+            shouldOverdrawWholeArea
+            keepRatio={(() => {
+              const sole = selectedElementIds.length === 1
+                ? elements.find((e) => e.id === selectedElementIds[0])
+                : undefined;
+              // Uniform-scale: pasted overlay images and step badges.
+              const soleEl = sole as ShapeElement | undefined;
+              const isOverlay = soleEl?.type === 'rectangle' && !!soleEl.imageDataURL;
+              return isOverlay || sole?.type === 'step';
+            })()}
             boundBoxFunc={(oldBox, newBox) => {
               if (newBox.width < 5 || newBox.height < 5) return oldBox;
               return newBox;
@@ -2419,14 +2690,23 @@ const EditorCanvas: React.FC = () => {
             rotateAnchorSize={12}
             rotateAnchorCursor="grab"
             anchorStyleFunc={styleSelectionAnchor}
-            enabledAnchors={
-              annotationsLocked
-                ? []
-                : selectedElementIds.length === 1
-                  && !!((elements.find((e) => e.id === selectedElementIds[0]) as ShapeElement | undefined)?.imageDataURL)
-                  ? ['top-left', 'top-right', 'bottom-left', 'bottom-right']
-                  : ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right', 'top-center', 'bottom-center']
-            }
+            enabledAnchors={(() => {
+              if (annotationsLocked) return [];
+              const sole = selectedElementIds.length === 1
+                ? elements.find((e) => e.id === selectedElementIds[0])
+                : undefined;
+              // Uniform-scale types get corners only; a side handle there would
+              // imply a non-uniform resize the element cannot represent.
+              const soleEl = sole as ShapeElement | undefined;
+              const isOverlay = soleEl?.type === 'rectangle' && !!soleEl.imageDataURL;
+              if (isOverlay || sole?.type === 'step') {
+                return ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+              }
+              return [
+                'top-left', 'top-right', 'bottom-left', 'bottom-right',
+                'middle-left', 'middle-right', 'top-center', 'bottom-center',
+              ];
+            })()}
           />
         </Layer>
       </Stage>
@@ -2437,21 +2717,32 @@ const EditorCanvas: React.FC = () => {
         const editEl = textInput.editId
           ? (elements.find((el) => el.id === textInput.editId) as TextElement | undefined)
           : undefined;
-        const displayFont = editEl?.fontSize ?? Math.round(fontSize * scale);
+        // Everything below is expressed in the same units the Konva `Text` node
+        // uses, then multiplied by zoom once. Padding used to be a raw CSS `p-1`
+        // while Konva padded in image units, so the text shifted on commit by an
+        // amount that grew with zoom.
+        const displayFont = editEl?.fontSize ?? fontSize * scale;
         const displayColor = editEl?.fill ?? strokeColor;
+        const displayFamily = editEl?.fontFamily ?? fontFamily ?? HANDWRITTEN_FONT;
+        const pad = (editEl?.padding ?? TEXT_PADDING) * currentZoom;
         return (
           <textarea
             ref={textAreaRef}
-            className="absolute z-50 bg-transparent border-2 border-dashed border-accent outline-none resize-none p-1"
+            className="absolute z-50 bg-transparent border border-dashed border-accent outline-none resize-none"
             style={{
               left: currentStagePos.x + (textInput.x + contentPad) * currentZoom,
               top: currentStagePos.y + (textInput.y + contentPad) * currentZoom,
               fontSize: displayFont * currentZoom,
-              fontFamily: HANDWRITTEN_FONT,
+              fontFamily: displayFamily,
               color: displayColor,
+              padding: pad,
+              // The 1px dashed border must not add to the box, or the caret sits
+              // one pixel off from where the glyph lands after commit.
+              boxSizing: 'border-box',
+              margin: -1,
               minWidth: 100,
               minHeight: 40,
-              lineHeight: 1.2,
+              lineHeight: editEl?.lineHeight ?? TEXT_LINE_HEIGHT,
             }}
             onKeyDown={handleTextAreaKeyDown}
             onBlur={() => {
@@ -2467,30 +2758,14 @@ const EditorCanvas: React.FC = () => {
         );
       })()}
 
-      {ocrOpen && (
-        <div className="absolute bottom-16 right-3 z-30 w-[min(24rem,calc(100vw-2rem))] rounded-2xl floating-surface p-3">
-          <div className="flex items-center justify-between mb-2">
-            <div>
-              <p className="text-sm font-semibold">Recognized text</p>
-              <p className="text-[10px] text-muted-foreground">Runs locally in your browser</p>
-            </div>
-            <button type="button" className="w-7 h-7 flex items-center justify-center rounded-md text-muted-foreground hover:bg-secondary cursor-pointer" onClick={() => setOcrOpen(false)} aria-label="Close OCR panel">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <textarea
-            value={ocrBusy ? 'Reading text…' : ocrText}
-            readOnly
-            placeholder="OCR text will appear here"
-            className="w-full min-h-32 max-h-56 resize-y rounded-lg border border-border bg-secondary/30 p-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-accent"
-            onFocus={(e) => e.currentTarget.select()}
-          />
-          <button type="button" disabled={ocrBusy || !ocrText} onClick={() => void copyOCRText()} className="mt-2 h-8 px-3 inline-flex items-center gap-1.5 rounded-md bg-accent text-accent-foreground text-xs font-medium disabled:opacity-50 cursor-pointer">
-            {ocrCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-            {ocrCopied ? 'Copied' : 'Copy text'}
-          </button>
-        </div>
-      )}
+      <OcrPanel
+        open={ocrOpen}
+        busy={ocrBusy}
+        text={ocrText}
+        copied={ocrCopied}
+        onClose={() => setOcrOpen(false)}
+        onCopy={() => void copyOCRText()}
+      />
     </div>
   );
 };

@@ -13,6 +13,9 @@ import type {
   LineElement, PencilElement, CircleElement, TextElement, StepElement,
 } from '@/types/editor';
 import { cn } from '@/lib/utils';
+import { magnifierBounds } from '@/lib/editor/magnifier-geometry';
+import { quadBounds, quadPathD, tangentAtStart, tangentAtEnd } from '@/lib/editor/curve';
+import { arrowHeadPoints } from '@/lib/rough-renderer';
 import { toastError, toastSuccess } from '@/lib/app-toast';
 
 const formats: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
@@ -58,25 +61,19 @@ function getElementBounds(el: EditorElement): { x: number; y: number; w: number;
     }
     case 'arrow':
     case 'line': {
-      const pts = (el as ArrowElement | LineElement).points;
-      const xs = [el.x, el.x + (pts?.[2] ?? 0)];
-      const ys = [el.y, el.y + (pts?.[3] ?? 0)];
-      if (el.type === 'arrow' && (el as ArrowElement).bend) {
-        const bend = (el as ArrowElement).bend ?? 0;
-        const dx = pts[2] - pts[0];
-        const dy = pts[3] - pts[1];
-        const length = Math.max(1, Math.hypot(dx, dy));
-        xs.push(el.x + (pts[0] + pts[2]) / 2 + (-dy / length) * bend * length * 0.55);
-        ys.push(el.y + (pts[1] + pts[3]) / 2 + (dx / length) * bend * length * 0.55);
-      }
+      // Shares the curve box with on-canvas selection so a bent arrow or line
+      // is measured by its actual bulge, not by its endpoints.
+      const seg = el as ArrowElement | LineElement;
+      const pts = seg.points ?? [];
       const extra = el.type === 'arrow'
-        ? Math.max((el as ArrowElement).pointerLength ?? 12, (el as ArrowElement).pointerWidth ?? 12)
+        ? Math.max((seg as ArrowElement).pointerLength ?? 12, (seg as ArrowElement).pointerWidth ?? 12)
         : 0;
-      const minX = Math.min(...xs) - pad - extra;
-      const maxX = Math.max(...xs) + pad + extra;
-      const minY = Math.min(...ys) - pad - extra;
-      const maxY = Math.max(...ys) + pad + extra;
-      return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+      return quadBounds(
+        el.x, el.y,
+        pts[0] ?? 0, pts[1] ?? 0, pts[2] ?? 0, pts[3] ?? 0,
+        seg.bend ?? 0,
+        pad + extra,
+      );
     }
     case 'pencil':
     case 'highlighter': {
@@ -106,19 +103,14 @@ function getElementBounds(el: EditorElement): { x: number; y: number; w: number;
       return { x: el.x - r - 4, y: el.y - r - 4, w: r * 2 + 8, h: r * 2 + 8 };
     }
     case 'magnifier': {
-      const m = el as import('@/types/editor').MagnifierElement;
-      const w = Math.abs(m.width);
-      const h = Math.abs(m.height);
-      const x = m.width < 0 ? m.x + m.width : m.x;
-      const y = m.height < 0 ? m.y + m.height : m.y;
-      const mag = m.magnification ?? 2.25;
-      const gap = 18;
-      return {
-        x: x - pad,
-        y: y - pad,
-        w: w + gap + w * mag + pad * 2,
-        h: h + gap + h * mag + pad * 2,
-      };
+      // Shares the rendering geometry so an export never clips the bubble,
+      // whichever direction it was auto-placed or dragged to.
+      const b = magnifierBounds(
+        el as import('@/types/editor').MagnifierElement,
+        useEditorStore.getState().imageSize,
+        pad,
+      );
+      return { x: b.x, y: b.y, w: b.w, h: b.h };
     }
   }
   return { x: (el as EditorElement).x, y: (el as EditorElement).y, w: 0, h: 0 };
@@ -492,7 +484,51 @@ async function buildSvgExport(): Promise<string> {
       parts.push(`<polygon points="${cx},${el.y} ${el.x + dw},${cy} ${cx},${el.y + dh} ${el.x},${cy}" fill="${fill === 'transparent' ? 'none' : fill}" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}"/>`);
     } else if (el.type === 'line' || el.type === 'arrow') {
       const pts = el.points;
-      parts.push(`<line x1="${el.x + pts[0]}" y1="${el.y + pts[1]}" x2="${el.x + pts[2]}" y2="${el.y + pts[3]}" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" stroke-linecap="round"/>`);
+      const bend = el.bend ?? 0;
+      // A plain <line> dropped the curve entirely; emit the same quadratic the
+      // canvas draws.
+      parts.push(`<path d="${quadPathD(el.x, el.y, pts[0], pts[1], pts[2], pts[3], bend)}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" stroke-linecap="round"/>`);
+      // Arrowheads were missing from SVG output altogether.
+      const headSize = el.type === 'arrow'
+        ? ((el as ArrowElement).pointerLength ?? Math.max(10, sw * 4))
+        : Math.max(8, sw * 3);
+      const headFill = ('fill' in el ? (el as { fill?: string }).fill : undefined) || stroke;
+      const headPoly = (tipX: number, tipY: number, dir: { x: number; y: number }) =>
+        arrowHeadPoints(tipX + dir.x, tipY + dir.y, tipX, tipY, headSize)
+          .map(([px, py]) => `${el.x + px},${el.y + py}`)
+          .join(' ');
+      if ((el.endArrowhead ?? (el.type === 'arrow' ? 'arrow' : 'none')) !== 'none') {
+        const t = tangentAtEnd(pts[0], pts[1], pts[2], pts[3], bend);
+        parts.push(`<polygon points="${headPoly(pts[2], pts[3], t)}" fill="${headFill}" opacity="${opacity}"/>`);
+      }
+      if ((el.startArrowhead ?? 'none') !== 'none') {
+        const t = tangentAtStart(pts[0], pts[1], pts[2], pts[3], bend);
+        parts.push(`<polygon points="${headPoly(pts[0], pts[1], { x: -t.x, y: -t.y })}" fill="${headFill}" opacity="${opacity}"/>`);
+      }
+    } else if (el.type === 'blur' || el.type === 'pixelate' || el.type === 'spotlight') {
+      // The effect is baked into a PNG at commit time, so the bitmap is exactly
+      // what the canvas shows. Without this branch these vanished from SVG.
+      const shape = el as ShapeElement;
+      if (shape.imageDataURL) {
+        const bw = Math.abs(shape.width);
+        const bh = Math.abs(shape.height);
+        const bx = shape.width < 0 ? el.x + shape.width : el.x;
+        const by = shape.height < 0 ? el.y + shape.height : el.y;
+        parts.push(`<image href="${shape.imageDataURL}" x="${bx}" y="${by}" width="${bw}" height="${bh}" opacity="${opacity}"/>`);
+      }
+    } else if (el.type === 'magnifier') {
+      // No SVG primitive matches the lens; rasterize the live Konva group and
+      // place it at the bounds selection and export already agree on.
+      const stage = (window as unknown as { __snapty_stage?: { findOne(sel: string): unknown } }).__snapty_stage;
+      const node = stage?.findOne(`#${el.id}`) as
+        | { toDataURL(cfg?: { pixelRatio?: number }): string }
+        | undefined;
+      if (node) {
+        const b = magnifierBounds(el, imageSize, 2);
+        try {
+          parts.push(`<image href="${node.toDataURL({ pixelRatio: 2 })}" x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" opacity="${opacity}"/>`);
+        } catch { /* tainted canvas: skip rather than fail the whole export */ }
+      }
     } else if (el.type === 'pencil' || el.type === 'highlighter') {
       const pts = el.points;
       if (pts.length >= 4) {

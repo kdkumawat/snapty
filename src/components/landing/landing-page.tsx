@@ -74,12 +74,12 @@ export default function LandingPage() {
         }}
       />
 
-      <header className="relative z-10 sticky top-0 backdrop-blur-md bg-canvas/80 border-b border-border/40 flex items-center justify-between px-5 sm:px-8 py-3">
+      <header className="sticky top-0 z-50 backdrop-blur-md bg-canvas/90 border-b border-border/40 flex items-center justify-between px-5 sm:px-8 py-3 isolate">
         <div className="flex items-center gap-2.5">
           <div className="w-9 h-9 rounded-xl bg-accent text-accent-foreground flex items-center justify-center shadow-sm">
             <ScissorLogo size={18} />
           </div>
-          <span className="text-lg font-semibold tracking-tight">Snapty</span>
+          <span className="text-xl font-semibold tracking-tight font-hand">Snapty</span>
         </div>
         <div className="flex items-center gap-1.5">
           <a
@@ -108,13 +108,13 @@ export default function LandingPage() {
         </div>
       </header>
 
-      <main className="relative z-10">
+      <main className="relative">
         <section className="flex flex-col items-center px-5 pt-10 sm:pt-16 pb-16 text-center max-w-3xl mx-auto min-h-[calc(100dvh-4rem)] justify-center">
           <motion.h1
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.45 }}
-            className="text-5xl sm:text-6xl lg:text-7xl font-semibold tracking-tight leading-[1.05] mb-5"
+            className="text-6xl sm:text-7xl lg:text-8xl font-semibold tracking-tight leading-[1.05] mb-5 font-hand"
           >
             <span className="text-accent">Snapty</span>
           </motion.h1>

@@ -2,7 +2,7 @@
 
 import React, { useRef, useState, useEffect } from 'react';
 import {
-  FolderOpen, Clipboard, Link as LinkIcon, MonitorUp, HelpCircle, Loader2,
+  FolderOpen, Clipboard, Link as LinkIcon, MonitorUp, HelpCircle, Loader2, Info,
 } from 'lucide-react';
 import ScissorLogo from '@/components/scissor-logo';
 import { loadImageFileIntoEditor, loadImageFromUrl } from '@/lib/image-load';
@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils';
 import { useEditorStore } from '@/store/editor-store';
 import ImageLoadingSkeleton from '@/components/editor/image-loading-skeleton';
 import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
+import { openInBrowser } from '@/lib/open-external';
 import { Kbd } from '@/components/editor/ui/kbd';
 
 export default function EmptyState() {
@@ -116,16 +117,10 @@ export default function EmptyState() {
           <div className="w-12 h-12 rounded-2xl bg-accent text-accent-foreground flex items-center justify-center shadow-sm">
             <ScissorLogo size={22} />
           </div>
-          <h1
-            className="text-3xl font-semibold tracking-tight text-accent"
-            style={{ fontFamily: 'var(--font-handwritten), Caveat, cursive' }}
-          >
+          <h1 className="text-3xl font-semibold tracking-tight text-accent font-hand">
             Snapty
           </h1>
-          <p
-            className="text-sm text-muted-foreground"
-            style={{ fontFamily: 'var(--font-handwritten), Caveat, cursive' }}
-          >
+          <p className="text-sm text-muted-foreground font-hand">
             {dragOver ? 'Drop to open' : 'Drop an image anywhere · 100% local'}
           </p>
         </div>
@@ -133,12 +128,12 @@ export default function EmptyState() {
         <div className="rounded-2xl border border-border bg-surface/90 backdrop-blur shadow-[var(--floating-shadow)] p-1.5">
           <button type="button" className={rowClass} onClick={() => fileInputRef.current?.click()}>
             <FolderOpen className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
-            <span className="flex-1 font-medium" style={{ fontFamily: 'var(--font-handwritten), Caveat, cursive', fontSize: '1.05rem' }}>Open</span>
+            <span className="flex-1 font-medium font-hand text-[1.05rem]">Open</span>
             <Kbd>{modKey}+O</Kbd>
           </button>
           <button type="button" className={rowClass} onClick={() => void handlePaste()}>
             <Clipboard className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
-            <span className="flex-1 font-medium" style={{ fontFamily: 'var(--font-handwritten), Caveat, cursive', fontSize: '1.05rem' }}>Paste</span>
+            <span className="flex-1 font-medium font-hand text-[1.05rem]">Paste</span>
             <Kbd>{modKey}+V</Kbd>
           </button>
           {isScreenCaptureSupported() && (
@@ -151,14 +146,22 @@ export default function EmptyState() {
               {captureBusy
                 ? <Loader2 className="w-[18px] h-[18px] animate-spin text-muted-foreground shrink-0" />
                 : <MonitorUp className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />}
-              <span className="flex-1 font-medium" style={{ fontFamily: 'var(--font-handwritten), Caveat, cursive', fontSize: '1.05rem' }}>Capture Screen</span>
+              <span className="flex-1 font-medium font-hand text-[1.05rem]">Capture screen</span>
               <Kbd>{modKey}+Shift+S</Kbd>
             </button>
           )}
           <button type="button" className={rowClass} onClick={() => setShowHelpDialog(true)}>
             <HelpCircle className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
-            <span className="flex-1 font-medium" style={{ fontFamily: 'var(--font-handwritten), Caveat, cursive', fontSize: '1.05rem' }}>Help</span>
+            <span className="flex-1 font-medium font-hand text-[1.05rem]">Help</span>
             <Kbd>?</Kbd>
+          </button>
+          <button
+            type="button"
+            className={rowClass}
+            onClick={() => openInBrowser('/info')}
+          >
+            <Info className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
+            <span className="flex-1 font-medium font-hand text-[1.05rem]">About Snapty</span>
           </button>
         </div>
 

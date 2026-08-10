@@ -1,4 +1,4 @@
-const CACHE_NAME = 'snapty-v4.7';
+const CACHE_NAME = 'snapty-v4.9';
 
 // Static assets to precache (minimal - most loaded on-demand)
 // Prefetch editor route so installed PWA opens offline-ready
@@ -53,8 +53,16 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Static assets (_next/static/*): cache-first with network fallback
-  if (request.url.includes('/_next/static/') || request.url.match(/\.(js|css|woff2?|svg|png|jpg|ico)$/i)) {
+  // Static assets (_next/static/*): cache-first with network fallback.
+  // .wasm and .traineddata.gz are the Tesseract OCR payload (~3MB): without
+  // them here every OCR run re-downloaded it and offline OCR failed outright.
+  // They are deliberately NOT precached - too large to fetch on install for an
+  // optional feature, so the first run pays for it and later runs are free.
+  if (
+    request.url.includes('/_next/static/')
+    || request.url.match(/\.(js|css|woff2?|svg|png|jpg|ico|wasm)$/i)
+    || request.url.match(/\.traineddata\.gz$/i)
+  ) {
     event.respondWith(
       caches.match(request).then((cached) => {
         if (cached) return cached;

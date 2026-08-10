@@ -47,7 +47,7 @@
   "categories": ["productivity", "utilities", "photo"],
   "screenshots": [],
   "prefer_related_applications": false,
-  "handle_links": "preferred",
+  "handle_links": "not-preferred",
   "launch_handler": {
     "client_mode": ["navigate-existing", "auto"]
   }

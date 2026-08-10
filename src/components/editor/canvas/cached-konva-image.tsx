@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect } from 'react';
-import { Group, Image as KonvaImage, Rect } from 'react-konva';
+import { Image as KonvaImage } from 'react-konva';
 import type Konva from 'konva';
 import { useHtmlImage } from '@/hooks/use-html-image';
 
@@ -13,8 +13,8 @@ type Props = {
 } & Omit<Konva.NodeConfig, 'width' | 'height'>;
 
 /**
- * Stable Group id for Transformer. Bitmap can load asynchronously without
- * unmounting the selectable node (critical for paste-to-overlay resize).
+ * Single Konva Image node (stable id across load). Transformer resize works on
+ * Image; swapping Rect→Image on load was breaking handles on pasted overlays.
  */
 export default function CachedKonvaImage({
   src,
@@ -29,33 +29,28 @@ export default function CachedKonvaImage({
   const h = Math.max(1, height);
 
   useEffect(() => {
-    if (!image) return;
-    window.dispatchEvent(new CustomEvent('snapty-overlay-image-ready', { detail: { id } }));
-  }, [image, id]);
+    if (!id) return;
+    const fire = () => {
+      window.dispatchEvent(new CustomEvent('snapty-overlay-image-ready', { detail: { id } }));
+    };
+    fire();
+    requestAnimationFrame(fire);
+  }, [image, w, h, id]);
 
   return (
-    <Group {...rest} id={id} width={w} height={h}>
-      {image ? (
-        <KonvaImage
-          image={image}
-          width={w}
-          height={h}
-          cornerRadius={cornerRadius}
-          listening={false}
-          perfectDrawEnabled={false}
-        />
-      ) : (
-        <Rect
-          width={w}
-          height={h}
-          cornerRadius={cornerRadius}
-          fill="rgba(148,163,184,0.28)"
-          stroke="rgba(100,116,139,0.5)"
-          strokeWidth={1}
-          dash={[6, 4]}
-          listening={false}
-        />
-      )}
-    </Group>
+    <KonvaImage
+      {...rest}
+      id={id}
+      image={image ?? undefined}
+      width={w}
+      height={h}
+      cornerRadius={cornerRadius}
+      fill={image ? undefined : 'rgba(148,163,184,0.28)'}
+      stroke={image ? undefined : 'rgba(100,116,139,0.5)'}
+      strokeWidth={image ? 0 : 1}
+      dash={image ? undefined : [6, 4]}
+      hitStrokeWidth={12}
+      perfectDrawEnabled={false}
+    />
   );
 }

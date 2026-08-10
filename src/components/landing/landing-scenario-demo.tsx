@@ -35,59 +35,35 @@ const SCENARIOS: Scenario[] = [
   },
 ];
 
-/** Annotations aligned to each realistic UI mock (viewBox 520x300). */
-function Annotation({ kind }: { kind: Kind }) {
-  if (kind === 'bug') {
-    return (
-      <svg className="absolute inset-0 w-full h-full" viewBox="0 0 520 300" fill="none" aria-hidden>
-        <ellipse cx="368" cy="248" rx="92" ry="28" stroke="#EA580C" strokeWidth="2.4" />
-        <path d="M210 118 L320 220" stroke="#EA580C" strokeWidth="2.2" strokeLinecap="round" />
-        <path d="M304 208 L328 228 L300 224 Z" fill="#EA580C" />
-        <text x="72" y="108" fill="#EA580C" fontSize="22" fontFamily="var(--font-handwritten), Caveat, cursive">
-          covers the terms link
-        </text>
-      </svg>
-    );
-  }
-  if (kind === 'settings') {
-    return (
-      <svg className="absolute inset-0 w-full h-full" viewBox="0 0 520 300" fill="none" aria-hidden>
-        <rect x="168" y="168" width="286" height="48" rx="10" stroke="#EA580C" strokeWidth="2.2" strokeDasharray="5 4" />
-        <path d="M454 192 L488 132" stroke="#EA580C" strokeWidth="2.2" strokeLinecap="round" />
-        <path d="M476 128 L496 132 L482 146 Z" fill="#EA580C" />
-        <text x="360" y="118" fill="#EA580C" fontSize="20" fontFamily="var(--font-handwritten), Caveat, cursive">
-          what does this mean?
-        </text>
-      </svg>
-    );
-  }
-  if (kind === 'support') {
-    return (
-      <svg className="absolute inset-0 w-full h-full" viewBox="0 0 520 300" fill="none" aria-hidden>
-        <circle cx="48" cy="108" r="14" fill="#EA580C" />
-        <text x="48" y="113" textAnchor="middle" fill="white" fontSize="12" fontWeight="700" fontFamily="system-ui">1</text>
-        <circle cx="48" cy="168" r="14" fill="#EA580C" />
-        <text x="48" y="173" textAnchor="middle" fill="white" fontSize="12" fontWeight="700" fontFamily="system-ui">2</text>
-        <circle cx="48" cy="228" r="14" fill="#EA580C" />
-        <text x="48" y="233" textAnchor="middle" fill="white" fontSize="12" fontWeight="700" fontFamily="system-ui">3</text>
-        <text x="300" y="58" fill="#EA580C" fontSize="20" fontFamily="var(--font-handwritten), Caveat, cursive">
-          skipped verify step
-        </text>
-        <path d="M62 168 H88" stroke="#EA580C" strokeWidth="1.5" strokeDasharray="3 3" />
-      </svg>
-    );
-  }
+const ACCENT = '#EA580C';
+
+/** Handwritten callout label */
+function HandNote({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <svg className="absolute inset-0 w-full h-full" viewBox="0 0 520 300" fill="none" aria-hidden>
-      <rect x="72" y="198" width="168" height="22" rx="4" fill="#1c1917" opacity="0.55" />
-      <rect x="72" y="198" width="168" height="22" rx="4" stroke="#EA580C" strokeWidth="1.6" strokeDasharray="4 3" />
-      <circle cx="156" cy="112" r="36" stroke="#EA580C" strokeWidth="2.2" />
-      <circle cx="280" cy="188" r="54" stroke="#EA580C" strokeWidth="2" />
-      <path d="M186 136 L236 162" stroke="#EA580C" strokeWidth="1.5" strokeDasharray="4 3" />
-      <text x="318" y="52" fill="#EA580C" fontSize="20" fontFamily="var(--font-handwritten), Caveat, cursive">
-        MRR is off by $8k
-      </text>
-    </svg>
+    <span
+      className={cn(
+        'font-hand text-[13px] sm:text-sm leading-tight whitespace-nowrap pointer-events-none',
+        className,
+      )}
+      style={{ color: ACCENT }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** Step badge */
+function StepBadge({ n, className }: { n: string; className?: string }) {
+  return (
+    <span
+      className={cn(
+        'absolute w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white pointer-events-none',
+        className,
+      )}
+      style={{ background: ACCENT }}
+    >
+      {n}
+    </span>
   );
 }
 
@@ -104,124 +80,189 @@ function BrowserChrome({ title, children }: { title: string; children: React.Rea
           <span className="text-[10px] text-stone-500 truncate font-medium">{title}</span>
         </div>
       </div>
-      <div className="flex-1 min-h-0 relative bg-white">{children}</div>
+      <div className="flex-1 min-h-0 relative bg-white overflow-hidden">{children}</div>
     </div>
   );
 }
 
-function UiMock({ kind }: { kind: Kind }) {
-  if (kind === 'bug') {
-    return (
-      <BrowserChrome title="checkout.acme.shop / cart">
-        <div className="absolute inset-0 flex">
-          <div className="flex-1 p-4 border-r border-stone-100">
-            <p className="text-[10px] uppercase tracking-wider text-stone-400 mb-2">Order summary</p>
-            <div className="flex gap-3 mb-3">
-              <div className="w-12 h-12 rounded-lg bg-stone-100 border border-stone-200" />
-              <div className="flex-1 space-y-1.5 pt-0.5">
-                <div className="h-2.5 w-28 rounded bg-stone-200" />
-                <div className="h-2 w-16 rounded bg-stone-100" />
-                <p className="text-[11px] text-stone-600 font-medium">$42.00</p>
-              </div>
-            </div>
-            <div className="flex gap-3">
-              <div className="w-12 h-12 rounded-lg bg-stone-100 border border-stone-200" />
-              <div className="flex-1 space-y-1.5 pt-0.5">
-                <div className="h-2.5 w-24 rounded bg-stone-200" />
-                <div className="h-2 w-14 rounded bg-stone-100" />
-                <p className="text-[11px] text-stone-600 font-medium">$9.50</p>
-              </div>
+function BugMock() {
+  return (
+    <BrowserChrome title="checkout.acme.shop / cart">
+      <div className="absolute inset-0 flex text-left">
+        <div className="flex-1 p-4 border-r border-stone-100">
+          <p className="text-[10px] uppercase tracking-wider text-stone-400 mb-2">Order summary</p>
+          <div className="flex gap-3 mb-3">
+            <div className="w-12 h-12 rounded-lg bg-stone-100 border border-stone-200 shrink-0" />
+            <div className="flex-1 space-y-1.5 pt-0.5">
+              <div className="h-2.5 w-28 rounded bg-stone-200" />
+              <div className="h-2 w-16 rounded bg-stone-100" />
+              <p className="text-[11px] text-stone-600 font-medium">$42.00</p>
             </div>
           </div>
-          <div className="w-[48%] p-4 flex flex-col">
-            <p className="text-sm font-semibold text-stone-800 mb-3">Payment</p>
-            <div className="space-y-2 mb-auto">
-              <div className="h-9 rounded-lg border border-stone-200 bg-stone-50 px-3 flex items-center text-[11px] text-stone-500">
-                Card ending in 4242
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="h-9 rounded-lg border border-stone-200 bg-stone-50" />
-                <div className="h-9 rounded-lg border border-stone-200 bg-stone-50" />
-              </div>
+          <div className="flex gap-3">
+            <div className="w-12 h-12 rounded-lg bg-stone-100 border border-stone-200 shrink-0" />
+            <div className="flex-1 space-y-1.5 pt-0.5">
+              <div className="h-2.5 w-24 rounded bg-stone-200" />
+              <div className="h-2 w-14 rounded bg-stone-100" />
+              <p className="text-[11px] text-stone-600 font-medium">$9.50</p>
             </div>
-            <div className="relative mt-3">
-              <p className="text-[10px] text-stone-400 mb-2 underline decoration-stone-300">
-                Terms &amp; refund policy
-              </p>
+          </div>
+        </div>
+        <div className="w-[48%] p-4 flex flex-col min-w-0">
+          <p className="text-sm font-semibold text-stone-800 mb-3">Payment</p>
+          <div className="space-y-2 mb-auto">
+            <div className="h-9 rounded-lg border border-stone-200 bg-stone-50 px-3 flex items-center text-[11px] text-stone-500">
+              Card ending in 4242
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="h-9 rounded-lg border border-stone-200 bg-stone-50" />
+              <div className="h-9 rounded-lg border border-stone-200 bg-stone-50" />
+            </div>
+          </div>
+          <div className="relative mt-auto">
+            <HandNote className="absolute -top-7 left-0 z-10">covers the terms link</HandNote>
+            <svg
+              className="absolute -top-4 left-[42%] w-8 h-8 pointer-events-none z-10"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden
+            >
+              <path d="M4 20 L14 10" stroke={ACCENT} strokeWidth="2" strokeLinecap="round" />
+              <path d="M11 9 L15 11 L10 14 Z" fill={ACCENT} />
+            </svg>
+            <p className="text-[10px] text-stone-400 mb-1.5 underline decoration-stone-300 relative z-0">
+              Terms &amp; refund policy
+            </p>
+            <div className="relative">
+              <div
+                className="absolute -inset-1 rounded-lg border-2 pointer-events-none z-10"
+                style={{ borderColor: ACCENT }}
+                aria-hidden
+              />
               <button
                 type="button"
-                className="w-full h-10 rounded-lg bg-[#EA580C] text-white text-sm font-semibold shadow-sm relative -mt-1"
+                className="relative z-0 w-full h-10 rounded-lg bg-[#EA580C] text-white text-sm font-semibold shadow-sm"
               >
                 Pay $51.50
               </button>
             </div>
           </div>
         </div>
-      </BrowserChrome>
-    );
-  }
-  if (kind === 'settings') {
-    return (
-      <BrowserChrome title="app.notion.so / settings / workspace">
-        <div className="absolute inset-0 flex">
-          <aside className="w-[30%] border-r border-stone-100 bg-[#fafafa] p-3 space-y-2">
-            <p className="text-[10px] font-semibold text-stone-400 uppercase tracking-wider px-1">Settings</p>
-            {['General', 'Members', 'Security', 'Integrations'].map((item, i) => (
-              <div
-                key={item}
-                className={cn(
-                  'h-7 rounded-md px-2 flex items-center text-[11px]',
-                  i === 2 ? 'bg-white border border-stone-200 text-stone-800 font-medium shadow-sm' : 'text-stone-500',
-                )}
-              >
-                {item}
-              </div>
-            ))}
-          </aside>
-          <div className="flex-1 p-4 space-y-2.5">
-            <p className="text-sm font-semibold text-stone-800 mb-1">Security</p>
-            {[
-              ['Require 2FA for admins', true],
-              ['Allow public page sharing', true],
-              ['Enable guest link previews', true],
-            ].map(([label, on]) => (
-              <div key={String(label)} className="flex items-center justify-between gap-3 rounded-xl border border-stone-200 px-3 py-2.5 bg-white">
-                <span className="text-[12px] text-stone-700">{label as string}</span>
-                <span className={cn('h-5 w-9 rounded-full relative shrink-0', on ? 'bg-accent' : 'bg-stone-200')}>
-                  <span className={cn('absolute top-0.5 h-4 w-4 rounded-full bg-white shadow', on ? 'right-0.5' : 'left-0.5')} />
-                </span>
-              </div>
-            ))}
-            <p className="text-[10px] text-stone-400 px-1">Guest link previews may expose page titles in Slack unfurls.</p>
-          </div>
+      </div>
+    </BrowserChrome>
+  );
+}
+
+function SettingsMock() {
+  return (
+    <BrowserChrome title="app.notion.so / settings / workspace">
+      <div className="absolute inset-0 flex">
+        <aside className="w-[30%] border-r border-stone-100 bg-[#fafafa] p-3 space-y-2 shrink-0">
+          <p className="text-[10px] font-semibold text-stone-400 uppercase tracking-wider px-1">Settings</p>
+          {['General', 'Members', 'Security', 'Integrations'].map((item, i) => (
+            <div
+              key={item}
+              className={cn(
+                'h-7 rounded-md px-2 flex items-center text-[11px]',
+                i === 2 ? 'bg-white border border-stone-200 text-stone-800 font-medium shadow-sm' : 'text-stone-500',
+              )}
+            >
+              {item}
+            </div>
+          ))}
+        </aside>
+        <div className="flex-1 p-4 space-y-2 min-w-0">
+          <p className="text-sm font-semibold text-stone-800 mb-0.5">Security</p>
+          {[
+            'Require 2FA for admins',
+            'Allow public page sharing',
+            'Enable guest link previews',
+          ].map((label, i) => (
+            <div
+              key={label}
+              className={cn(
+                'relative flex items-center justify-between gap-3 rounded-xl border border-stone-200 px-3 py-2.5 bg-white',
+                i === 2 && 'z-0',
+              )}
+            >
+              {i === 2 && (
+                <>
+                  <HandNote className="absolute -top-6 right-2 z-10">what does this mean?</HandNote>
+                  <svg
+                    className="absolute -top-3 right-16 w-10 h-6 pointer-events-none z-10"
+                    viewBox="0 0 40 24"
+                    fill="none"
+                    aria-hidden
+                  >
+                    <path d="M4 20 L28 8" stroke={ACCENT} strokeWidth="1.8" strokeLinecap="round" />
+                    <path d="M24 6 L30 9 L25 13 Z" fill={ACCENT} />
+                  </svg>
+                  <div
+                    className="absolute -inset-0.5 rounded-xl border-2 border-dashed pointer-events-none z-10"
+                    style={{ borderColor: ACCENT }}
+                    aria-hidden
+                  />
+                </>
+              )}
+              <span className="text-[12px] text-stone-700 relative z-0">{label}</span>
+              <span className="h-5 w-9 rounded-full relative shrink-0 bg-accent z-0">
+                <span className="absolute top-0.5 right-0.5 h-4 w-4 rounded-full bg-white shadow" />
+              </span>
+            </div>
+          ))}
+          <p className="text-[10px] text-stone-400 px-1 pt-0.5">
+            Guest link previews may expose page titles in Slack unfurls.
+          </p>
         </div>
-      </BrowserChrome>
-    );
-  }
-  if (kind === 'support') {
-    return (
-      <BrowserChrome title="Intercom · Ticket #4821 · Partial refund">
-        <div className="absolute inset-0 p-4 pl-12 space-y-2.5 text-[12px] overflow-hidden">
-          <div className="max-w-[88%] rounded-2xl rounded-tl-md bg-stone-100 px-3 py-2 text-stone-700">
+      </div>
+    </BrowserChrome>
+  );
+}
+
+function SupportMock() {
+  return (
+    <BrowserChrome title="Intercom · Ticket #4821 · Partial refund">
+      <div className="absolute inset-0 py-4 pr-4 pl-10 space-y-2.5 text-[12px]">
+        <div className="relative max-w-[88%]">
+          <StepBadge n="1" className="-left-8 top-1" />
+          <div className="rounded-2xl rounded-tl-md bg-stone-100 px-3 py-2 text-stone-700">
             Customer wants a <span className="font-semibold">partial</span> refund on order 9921 ($28 of $64).
           </div>
-          <div className="ml-auto max-w-[85%] rounded-2xl rounded-tr-md bg-accent/15 px-3 py-2 text-stone-800 border border-accent/20">
+        </div>
+        <div className="relative ml-auto max-w-[85%]">
+          <StepBadge n="2" className="-left-8 top-1" />
+          <HandNote className="absolute -top-5 right-0">skipped verify step</HandNote>
+          <div className="rounded-2xl rounded-tr-md bg-accent/15 px-3 py-2 text-stone-800 border border-accent/20">
             Processed full refund $64.00. Closing ticket.
           </div>
-          <div className="max-w-[80%] rounded-2xl rounded-tl-md bg-stone-100 px-3 py-2 text-stone-700">
+        </div>
+        <div className="relative max-w-[80%]">
+          <StepBadge n="3" className="-left-8 top-1" />
+          <div className="rounded-2xl rounded-tl-md bg-stone-100 px-3 py-2 text-stone-700">
             Please confirm inventory restock for SKU-441 before closing.
           </div>
-          <div className="absolute bottom-3 left-12 right-3 h-9 rounded-full border border-stone-200 bg-white px-3 flex items-center text-[11px] text-stone-400">
-            Reply to customer…
-          </div>
         </div>
-      </BrowserChrome>
-    );
-  }
+        <div className="absolute bottom-3 left-10 right-3 h-9 rounded-full border border-stone-200 bg-white px-3 flex items-center text-[11px] text-stone-400">
+          Reply to customer…
+        </div>
+      </div>
+    </BrowserChrome>
+  );
+}
+
+function PrivacyMock() {
   return (
     <BrowserChrome title="metabase.internal / Revenue · This quarter">
       <div className="absolute inset-0 p-3.5 grid grid-cols-3 gap-2.5 content-start">
-        <div className="rounded-xl border border-stone-200 p-3 bg-white">
+        <div className="relative rounded-xl border border-stone-200 p-3 bg-white">
+          <div
+            className="absolute inset-2 rounded-lg border-2 pointer-events-none"
+            style={{ borderColor: ACCENT }}
+            aria-hidden
+          />
+          <HandNote className="absolute -top-5 left-1/2 -translate-x-1/2 z-10 whitespace-normal text-center max-w-[5rem]">
+            MRR is off
+          </HandNote>
           <p className="text-[10px] text-stone-400">MRR</p>
           <p className="text-lg font-semibold text-stone-800 tracking-tight">$42.1k</p>
           <p className="text-[10px] text-emerald-600 mt-0.5">+12% MoM</p>
@@ -229,19 +270,22 @@ function UiMock({ kind }: { kind: Kind }) {
         <div className="rounded-xl border border-stone-200 p-3 bg-white">
           <p className="text-[10px] text-stone-400">Churn</p>
           <p className="text-lg font-semibold text-stone-800 tracking-tight">2.4%</p>
-          <p className="text-[10px] text-stone-400 mt-0.5">stable</p>
         </div>
         <div className="rounded-xl border border-stone-200 p-3 bg-white">
           <p className="text-[10px] text-stone-400">ARPU</p>
           <p className="text-lg font-semibold text-stone-800 tracking-tight">$89</p>
-          <p className="text-[10px] text-amber-600 mt-0.5">check source</p>
         </div>
         <div className="col-span-3 rounded-xl border border-stone-200 p-3 bg-white">
           <p className="text-[10px] text-stone-400 mb-2">Top accounts</p>
           <div className="space-y-1.5 text-[11px] text-stone-600">
-            <div className="flex justify-between gap-2">
-              <span className="font-mono text-[10px]">nova@acme.io</span>
-              <span className="tabular-nums">$8,200</span>
+            <div className="relative flex justify-between gap-2 items-center py-0.5">
+              <div
+                className="absolute inset-y-0 left-0 right-[30%] rounded bg-stone-800/50 border border-dashed pointer-events-none"
+                style={{ borderColor: ACCENT }}
+                aria-hidden
+              />
+              <span className="font-mono text-[10px] relative z-0">nova@acme.io</span>
+              <span className="tabular-nums relative z-0">$8,200</span>
             </div>
             <div className="flex justify-between gap-2">
               <span className="font-mono text-[10px]">ops@bright.co</span>
@@ -254,9 +298,17 @@ function UiMock({ kind }: { kind: Kind }) {
   );
 }
 
+const MOCKS: Record<Kind, React.FC> = {
+  bug: BugMock,
+  settings: SettingsMock,
+  support: SupportMock,
+  privacy: PrivacyMock,
+};
+
 export default function LandingScenarioDemo() {
   const [index, setIndex] = useState(0);
   const scenario = SCENARIOS[index];
+  const Mock = MOCKS[scenario.id];
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -286,7 +338,7 @@ export default function LandingScenarioDemo() {
       </AnimatePresence>
 
       <div className="relative rounded-2xl border border-border bg-surface shadow-[var(--floating-shadow)] overflow-hidden aspect-[16/10]">
-        <div className="absolute inset-0 bg-[#e7e5e4]" />
+        <div className="absolute inset-0 bg-[#ebe9e7] canvas-dot-grid opacity-90" />
         <AnimatePresence mode="wait">
           <motion.div
             key={scenario.id}
@@ -296,19 +348,7 @@ export default function LandingScenarioDemo() {
             transition={{ duration: 0.35 }}
             className="absolute inset-0"
           >
-            <UiMock kind={scenario.id} />
-          </motion.div>
-        </AnimatePresence>
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={`ann-${scenario.id}`}
-            initial={{ opacity: 0, scale: 0.97 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.35, delay: 0.12 }}
-            className="absolute inset-0 pointer-events-none"
-          >
-            <Annotation kind={scenario.id} />
+            <Mock />
           </motion.div>
         </AnimatePresence>
       </div>

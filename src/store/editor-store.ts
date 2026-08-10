@@ -3,14 +3,17 @@ import type {
   EditorElement, ToolType, ExportFormat, CanvasStyle,
   StrokeStyle, FillStyle, Arrowhead,
 } from '@/types/editor';
+import { HANDWRITTEN_FONT } from '@/types/editor';
 import { getElementBounds, unionBounds } from '@/lib/editor/selection';
+import { applySettingToElement } from '@/lib/editor/settings-sync';
+import type { SettingKey } from '@/lib/editor/tool-settings';
 
 // Persisted settings (restored on refresh)
 const PERSIST_KEYS = [
-  'activeTool', 'strokeColor', 'fillColor', 'strokeWidth', 'fontSize',
+  'activeTool', 'strokeColor', 'fillColor', 'strokeWidth', 'fontSize', 'fontFamily',
   'opacity', 'cornerRadius', 'exportFormat', 'stepStartNumber', 'stepRadius',
   'exportQuality', 'gridEnabled', 'blurRadius', 'pixelSize', 'highlighterWidth',
-  'strokeStyle', 'fillStyle', 'roughness', 'endArrowhead', 'startArrowhead',
+  'strokeStyle', 'fillStyle', 'roughness', 'magnification', 'endArrowhead', 'startArrowhead',
   // panelCollapsed is responsive/session - not persisted across reloads
 ] as const;
 type PersistKey = typeof PERSIST_KEYS[number];
@@ -50,6 +53,8 @@ export type HistorySnapshot = {
   imageSize: { width: number; height: number };
   /** Tool active when this state was created; restored on image-changing undo/redo (crop). */
   activeTool?: ToolType;
+  /** Next step number at snapshot time, so undo does not skip a badge number. */
+  stepCounter?: number;
 };
 
 interface EditorState {
@@ -65,6 +70,8 @@ interface EditorState {
   fillColor: string;
   strokeWidth: number;
   fontSize: number;
+  /** Font stack for new text annotations. See HANDWRITTEN_FONT / STANDARD_FONT. */
+  fontFamily: string;
   opacity: number;
   cornerRadius: number;
   blurRadius: number;
@@ -92,6 +99,8 @@ interface EditorState {
   strokeStyle: StrokeStyle;
   fillStyle: FillStyle;
   roughness: number;
+  /** Default zoom for newly drawn magnifiers. */
+  magnification: number;
   endArrowhead: Arrowhead;
   startArrowhead: Arrowhead;
   imageLocked: boolean;
@@ -112,6 +121,7 @@ interface EditorState {
   setStrokeStyle: (v: StrokeStyle) => void;
   setFillStyle: (v: FillStyle) => void;
   setRoughness: (v: number) => void;
+  setMagnification: (v: number) => void;
   setEndArrowhead: (v: Arrowhead) => void;
   setStartArrowhead: (v: Arrowhead) => void;
   setImageLocked: (v: boolean) => void;
@@ -131,6 +141,7 @@ interface EditorState {
   setFillColor: (color: string) => void;
   setStrokeWidth: (width: number) => void;
   setFontSize: (size: number) => void;
+  setFontFamily: (family: string) => void;
   setOpacity: (opacity: number) => void;
   setCornerRadius: (radius: number) => void;
   setBlurRadius: (r: number) => void;
@@ -175,7 +186,7 @@ const initialCanvasStyle: CanvasStyle = {
   shadowBlur: 20, shadowOffsetX: 0, shadowOffsetY: 4,
   shadowColor: 'rgba(0,0,0,0.3)', bgStyle: 'none',
   bgColor: '#ffffff', bgGradientStart: '#667eea', bgGradientEnd: '#764ba2',
-  deviceFrame: 'none', gridEnabled: false, transparentExport: false,
+  deviceFrame: 'none', gridEnabled: true, transparentExport: false,
 };
 
 const defaults: Record<string, any> = {
@@ -185,6 +196,7 @@ const defaults: Record<string, any> = {
   fillColor: 'transparent',
   strokeWidth: 3,
   fontSize: 24,
+  fontFamily: HANDWRITTEN_FONT,
   opacity: 1,
   cornerRadius: 8,
   exportFormat: 'png' as ExportFormat,
@@ -198,6 +210,7 @@ const defaults: Record<string, any> = {
   strokeStyle: 'solid' as StrokeStyle,
   fillStyle: 'hachure' as FillStyle,
   roughness: 1.25,
+  magnification: 2.25,
   endArrowhead: 'arrow' as Arrowhead,
   startArrowhead: 'none' as Arrowhead,
 };
@@ -245,7 +258,7 @@ const shouldAutoLaunch = typeof window === 'undefined'
   ? true
   : window.location.pathname !== infoPath;
 
-const generateId = () => Math.random().toString(36).substring(2, 11);
+const generateId = () => `el${Math.random().toString(36).slice(2, 11)}`;
 const cloneElements = (els: EditorElement[]) => JSON.parse(JSON.stringify(els)) as EditorElement[];
 
 type HistorySource = {
@@ -254,6 +267,7 @@ type HistorySource = {
   imageDataURL: string | null;
   imageSize: { width: number; height: number };
   activeTool: ToolType;
+  stepCounter: number;
 };
 
 function makeSnapshot(
@@ -261,12 +275,14 @@ function makeSnapshot(
   imageDataURL: string | null,
   imageSize: { width: number; height: number },
   activeTool?: ToolType,
+  stepCounter?: number,
 ): HistorySnapshot {
   return {
     elements: cloneElements(elements),
     imageDataURL,
     imageSize: { width: imageSize.width, height: imageSize.height },
     activeTool,
+    stepCounter,
   };
 }
 
@@ -278,7 +294,7 @@ function pushHistory(
 ) {
   const imageDataURL = image ? image.imageDataURL : s.imageDataURL;
   const imageSize = image ? image.imageSize : s.imageSize;
-  const snap = makeSnapshot(elements, imageDataURL, imageSize, s.activeTool);
+  const snap = makeSnapshot(elements, imageDataURL, imageSize, s.activeTool, s.stepCounter);
   return {
     elements,
     ...(image
@@ -293,11 +309,39 @@ function emptyHistory(
   imageDataURL: string | null = null,
   imageSize: { width: number; height: number } = { width: 0, height: 0 },
   activeTool?: ToolType,
+  stepCounter?: number,
 ) {
   return {
-    _history: [makeSnapshot([], imageDataURL, imageSize, activeTool)] as HistorySnapshot[],
+    _history: [makeSnapshot([], imageDataURL, imageSize, activeTool, stepCounter)] as HistorySnapshot[],
     _historyIndex: 0,
   };
+}
+
+/**
+ * Apply one setting change to the current selection as a single undo step.
+ *
+ * Which element props a setting maps to lives in `applySettingToElement`, so
+ * the store, the desktop panel and the mobile strip all read one registry
+ * instead of three hand-maintained type lists that had already drifted apart.
+ * Returns `{}` when nothing in the selection accepts the setting.
+ */
+function applyToSelection(
+  s: EditorState,
+  key: SettingKey,
+  value: unknown,
+): Partial<EditorState> {
+  const ids = new Set(s.selectedElementIds);
+  if (!ids.size) return {};
+  const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
+  let changed = false;
+  const els = s.elements.map((el) => {
+    if (!ids.has(el.id)) return el;
+    const patch = applySettingToElement(key, value, el, scale);
+    if (!patch) return el;
+    changed = true;
+    return { ...el, ...patch } as EditorElement;
+  });
+  return changed ? pushHistory(s, els) : {};
 }
 
 /** Encode current HTMLImageElement for history (reuse data: URLs as-is). */
@@ -337,11 +381,17 @@ function applyHistorySnapshot(
   const toolPatch: Partial<EditorState> =
     imageChanged && snap.activeTool ? { activeTool: snap.activeTool } : {};
 
+  // The badge counter is part of document state: without this, undoing a step
+  // and placing a new one skips the number that was just released.
+  const counterPatch: Partial<EditorState> =
+    typeof snap.stepCounter === 'number' ? { stepCounter: snap.stepCounter } : {};
+
   if (!imageChanged) {
     set({
       elements: cloneElements(snap.elements),
       _historyIndex: index,
       selectedElementIds: [],
+      ...counterPatch,
     });
     return;
   }
@@ -356,6 +406,7 @@ function applyHistorySnapshot(
       imageDataURL: null,
       imageSize: { width: 0, height: 0 },
       ...toolPatch,
+      ...counterPatch,
     });
     return;
   }
@@ -371,6 +422,7 @@ function applyHistorySnapshot(
       imageDataURL: snap.imageDataURL,
       imageSize: { width: snap.imageSize.width, height: snap.imageSize.height },
       ...toolPatch,
+      ...counterPatch,
     });
     setTimeout(() => get().resetView(), 30);
   };
@@ -381,6 +433,7 @@ function applyHistorySnapshot(
       _historyIndex: index,
       selectedElementIds: [],
       ...toolPatch,
+      ...counterPatch,
     });
   };
   img.src = snap.imageDataURL;
@@ -398,6 +451,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   fillColor: persisted.fillColor ?? defaults.fillColor,
   strokeWidth: persisted.strokeWidth ?? defaults.strokeWidth,
   fontSize: persisted.fontSize ?? defaults.fontSize,
+  fontFamily: persisted.fontFamily ?? defaults.fontFamily,
   opacity: persisted.opacity ?? defaults.opacity,
   cornerRadius: persisted.cornerRadius ?? defaults.cornerRadius,
   blurRadius: persisted.blurRadius ?? defaults.blurRadius,
@@ -422,6 +476,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   strokeStyle: persisted.strokeStyle ?? defaults.strokeStyle,
   fillStyle: persisted.fillStyle ?? defaults.fillStyle,
   roughness: persisted.roughness ?? defaults.roughness,
+  magnification: persisted.magnification ?? defaults.magnification,
   endArrowhead: persisted.endArrowhead ?? defaults.endArrowhead,
   startArrowhead: persisted.startArrowhead ?? defaults.startArrowhead,
   imageLocked: false,
@@ -438,57 +493,35 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setStickyTool: (v) => set({ stickyTool: v }),
   setStrokeStyle: (v) => {
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      if (!ids.size) return { strokeStyle: v };
-      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, strokeStyle: v } as EditorElement : el);
-      return { strokeStyle: v, ...pushHistory(s, els) };
-    });
+    set((s) => ({ strokeStyle: v, ...applyToSelection(s, 'strokeStyle', v) }));
     savePersisted({ ...get(), strokeStyle: v });
   },
   setFillStyle: (v) => {
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      if (!ids.size) return { fillStyle: v };
-      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, fillStyle: v } as EditorElement : el);
-      return { fillStyle: v, ...pushHistory(s, els) };
-    });
+    set((s) => ({ fillStyle: v, ...applyToSelection(s, 'fillStyle', v) }));
     savePersisted({ ...get(), fillStyle: v });
   },
   setRoughness: (v) => {
     const r = Math.max(0, Math.min(3, v));
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      if (!ids.size) return { roughness: r };
-      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, roughness: r } as EditorElement : el);
-      return { roughness: r, ...pushHistory(s, els) };
-    });
+    set((s) => ({ roughness: r, ...applyToSelection(s, 'roughness', r) }));
     savePersisted({ ...get(), roughness: r });
   },
+  setMagnification: (v) => {
+    const mag = Math.max(1.5, Math.min(4, v));
+    set((s) => ({ magnification: mag, ...applyToSelection(s, 'magnification', mag) }));
+    savePersisted({ ...get(), magnification: mag });
+  },
   setEndArrowhead: (v) => {
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      if (!ids.size) return { endArrowhead: v };
-      const els = s.elements.map((el) =>
-        ids.has(el.id) && (el.type === 'arrow' || el.type === 'line')
-          ? { ...el, endArrowhead: v } as EditorElement
-          : el,
-      );
-      return { endArrowhead: v, ...pushHistory(s, els) };
-    });
+    set((s) => ({
+      endArrowhead: v,
+      ...applyToSelection(s, 'arrowheads', { endArrowhead: v }),
+    }));
     savePersisted({ ...get(), endArrowhead: v });
   },
   setStartArrowhead: (v) => {
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      if (!ids.size) return { startArrowhead: v };
-      const els = s.elements.map((el) =>
-        ids.has(el.id) && (el.type === 'arrow' || el.type === 'line')
-          ? { ...el, startArrowhead: v } as EditorElement
-          : el,
-      );
-      return { startArrowhead: v, ...pushHistory(s, els) };
-    });
+    set((s) => ({
+      startArrowhead: v,
+      ...applyToSelection(s, 'arrowheads', { startArrowhead: v }),
+    }));
     savePersisted({ ...get(), startArrowhead: v });
   },
   setImageLocked: (v) => set({ imageLocked: v }),
@@ -684,7 +717,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return;
     }
     const bounds = unionBounds(
-      s.elements.filter((el) => s.selectedElementIds.includes(el.id)).map(getElementBounds),
+      s.elements
+        .filter((el) => s.selectedElementIds.includes(el.id))
+        .map((el) => getElementBounds(el, s.imageSize)),
     );
     if (!bounds || bounds.w < 1 || bounds.h < 1) return;
     const container = document.querySelector('[data-snapty-canvas]') as HTMLElement | null;
@@ -722,137 +757,57 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
   setStrokeColor: (color) => {
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      let els = s.elements;
-      let historyExtra = false;
-      if (ids.size) {
-        els = s.elements.map((el) => {
-          if (!ids.has(el.id)) return el;
-          if (el.type === 'text' || el.type === 'step') return { ...el, fill: color } as EditorElement;
-          if (el.type === 'arrow') return { ...el, stroke: color, fill: color } as EditorElement;
-          if (['blur', 'pixelate', 'spotlight'].includes(el.type)) return el;
-          return { ...el, stroke: color } as EditorElement;
-        });
-        historyExtra = true;
-      }
-      return historyExtra
-        ? { strokeColor: color, ...pushHistory(s, els) }
-        : { strokeColor: color };
-    });
+    set((s) => ({ strokeColor: color, ...applyToSelection(s, 'strokeColor', color) }));
     savePersisted({ ...get(), strokeColor: color });
   },
   setFillColor: (color) => {
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      let els = s.elements;
-      let historyExtra = false;
-      if (ids.size) {
-        els = s.elements.map((el) => {
-          if (!ids.has(el.id)) return el;
-          if (['rectangle', 'rounded-rect', 'circle', 'diamond'].includes(el.type)) return { ...el, fill: color } as EditorElement;
-          return el;
-        });
-        historyExtra = true;
-      }
-      return historyExtra
-        ? { fillColor: color, ...pushHistory(s, els) }
-        : { fillColor: color };
-    });
+    set((s) => ({ fillColor: color, ...applyToSelection(s, 'fillColor', color) }));
     savePersisted({ ...get(), fillColor: color });
   },
   setStrokeWidth: (width) => {
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      let els = s.elements;
-      let historyExtra = false;
-      if (ids.size) {
-        // Apply image scale so edits match draw-time sizing on large screenshots
-        const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
-        const scaled = Math.max(1, Math.round(width * scale));
-        els = s.elements.map((el) => {
-          if (!ids.has(el.id) || !('strokeWidth' in el)) return el;
-          return { ...el, strokeWidth: scaled } as EditorElement;
-        });
-        historyExtra = true;
-      }
-      return historyExtra
-        ? { strokeWidth: width, ...pushHistory(s, els) }
-        : { strokeWidth: width };
-    });
+    set((s) => ({ strokeWidth: width, ...applyToSelection(s, 'strokeWidth', width) }));
     savePersisted({ ...get(), strokeWidth: width });
   },
   setFontSize: (size) => {
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      let els = s.elements;
-      let historyExtra = false;
-      if (ids.size) {
-        const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
-        const scaled = Math.max(8, Math.round(size * scale));
-        els = s.elements.map((el) => {
-          if (!ids.has(el.id) || el.type !== 'text') return el;
-          return { ...el, fontSize: scaled } as EditorElement;
-        });
-        historyExtra = true;
-      }
-      return historyExtra
-        ? { fontSize: size, ...pushHistory(s, els) }
-        : { fontSize: size };
-    });
+    set((s) => ({ fontSize: size, ...applyToSelection(s, 'fontSize', size) }));
     savePersisted({ ...get(), fontSize: size });
+  },
+  setFontFamily: (family) => {
+    set((s) => ({ fontFamily: family, ...applyToSelection(s, 'fontFamily', family) }));
+    savePersisted({ ...get(), fontFamily: family });
   },
   setOpacity: (opacity) => {
     const o = Math.max(0, Math.min(1, opacity));
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      if (!ids.size) return { opacity: o };
-      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, opacity: o } as EditorElement : el);
-      return { opacity: o, ...pushHistory(s, els) };
-    });
+    set((s) => ({ opacity: o, ...applyToSelection(s, 'opacity', o) }));
     savePersisted({ ...get(), opacity: o });
   },
   setCornerRadius: (radius) => {
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      let els = s.elements;
-      let historyExtra = false;
-      if (ids.size) {
-        els = s.elements.map((el) => {
-          if (!ids.has(el.id) || (el.type !== 'rounded-rect' && el.type !== 'rectangle')) return el;
-          return { ...el, cornerRadius: radius } as EditorElement;
-        });
-        historyExtra = true;
-      }
-      return historyExtra
-        ? { cornerRadius: radius, ...pushHistory(s, els) }
-        : { cornerRadius: radius };
-    });
+    set((s) => ({ cornerRadius: radius, ...applyToSelection(s, 'cornerRadius', radius) }));
     savePersisted({ ...get(), cornerRadius: radius });
   },
-  setBlurRadius: (r) => { set({ blurRadius: Math.max(2, Math.min(40, r)) }); savePersisted({ ...get(), blurRadius: r }); },
-  setPixelSize: (s) => { set({ pixelSize: Math.max(2, Math.min(40, s)) }); savePersisted({ ...get(), pixelSize: s }); },
-  setHighlighterWidth: (w) => { set({ highlighterWidth: Math.max(4, Math.min(60, w)) }); savePersisted({ ...get(), highlighterWidth: w }); },
-  setStepStartNumber: (n) => { set({ stepStartNumber: n, stepCounter: n }); savePersisted({ ...get(), stepStartNumber: n }); },
+  setBlurRadius: (r) => {
+    const v = Math.max(2, Math.min(40, r));
+    set((s) => ({ blurRadius: v, ...applyToSelection(s, 'blurRadius', v) }));
+    savePersisted({ ...get(), blurRadius: v });
+  },
+  setPixelSize: (px) => {
+    const v = Math.max(2, Math.min(40, px));
+    set((s) => ({ pixelSize: v, ...applyToSelection(s, 'pixelSize', v) }));
+    savePersisted({ ...get(), pixelSize: v });
+  },
+  setHighlighterWidth: (w) => {
+    const v = Math.max(4, Math.min(60, w));
+    set((s) => ({ highlighterWidth: v, ...applyToSelection(s, 'highlighterWidth', v) }));
+    savePersisted({ ...get(), highlighterWidth: v });
+  },
+  setStepStartNumber: (n) => {
+    const start = Math.max(0, Math.round(n));
+    set({ stepStartNumber: start, stepCounter: start });
+    savePersisted({ ...get(), stepStartNumber: start });
+  },
   setStepRadius: (r) => {
     const radius = Math.max(8, Math.min(80, r));
-    set((s) => {
-      const ids = new Set(s.selectedElementIds);
-      let els = s.elements;
-      let historyExtra = false;
-      if (ids.size) {
-        const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
-        const scaled = Math.max(8, Math.round(radius * scale));
-        els = s.elements.map((el) => {
-          if (!ids.has(el.id) || el.type !== 'step') return el;
-          return { ...el, radius: scaled, fontSize: Math.round(scaled * 0.8) } as EditorElement;
-        });
-        historyExtra = true;
-      }
-      return historyExtra
-        ? { stepRadius: radius, ...pushHistory(s, els) }
-        : { stepRadius: radius };
-    });
+    set((s) => ({ stepRadius: radius, ...applyToSelection(s, 'stepRadius', radius) }));
     savePersisted({ ...get(), stepRadius: radius });
   },
   setPanelCollapsed: (collapsed) => {
@@ -865,6 +820,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       fillColor: defaults.fillColor as string,
       strokeWidth: defaults.strokeWidth as number,
       fontSize: defaults.fontSize as number,
+      fontFamily: defaults.fontFamily as string,
       opacity: defaults.opacity as number,
       cornerRadius: defaults.cornerRadius as number,
       blurRadius: defaults.blurRadius as number,
@@ -876,6 +832,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       strokeStyle: defaults.strokeStyle as StrokeStyle,
       fillStyle: defaults.fillStyle as FillStyle,
       roughness: defaults.roughness as number,
+      magnification: defaults.magnification as number,
       endArrowhead: defaults.endArrowhead as Arrowhead,
       startArrowhead: defaults.startArrowhead as Arrowhead,
       handDrawn: true,
@@ -890,8 +847,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   addElement: (element) => {
-    set((s) => pushHistory(s, [...s.elements, element]));
-    if (element.type === 'step') set((s) => ({ stepCounter: s.stepCounter + 1 }));
+    set((s) => {
+      // Bump the counter *before* snapshotting so the snapshot records the
+      // post-placement number. Undo then rewinds to the pre-placement counter
+      // and redo restores the advanced one; the old code snapshotted first, so
+      // redo replayed a number that was already used.
+      const stepCounter = element.type === 'step' ? s.stepCounter + 1 : s.stepCounter;
+      return {
+        stepCounter,
+        ...pushHistory({ ...s, stepCounter }, [...s.elements, element]),
+      };
+    });
   },
   addElements: (elements) => {
     set((s) => pushHistory(s, [...s.elements, ...elements]));

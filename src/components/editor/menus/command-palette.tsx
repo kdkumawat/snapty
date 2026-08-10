@@ -8,7 +8,7 @@ import {
   Minus, Pencil, Type, ListOrdered, Highlighter, Droplets, Grid3x3, Crop,
   Eraser, MonitorUp, FolderOpen, Download, Settings2, ImageOff, RotateCcw,
   Keyboard, Maximize2, ZoomIn, Undo2, Redo2, Trash2, Sun, Moon, Monitor,
-  Search, Squircle, ImagePlus,
+  Search, Squircle, ImagePlus, ScanText,
 } from 'lucide-react';
 import { useEditorStore } from '@/store/editor-store';
 import type { ToolType } from '@/types/editor';
@@ -75,14 +75,14 @@ export default function CommandPalette() {
       <DialogContent
         showCloseButton={false}
         className={cn(
-          'p-0 overflow-hidden bg-surface border-border gap-0 shadow-2xl',
+          'p-0 overflow-hidden bg-surface border-border gap-0 shadow-2xl flex flex-col',
           'max-w-lg w-[min(32rem,calc(100vw-1.5rem))]',
-          'top-[max(12vh,2rem)] translate-y-0',
+          'top-[max(12vh,2rem)] translate-y-0 max-h-[min(90dvh,36rem)]',
         )}
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
-        <Command className="bg-transparent" shouldFilter>
-          <div className="flex items-center gap-2 px-4 border-b border-border">
+        <Command className="bg-transparent flex flex-col min-h-0 flex-1" shouldFilter>
+          <div className="shrink-0 flex items-center gap-2 px-4 border-b border-border bg-surface">
             <Search className="w-4 h-4 text-muted-foreground shrink-0" />
             <Command.Input
               value={query}
@@ -91,8 +91,16 @@ export default function CommandPalette() {
               className="w-full h-12 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
             />
             <kbd className="snapty-kbd shrink-0 hidden sm:inline">Esc</kbd>
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={() => setOpen(false)}
+              className="w-8 h-8 shrink-0 rounded-lg inline-flex items-center justify-center text-muted-foreground hover:bg-secondary hover:text-foreground"
+            >
+              <span className="text-lg leading-none">&times;</span>
+            </button>
           </div>
-          <Command.List className="max-h-[min(24rem,55vh)] overflow-y-auto p-2">
+          <Command.List className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2">
             <Command.Empty className="py-8 text-center text-sm text-muted-foreground">
               No results
             </Command.Empty>
@@ -179,13 +187,24 @@ export default function CommandPalette() {
                   <p className="text-[11px] text-muted-foreground">Advanced download options</p>
                 </div>
               </Command.Item>
+              <Command.Item value="Extract text OCR recognize" onSelect={() => run(() => {
+                window.dispatchEvent(new CustomEvent('snapty-ocr'));
+              })} className={itemClass}>
+                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
+                  <ScanText className="w-4 h-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">Extract text</p>
+                  <p className="text-[11px] text-muted-foreground">Read text from the image, on your device</p>
+                </div>
+              </Command.Item>
               <Command.Item value="Canvas settings" onSelect={() => run(() => setShowSettings(true))} className={itemClass}>
                 <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
                   <Settings2 className="w-4 h-4" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium">Canvas settings</p>
-                  <p className="text-[11px] text-muted-foreground">Padding, background, locks</p>
+                  <p className="font-medium">Settings</p>
+                  <p className="text-[11px] text-muted-foreground">Theme, padding, background, locks</p>
                 </div>
               </Command.Item>
               <Command.Item value="Clean clear image" onSelect={() => run(() => replaceImage())} className={itemClass}>
@@ -193,7 +212,7 @@ export default function CommandPalette() {
                   <ImageOff className="w-4 h-4" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium">Clean</p>
+                  <p className="font-medium">Clear image</p>
                   <p className="text-[11px] text-muted-foreground">Clear image and show empty state</p>
                 </div>
               </Command.Item>
