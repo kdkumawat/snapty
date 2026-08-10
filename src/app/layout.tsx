@@ -5,6 +5,7 @@ import "./globals.css";
 import UpdateToast from "@/components/update-toast";
 import JsonLd from "@/components/json-ld";
 import { Toaster } from "@/components/ui/toaster";
+import GoogleAnalytics from "@/components/google-analytics";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -120,6 +121,7 @@ export default function RootLayout({
           </div>
           <UpdateToast />
           <Toaster />
+          <GoogleAnalytics />
         </ThemeProvider>
       </body>
     </html>

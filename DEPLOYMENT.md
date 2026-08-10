@@ -50,6 +50,7 @@ The `public/_headers` file configures caching:
 |---|---|---|
 | `NODE_VERSION` | Node.js version for build | `20` |
 | `NEXT_PUBLIC_SITE_URL` | Production URL for SEO/canonical | `https://snapty.pages.dev` |
+| `NEXT_PUBLIC_GA_MEASUREMENT_ID` | Google Analytics 4 measurement ID (`G-…`) | _(unset = analytics off)_ |
 
 ---
 

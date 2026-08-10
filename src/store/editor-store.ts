@@ -4,6 +4,7 @@ import type {
   StrokeStyle, FillStyle, Arrowhead,
 } from '@/types/editor';
 import { HANDWRITTEN_FONT } from '@/types/editor';
+import { trackPageView } from '@/lib/analytics';
 import { getElementBounds, unionBounds } from '@/lib/editor/selection';
 import { applySettingToElement } from '@/lib/editor/settings-sync';
 import type { SettingKey } from '@/lib/editor/tool-settings';
@@ -250,6 +251,7 @@ function syncEditorRoute(launched: boolean) {
   if (!samePath || hasLegacyHash || onLegacyEditor) {
     const method = (hasLegacyHash || onLegacyEditor) ? 'replaceState' : 'pushState';
     window.history[method]({}, '', nextPath);
+    trackPageView(nextPath);
   }
 }
 
