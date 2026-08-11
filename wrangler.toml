@@ -1,5 +1,10 @@
 name = "snapty"
-pages_build_output_dir = ".open-next/assets"
+pages_build_output_dir = "out"
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
+
+# Plaintext env vars for Cloudflare Pages (build + runtime).
+# Dashboard only supports Secrets; everything else lives here.
+[vars]
 NEXT_PUBLIC_GA_MEASUREMENT_ID = "G-KBDRST3R46"
+NEXT_PUBLIC_SITE_URL = "https://snapty.pages.dev"
