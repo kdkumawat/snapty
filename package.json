@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "next dev -p 3001 2>&1 | tee dev.log",
     "build": "next build",
-    "cf:build": "npm run build",
+    "cf:build": "node scripts/with-wrangler-env.mjs next build",
     "cf:preview": "npm run cf:build && npx wrangler pages dev out",
     "cf:deploy": "npm run cf:build && npx wrangler pages deploy out",
     "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",

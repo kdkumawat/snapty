@@ -46,11 +46,25 @@ The `public/_headers` file configures caching:
 
 ### Environment Variables
 
-| Variable | Description | Default |
+Cloudflare Pages reads **plaintext variables from `wrangler.toml`** (`[vars]`). The Dashboard is only for **Secrets** (encrypted values).
+
+Edit `wrangler.toml`:
+
+```toml
+[vars]
+NEXT_PUBLIC_GA_MEASUREMENT_ID = "G-XXXXXXXXXX"
+NEXT_PUBLIC_SITE_URL = "https://snapty.pages.dev"
+```
+
+| Variable | Description | Where to set |
 |---|---|---|
-| `NODE_VERSION` | Node.js version for build | `20` |
-| `NEXT_PUBLIC_SITE_URL` | Production URL for SEO/canonical | `https://snapty.pages.dev` |
-| `NEXT_PUBLIC_GA_MEASUREMENT_ID` | Google Analytics 4 measurement ID (`G-…`) | _(unset = analytics off)_ |
+| `NODE_VERSION` | Node.js version for build | Cloudflare Pages build settings (`20`) |
+| `NEXT_PUBLIC_SITE_URL` | Production URL for SEO/canonical | `wrangler.toml` → `[vars]` |
+| `NEXT_PUBLIC_GA_MEASUREMENT_ID` | Google Analytics 4 (`G-…`) | `wrangler.toml` → `[vars]` |
+
+**Local dev:** copy `env.example` → `.env.local` (same keys).
+
+`npm run cf:build` runs `scripts/with-wrangler-env.mjs` so `next build` inlines `NEXT_PUBLIC_*` from `wrangler.toml`.
 
 ---
 
