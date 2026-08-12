@@ -130,6 +130,47 @@ export function quadBounds(
   };
 }
 
+/**
+ * Bounds of a straight polyline (2+ points) in absolute coordinates.
+ * Multi-point arrows/lines are straight-segment polylines, so the chord math
+ * only applies to the legacy 2-point + bend form.
+ */
+export function polylineBounds(
+  originX: number, originY: number,
+  points: number[],
+  pad = 0,
+): Bounds {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < points.length; i += 2) {
+    minX = Math.min(minX, points[i]);
+    minY = Math.min(minY, points[i + 1]);
+    maxX = Math.max(maxX, points[i]);
+    maxY = Math.max(maxY, points[i + 1]);
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+    return { x: originX, y: originY, w: 0, h: 0 };
+  }
+  return {
+    x: originX + minX - pad,
+    y: originY + minY - pad,
+    w: maxX - minX + pad * 2,
+    h: maxY - minY + pad * 2,
+  };
+}
+
+/** SVG path data for a straight polyline, in absolute coordinates. */
+export function polylinePathD(
+  originX: number, originY: number,
+  points: number[],
+): string {
+  if (points.length < 4) return '';
+  let d = `M ${originX + points[0]} ${originY + points[1]}`;
+  for (let i = 2; i < points.length; i += 2) {
+    d += ` L ${originX + points[i]} ${originY + points[i + 1]}`;
+  }
+  return d;
+}
+
 /** SVG path data for the segment, in absolute coordinates. */
 export function quadPathD(
   originX: number, originY: number,

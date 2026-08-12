@@ -42,7 +42,9 @@ function HandNote({ children, className }: { children: React.ReactNode; classNam
   return (
     <span
       className={cn(
-        'font-hand text-[13px] sm:text-sm leading-tight whitespace-nowrap pointer-events-none',
+        // Wrap instead of nowrap so notes can never clip the mock edges on
+        // narrow screens (previously long notes were cut off mid-word).
+        'font-hand text-[13px] sm:text-sm leading-tight pointer-events-none whitespace-normal max-w-[10rem]',
         className,
       )}
       style={{ color: ACCENT }}
@@ -120,7 +122,7 @@ function BugMock() {
             </div>
           </div>
           <div className="relative mt-auto">
-            <HandNote className="absolute -top-7 left-0 z-10">covers the terms link</HandNote>
+            <HandNote className="absolute -top-7 -left-1 z-10">covers the terms link</HandNote>
             <svg
               className="absolute -top-4 left-[42%] w-8 h-8 pointer-events-none z-10"
               viewBox="0 0 24 24"

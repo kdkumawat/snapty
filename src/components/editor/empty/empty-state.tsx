@@ -22,9 +22,22 @@ export default function EmptyState() {
   const [urlBusy, setUrlBusy] = useState(false);
   const [urlError, setUrlError] = useState('');
   const [captureBusy, setCaptureBusy] = useState(false);
+  const [online, setOnline] = useState(true);
   const imageLoading = useEditorStore((s) => s.imageLoading);
   const setShowHelpDialog = useEditorStore((s) => s.setShowHelpDialog);
   const setImageLoading = useEditorStore((s) => s.setImageLoading);
+
+  // Offline still works for files/paste/capture - only URL import needs a network.
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine);
+    update();
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
 
   useEffect(() => {
     const onOpen = () => fileInputRef.current?.click();
@@ -117,23 +130,23 @@ export default function EmptyState() {
           <div className="w-12 h-12 rounded-2xl bg-accent text-accent-foreground flex items-center justify-center shadow-sm">
             <ScissorLogo size={22} />
           </div>
-          <h1 className="text-3xl font-semibold tracking-tight text-accent font-hand">
+          <h1 className="text-3xl font-semibold text-accent font-hand">
             Snapty
           </h1>
-          <p className="text-sm text-muted-foreground font-hand">
-            {dragOver ? 'Drop to open' : 'Drop an image anywhere · 100% local'}
+          <p className="text-sm font-hand text-muted-foreground">
+            {dragOver ? 'Drop to open' : 'Drop an image anywhere · your image never leaves this device'}
           </p>
         </div>
 
         <div className="rounded-2xl border border-border bg-surface/90 backdrop-blur shadow-[var(--floating-shadow)] p-1.5">
           <button type="button" className={rowClass} onClick={() => fileInputRef.current?.click()}>
             <FolderOpen className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
-            <span className="flex-1 font-medium font-hand text-[1.05rem]">Open</span>
+            <span className="flex-1 font-hand text-[1.1rem]">Open</span>
             <Kbd>{modKey}+O</Kbd>
           </button>
           <button type="button" className={rowClass} onClick={() => void handlePaste()}>
             <Clipboard className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
-            <span className="flex-1 font-medium font-hand text-[1.05rem]">Paste</span>
+            <span className="flex-1 font-hand text-[1.1rem]">Paste</span>
             <Kbd>{modKey}+V</Kbd>
           </button>
           {isScreenCaptureSupported() && (
@@ -146,46 +159,56 @@ export default function EmptyState() {
               {captureBusy
                 ? <Loader2 className="w-[18px] h-[18px] animate-spin text-muted-foreground shrink-0" />
                 : <MonitorUp className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />}
-              <span className="flex-1 font-medium font-hand text-[1.05rem]">Capture screen</span>
+              <span className="flex-1 font-hand text-[1.1rem]">Capture screen</span>
               <Kbd>{modKey}+Shift+S</Kbd>
             </button>
           )}
           <button type="button" className={rowClass} onClick={() => setShowHelpDialog(true)}>
             <HelpCircle className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
-            <span className="flex-1 font-medium font-hand text-[1.05rem]">Help</span>
+            <span className="flex-1 font-hand text-[1.1rem]">Help</span>
             <Kbd>?</Kbd>
           </button>
           <button
             type="button"
             className={rowClass}
-            onClick={() => openInBrowser('/info')}
+            onClick={() => openInBrowser('/')}
           >
             <Info className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
-            <span className="flex-1 font-medium font-hand text-[1.05rem]">About Snapty</span>
+            <span className="flex-1 font-hand text-[1.1rem]">About Snapty</span>
           </button>
         </div>
+
+        {!online && (
+          <div className="mt-3 rounded-2xl border border-dashed border-border bg-surface/90 backdrop-blur p-3">
+            <p className="text-[12px] font-hand text-muted-foreground leading-snug">
+              <span className="text-foreground">You’re offline.</span> Open, paste, and capture
+              still work - everything stays on this device. Only URL import needs a connection.
+            </p>
+          </div>
+        )}
 
         <div className="mt-3 rounded-2xl border border-border bg-surface/90 backdrop-blur shadow-[var(--floating-shadow)] p-2">
           <div className="flex items-center gap-2">
             <LinkIcon className="w-4 h-4 text-muted-foreground ml-2 shrink-0" strokeWidth={1.75} />
             <input
+              disabled={!online}
               value={url}
               onChange={(e) => { setUrl(e.target.value); setUrlError(''); }}
               onKeyDown={(e) => { if (e.key === 'Enter') void handleUrl(); }}
               placeholder="Paste image URL…"
-              className="flex-1 h-9 bg-transparent text-sm outline-none placeholder:text-muted-foreground min-w-0"
+              className="flex-1 h-9 bg-transparent font-hand text-[1rem] outline-none placeholder:text-muted-foreground min-w-0"
               aria-label="Image URL"
             />
             <button
               type="button"
-              disabled={urlBusy || !url.trim()}
+              disabled={urlBusy || !url.trim() || !online}
               onClick={() => void handleUrl()}
-              className="h-8 px-3 rounded-lg text-xs font-medium bg-secondary hover:bg-secondary/80 disabled:opacity-40 shrink-0"
+              className="h-8 px-3 rounded-lg font-hand text-sm bg-secondary hover:bg-secondary/80 disabled:opacity-40 shrink-0"
             >
               {urlBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Load'}
             </button>
           </div>
-          {urlError && <p className="text-[11px] text-destructive px-2 pt-1.5 pb-0.5">{urlError}</p>}
+          {urlError && <p className="text-[12px] font-hand text-destructive px-2 pt-1.5 pb-0.5">{urlError}</p>}
         </div>
 
         <input

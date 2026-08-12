@@ -1,7 +1,47 @@
 import { useEditorStore, generateId } from '@/store/editor-store';
 import type { ShapeElement } from '@/types/editor';
-import { toastSuccess } from '@/lib/app-toast';
+import { toastInfo, toastSuccess } from '@/lib/app-toast';
 import { preloadHtmlImage } from '@/hooks/use-html-image';
+
+/**
+ * Images larger than this (longest side) are downscaled on import unless the
+ * user opted to keep the original resolution. Guards against memory blowups
+ * from 8K panoramas / 100MP phone shots freezing the editor.
+ */
+const MAX_IMAGE_DIMENSION = 4096;
+
+/**
+ * Downscale an image past MAX_IMAGE_DIMENSION unless `keepOriginal` is on.
+ * Resolves with the (possibly new) image and whether it was downscaled. The
+ * returned image is guaranteed loaded so callers can read naturalWidth.
+ */
+export async function capImageSize(img: HTMLImageElement): Promise<{
+  image: HTMLImageElement;
+  downscaled: boolean;
+}> {
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  if (!w || !h) return { image: img, downscaled: false };
+  if (Math.max(w, h) <= MAX_IMAGE_DIMENSION) return { image: img, downscaled: false };
+  if (useEditorStore.getState().keepOriginal) return { image: img, downscaled: false };
+
+  const scale = MAX_IMAGE_DIMENSION / Math.max(w, h);
+  const cw = Math.max(1, Math.round(w * scale));
+  const ch = Math.max(1, Math.round(h * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = cw;
+  canvas.height = ch;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return { image: img, downscaled: false };
+  ctx.drawImage(img, 0, 0, cw, ch);
+  const dataUrl = canvas.toDataURL('image/png');
+  return new Promise((resolve) => {
+    const out = new Image();
+    out.onload = () => resolve({ image: out, downscaled: true });
+    out.onerror = () => resolve({ image: img, downscaled: false });
+    out.src = dataUrl;
+  });
+}
 
 /** Decode a File/Blob into an HTMLImageElement. */
 export function blobToImage(blob: Blob): Promise<HTMLImageElement> {
@@ -62,10 +102,11 @@ export async function addImageOverlay(file: File | Blob): Promise<void> {
     throw new Error('Annotations are locked');
   }
 
-  const img = await blobToImage(file);
-  const dataURL = file instanceof Blob
-    ? await blobToDataURL(file).catch(() => imageToPngDataURL(img))
-    : imageToPngDataURL(img);
+  // Cap huge overlays too: the full-res blob would otherwise be encoded as a
+  // data URL (100MP → hundreds of MB) before it is even scaled for display.
+  const decoded = await blobToImage(file);
+  const { image: img } = await capImageSize(decoded);
+  const dataURL = imageToPngDataURL(img);
 
   const { imageSize } = useEditorStore.getState();
   const natW = img.naturalWidth || img.width;
@@ -130,9 +171,11 @@ export async function loadImageFileIntoEditor(
 
   store.setImageLoading(true);
   try {
-    const img = await blobToImage(file);
+    const decoded = await blobToImage(file);
+    const { image: img, downscaled } = await capImageSize(decoded);
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
     useEditorStore.getState().setBackgroundImage(img, opts);
+    if (downscaled) notifyDownscaled();
   } finally {
     useEditorStore.getState().setImageLoading(false);
   }
@@ -156,9 +199,11 @@ export async function loadImageFromDataUrl(
 
   store.setImageLoading(true);
   try {
-    const img = await dataUrlToImage(dataUrl);
+    const decoded = await dataUrlToImage(dataUrl);
+    const { image: img, downscaled } = await capImageSize(decoded);
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
     useEditorStore.getState().setBackgroundImage(img, opts);
+    if (downscaled) notifyDownscaled();
   } finally {
     useEditorStore.getState().setImageLoading(false);
   }
@@ -222,10 +267,19 @@ export async function loadImageFromUrl(
     }
 
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    useEditorStore.getState().setBackgroundImage(img, opts);
+    const { image: capped, downscaled } = await capImageSize(img);
+    useEditorStore.getState().setBackgroundImage(capped, opts);
+    if (downscaled) notifyDownscaled();
   } finally {
     useEditorStore.getState().setImageLoading(false);
   }
+}
+
+function notifyDownscaled() {
+  toastInfo(
+    'Image scaled to fit',
+    'Large images are capped at 4096px to keep the editor fast. Turn off “Keep original size” in Settings to import at full resolution.',
+  );
 }
 
 /** Trigger the shared open-file picker (background or overlay via auto mode). */

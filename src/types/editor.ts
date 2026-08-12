@@ -22,7 +22,7 @@ export type ExportFormat = 'png' | 'jpg' | 'webp' | 'svg';
 
 export type BgStyle = 'none' | 'solid' | 'gradient' | 'glass';
 
-export type DeviceFrame = 'none' | 'browser' | 'iphone' | 'macbook';
+export type DeviceFrame = 'none' | 'browser' | 'iphone' | 'ipad' | 'android' | 'macbook';
 
 export type StrokeStyle = 'solid' | 'dashed' | 'dotted';
 
@@ -181,6 +181,8 @@ export interface CanvasStyle {
   bgGradientStart: string;
   bgGradientEnd: string;
   deviceFrame: DeviceFrame;
+  /** URL shown in the browser-chrome frame. Empty = default. */
+  frameUrl?: string;
   gridEnabled: boolean;
   transparentExport?: boolean;
 }
@@ -219,7 +221,8 @@ export function fontFamilyForCanvas(family?: string): string {
   if (f === STANDARD_FONT) return STANDARD_FONT;
   if (
     f.includes('var(--font-handwritten)')
-    || f.includes('Caveat')
+    || f.includes('Kalam')
+    || f.includes('Caveat') // legacy sessions stored the old stack
     || f.includes('cursive')
     || f === HANDWRITTEN_FONT
   ) {
@@ -254,6 +257,8 @@ export interface MagnifierElement extends BaseElement {
   previewAngle?: number;
   /** Free bubble placement: offset from the source center, in image units. */
   previewOffset?: { x: number; y: number };
+  /** Bend of the leader line (0 = straight, ±1 = full curve). */
+  leaderBend?: number;
   stroke?: string;
   strokeWidth?: number;
 }

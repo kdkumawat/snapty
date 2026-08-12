@@ -86,7 +86,7 @@ export default function HelpDialog() {
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4">
           <div className="grid sm:grid-cols-2 gap-6 sm:gap-8">
             <section>
-              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 sticky top-0 bg-surface py-1 z-10">
+              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
                 Tools
               </h3>
               <div className="divide-y divide-border/60">
@@ -101,7 +101,7 @@ export default function HelpDialog() {
               </div>
             </section>
             <section>
-              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 sticky top-0 bg-surface py-1 z-10">
+              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
                 General
               </h3>
               <div className="divide-y divide-border/60">

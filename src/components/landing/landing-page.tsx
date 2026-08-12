@@ -3,6 +3,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import ScissorLogo from '@/components/scissor-logo';
 import { useTheme } from 'next-themes';
 import {
@@ -62,7 +63,7 @@ const capabilities = [
 
 export default function LandingPage() {
   const router = useRouter();
-  const openEditor = () => router.push('/');
+  const openEditor = () => router.push('/editor');
 
   return (
     <div className="relative flex-1 min-h-0 h-full w-full overflow-y-auto overflow-x-hidden bg-canvas text-foreground">
@@ -79,7 +80,7 @@ export default function LandingPage() {
           <div className="w-9 h-9 rounded-xl bg-accent text-accent-foreground flex items-center justify-center shadow-sm">
             <ScissorLogo size={18} />
           </div>
-          <span className="text-xl font-semibold tracking-tight font-hand">Snapty</span>
+          <span className="text-xl font-semibold font-hand">Snapty</span>
         </div>
         <div className="flex items-center gap-1.5">
           <a
@@ -114,7 +115,7 @@ export default function LandingPage() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.45 }}
-            className="text-6xl sm:text-7xl lg:text-8xl font-semibold tracking-tight leading-[1.05] mb-5 font-hand"
+            className="text-6xl sm:text-7xl lg:text-8xl font-semibold leading-[1.05] mb-5 font-hand"
           >
             <span className="text-accent">Snapty</span>
           </motion.h1>
@@ -167,7 +168,7 @@ export default function LandingPage() {
             className="mt-12 flex flex-wrap justify-center gap-x-8 gap-y-3 text-sm text-muted-foreground"
           >
             <li className="inline-flex items-center gap-2"><Zap className="w-3.5 h-3.5 text-accent" /> Instant, Local</li>
-            <li className="inline-flex items-center gap-2"><Shield className="w-3.5 h-3.5 text-accent" /> Nothing Uploaded</li>
+            <li className="inline-flex items-center gap-2"><Shield className="w-3.5 h-3.5 text-accent" /> Images Never Leave Your Device</li>
             <li className="inline-flex items-center gap-2"><Keyboard className="w-3.5 h-3.5 text-accent" /> Keyboard-First</li>
           </motion.ul>
         </section>
@@ -218,8 +219,14 @@ export default function LandingPage() {
           </button>
         </section>
 
-        <footer className="px-5 py-8 border-t border-border/40 text-center text-xs text-muted-foreground">
-          Snapty · Privacy-first screenshot annotation · Open source
+        <footer className="px-5 py-8 border-t border-border/40 text-center text-xs text-muted-foreground space-y-2">
+          <p>Snapty · Privacy-first screenshot annotation · Open source</p>
+          <p className="space-x-4">
+            <Link href="/privacy" className="hover:text-foreground transition-colors">Privacy</Link>
+            <Link href="/guide" className="hover:text-foreground transition-colors">How it works</Link>
+            <a href="https://github.com/kdkumawat/snapty" target="_blank" rel="noopener noreferrer" className="hover:text-foreground transition-colors">GitHub</a>
+          </p>
+          <p>Anonymous usage analytics may be collected - <Link href="/privacy" className="hover:text-foreground underline underline-offset-2 transition-colors">see Privacy</Link>.</p>
         </footer>
       </main>
     </div>

@@ -52,7 +52,9 @@ function SettingPopover({
 
   const top = Math.max(8, Math.min(anchorRect.top, window.innerHeight - 280));
   const left = anchorRect.right + 8;
-  const fitsRight = left + 260 < window.innerWidth - 8;
+  // Popovers now fit their content (up to 18rem), so the flip threshold must
+  // account for the widest possible popover, not the old fixed 16rem box.
+  const fitsRight = left + 292 < window.innerWidth - 8;
   const style: React.CSSProperties = fitsRight
     ? { position: 'fixed', top, left, zIndex: 300 }
     : { position: 'fixed', top, right: 8, left: 'auto', zIndex: 300 };
@@ -67,7 +69,10 @@ function SettingPopover({
         'rounded-xl border border-border bg-surface p-3 shadow-[var(--floating-shadow)]',
         spec.kind === 'slider'
           ? 'flex flex-col items-center gap-2 w-auto'
-          : 'w-[min(16rem,calc(100vw-2rem))] space-y-2',
+          // Fit the content: color grids need ~17rem, a 3-toggle preset needs
+          // far less. A fixed 16rem box left big empty margins next to small
+          // controls, and the label row + badge stretched the whole popover.
+          : 'w-max min-w-[9rem] max-w-[min(18rem,calc(100vw-2rem))] space-y-2',
       )}
       onPointerDown={(e) => e.stopPropagation()}
     >
@@ -93,7 +98,7 @@ function SettingPopover({
   );
 }
 
-/** Compact icon rail — first control expands to the full panel on desktop. */
+/** Compact icon rail - first control expands to the full panel on desktop. */
 export default function SettingsRail({ onExpandPanel, className }: SettingsRailProps) {
   const {
     selectedElementIds, selected, keys, visible, locked, label,
@@ -161,9 +166,10 @@ export default function SettingsRail({ onExpandPanel, className }: SettingsRailP
 
   return (
     <>
-      <div className={className}>
-        <FloatingSurface className="rounded-2xl p-1 flex flex-col gap-0.5 max-h-[inherit] overflow-visible">
-          <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground truncate px-1.5 pt-1 pb-0.5 shrink-0">
+      <div className={className} data-snapty-rail>
+        {/* Fixed width so long tool names (e.g. Highlighter) never stretch the rail */}
+        <FloatingSurface className="rounded-2xl p-1 flex flex-col gap-0.5 max-h-[inherit] overflow-visible w-[3.25rem]">
+          <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground truncate text-center px-1.5 pt-1 pb-0.5 shrink-0 w-full">
             {label}
           </p>
 

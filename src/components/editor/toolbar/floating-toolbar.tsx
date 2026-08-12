@@ -172,24 +172,24 @@ export default function FloatingToolbar({
   );
 }
 
-const TOOL_TIPS: Record<string, string> = {
-  select: 'Click to select. Shift multi-select. Drag empty space for marquee.',
-  hand: 'Drag to pan. Hold Space anytime.',
-  magnifier: 'Drag an ellipse on a detail. Shift for a circle. Drag the bubble anywhere.',
-  arrow: 'Drag to draw. Press A again to cycle stroke style. Double-click sticky.',
-  line: 'Drag to draw. Press L again to cycle stroke style.',
-  rectangle: 'Drag to draw. Press R again to cycle fill style.',
-  'rounded-rect': 'Drag to draw. Shift for square. Alt from center.',
-  circle: 'Drag to draw. Press O again to cycle fill style.',
-  diamond: 'Drag to draw. Press D again to cycle fill style.',
-  text: 'Click to place text. Press T again to toggle font.',
-  pencil: 'Draw freely. Press P again to cycle stroke width.',
-  highlighter: 'Semi-transparent highlight. Press K again to cycle thickness.',
-  blur: 'Drag a region to blur. Press B again to cycle intensity.',
-  pixelate: 'Drag a region to pixelate. Press X again to cycle size.',
-  crop: 'Drag a crop region, then confirm.',
-  step: 'Click to place numbered badges. Press N again to bump start number.',
-  eraser: 'Drag over annotations to erase.',
+const TOOL_TIPS: Record<string, React.ReactNode> = {
+  select: <>Click to select. <Kbd>Shift</Kbd> multi-select. Drag empty space for marquee.</>,
+  hand: <>Drag to pan. Hold <Kbd>Space</Kbd> anytime.</>,
+  magnifier: <>Drag an ellipse on a detail. <Kbd>Shift</Kbd> for a circle. Drag the bubble anywhere; drag its leader handle to curve the connector.</>,
+  arrow: <>Drag to draw. Drag the middle dot to bend; drag a dashed dot to add a point. <Kbd>A</Kbd> cycles stroke style.</>,
+  line: <>Drag to draw. Drag the middle dot to bend; drag a dashed dot to add a point. <Kbd>L</Kbd> cycles stroke style.</>,
+  rectangle: <>Drag to draw. <Kbd>R</Kbd> again cycles fill style.</>,
+  'rounded-rect': <>Drag to draw. <Kbd>Shift</Kbd> for square. <Kbd>Alt</Kbd> from center.</>,
+  circle: <>Drag to draw. <Kbd>O</Kbd> again cycles fill style.</>,
+  diamond: <>Drag to draw. <Kbd>D</Kbd> again cycles fill style.</>,
+  text: <>Click to place text. Double-click text to edit. <Kbd>T</Kbd> toggles font.</>,
+  pencil: <>Draw freely. <Kbd>P</Kbd> again cycles stroke width.</>,
+  highlighter: <>Semi-transparent highlight. <Kbd>K</Kbd> again cycles thickness.</>,
+  blur: <>Drag a region to blur. <Kbd>B</Kbd> again cycles intensity.</>,
+  pixelate: <>Drag a region to pixelate. <Kbd>X</Kbd> again cycles size.</>,
+  crop: <>Drag a crop region, then confirm.</>,
+  step: <>Click to place numbered badges. <Kbd>N</Kbd> again bumps the start number.</>,
+  eraser: <>Drag over annotations to erase.</>,
 };
 
 export function ToolbarTips() {
@@ -200,10 +200,11 @@ export function ToolbarTips() {
     s.showHelpDialog || s.showExportDialog || s.showCommandPalette,
   );
 
-  const tip = React.useMemo(() => {
+  const tipKey = `${activeTool}-${stickyTool ? 'sticky' : 'normal'}-${hasImage ? 'img' : 'noimg'}`;
+  const tip = React.useMemo<React.ReactNode>(() => {
     if (!hasImage) return 'Open, paste, or drop an image to start annotating';
-    if (stickyTool) return 'Sticky mode: keep drawing. Esc returns to Selection.';
-    return TOOL_TIPS[activeTool] || `Press ? for shortcuts. ${modKey}+K commands`;
+    if (stickyTool) return <>Sticky mode: keep drawing. <Kbd>Esc</Kbd> returns to Selection.</>;
+    return TOOL_TIPS[activeTool] || <>Press <Kbd>?</Kbd> for shortcuts. <Kbd>{`${modKey}+K`}</Kbd> commands.</>;
   }, [activeTool, stickyTool, hasImage]);
 
   if (modalOpen) return null;
@@ -211,7 +212,7 @@ export function ToolbarTips() {
   return (
     <div className="absolute top-[3.85rem] left-1/2 -translate-x-1/2 z-[40] pointer-events-none max-w-[min(36rem,calc(100vw-2rem))] px-2">
       <motion.p
-        key={tip}
+        key={tipKey}
         initial={{ opacity: 0, y: -3 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0 }}

@@ -24,6 +24,8 @@ export type ToolSettingsState = {
   strokeWidth: number;
   fontSize: number;
   fontFamily: string;
+  fontStyle: string;
+  textAlign: 'left' | 'center' | 'right';
   opacity: number;
   cornerRadius: number;
   blurRadius: number;
@@ -83,6 +85,10 @@ export function applySettingToElement(
     }
     case 'fontFamily':
       return { fontFamily: String(value) };
+    case 'fontStyle':
+      return { fontStyle: String(value) };
+    case 'textAlign':
+      return { align: String(value) as 'left' | 'center' | 'right' };
     case 'opacity': {
       const v = num(value);
       return v === null ? null : { opacity: Math.max(0, Math.min(1, v)) };
@@ -169,6 +175,14 @@ export function hydrateSettingsFromElement(
     out.fontFamily = e.fontFamily;
   } else if (has('fontFamily')) {
     out.fontFamily = HANDWRITTEN_FONT;
+  }
+  if (has('fontStyle') && typeof e.fontStyle === 'string' && e.fontStyle) {
+    out.fontStyle = e.fontStyle;
+  } else if (has('fontStyle')) {
+    out.fontStyle = 'normal';
+  }
+  if (has('textAlign')) {
+    out.textAlign = (e.align as 'left' | 'center' | 'right') || 'left';
   }
   if (has('cornerRadius')) {
     const v = num(e.cornerRadius);

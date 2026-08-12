@@ -1,7 +1,7 @@
 import type { EditorElement } from '@/types/editor';
 import type { Bounds } from '@/lib/editor/snap-guides';
 import { magnifierBounds, type ImageSize } from '@/lib/editor/magnifier-geometry';
-import { quadBounds } from '@/lib/editor/curve';
+import { quadBounds, polylineBounds } from '@/lib/editor/curve';
 
 export function getElementBounds(el: EditorElement, imageSize?: ImageSize): Bounds {
   const stroke = ('strokeWidth' in el ? Number((el as { strokeWidth?: number }).strokeWidth) : 0) || 0;
@@ -27,6 +27,14 @@ export function getElementBounds(el: EditorElement, imageSize?: ImageSize): Boun
       // it: marquee selection and export used to clip strongly curved arrows.
       const pts = (el as { points: number[] }).points ?? [];
       const bend = (el as { bend?: number }).bend ?? 0;
+      if (pts.length > 4) {
+        // Multi-point arrows/lines are straight-segment polylines: bound the
+        // whole point set (plus arrowhead reach) rather than the first chord.
+        const headReach = el.type === 'arrow'
+          ? ((el as { pointerLength?: number }).pointerLength ?? Math.max(10, stroke * 4))
+          : Math.max(8, stroke * 3);
+        return polylineBounds(el.x, el.y, pts, pad + headReach);
+      }
       return quadBounds(
         el.x, el.y,
         pts[0] ?? 0, pts[1] ?? 0, pts[2] ?? 0, pts[3] ?? 0,

@@ -16,6 +16,8 @@ import SettingsDialog from '@/components/editor/dialogs/settings-dialog';
 import CommandPalette from '@/components/editor/menus/command-palette';
 import CanvasContextMenu from '@/components/editor/menus/canvas-context-menu';
 import ImageLoadingSkeleton from '@/components/editor/image-loading-skeleton';
+import SessionRecovery from '@/components/editor/session-recovery';
+import FirstRunCard from '@/components/editor/first-run-card';
 import { scheduleAutosave, clearAutosave, type AutosaveSnapshot } from '@/lib/editor/autosave';
 
 const EditorCanvas = dynamic(() => import('@/components/editor/editor-canvas'), {
@@ -27,8 +29,12 @@ const EditorCanvas = dynamic(() => import('@/components/editor/editor-canvas'), 
   ),
 });
 
-/** Persist while editing; never restore on mount so reload shows empty state. */
-function useAutosaveLifecycle() {
+/**
+ * Persist while editing. The IndexedDB snapshot is *offered* for recovery on
+ * reload (SessionRecovery); once the user decides (or no snapshot exists) it
+ * is safe to clear stale drafts when there is no image.
+ */
+function useAutosaveLifecycle(recoveryResolved: boolean) {
   const backgroundImage = useEditorStore((s) => s.backgroundImage);
   const elements = useEditorStore((s) => s.elements);
   const canvasStyle = useEditorStore((s) => s.canvasStyle);
@@ -40,10 +46,7 @@ function useAutosaveLifecycle() {
   const stepCounter = useEditorStore((s) => s.stepCounter);
 
   useEffect(() => {
-    void clearAutosave();
-  }, []);
-
-  useEffect(() => {
+    if (!recoveryResolved) return;
     if (!backgroundImage && !imageDataURL) {
       void clearAutosave();
       return;
@@ -64,7 +67,7 @@ function useAutosaveLifecycle() {
         stepCounter: s.stepCounter,
       };
     });
-  }, [backgroundImage, elements, canvasStyle, zoom, stagePosition, imageDataURL, imageSize, activeTool, stepCounter]);
+  }, [recoveryResolved, backgroundImage, elements, canvasStyle, zoom, stagePosition, imageDataURL, imageSize, activeTool, stepCounter]);
 }
 
 export default function EditorShell() {
@@ -74,13 +77,23 @@ export default function EditorShell() {
   const setShowCommandPalette = useEditorStore((s) => s.setShowCommandPalette);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const overlayInputRef = React.useRef<HTMLInputElement>(null);
+  const [recoveryResolved, setRecoveryResolved] = React.useState(false);
 
   useKeyboardShortcuts();
   useClipboardPaste();
-  useAutosaveLifecycle();
+  useAutosaveLifecycle(recoveryResolved);
 
   useEffect(() => {
     document.documentElement.classList.add('theme-ready');
+  }, []);
+
+  // PWA shortcut "Keyboard shortcuts" lands on /editor?help=1 → open help.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (new URLSearchParams(window.location.search).get('help') === '1') {
+      useEditorStore.getState().setShowHelpDialog(true);
+      window.history.replaceState({}, '', '/editor');
+    }
   }, []);
 
   useEffect(() => {
@@ -150,6 +163,10 @@ export default function EditorShell() {
           }}
         />
 
+        <SessionRecovery onResolved={() => setRecoveryResolved(true)} />
+        {/* First-run card waits for the session-recovery decision so the two
+            bottom-center cards can never overlap on screen. */}
+        {recoveryResolved && !backgroundImage && !imageLoading && <FirstRunCard />}
         <ExportDialog />
         <HelpDialog />
         <SettingsDialog />

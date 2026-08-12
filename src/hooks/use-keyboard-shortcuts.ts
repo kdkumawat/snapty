@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { useEditorStore } from '@/store/editor-store';
 import { copyToClipboard } from '@/components/editor/export-dialog';
-import { loadImageFileIntoEditor } from '@/lib/image-load';
+import { loadImageFileIntoEditor, capImageSize } from '@/lib/image-load';
 import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
 import { captureScreenRegion, isScreenCaptureSupported } from '@/lib/screen-capture';
 import type { ToolType } from '@/types/editor';
@@ -57,6 +57,15 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // Layer order: [ sends backward, ] brings forward (single selection).
+      if (!isCtrl && (e.key === '[' || e.key === ']') && st.selectedElementIds.length === 1) {
+        const id = st.selectedElementIds[0];
+        e.preventDefault();
+        if (e.key === ']') st.bringForward(id);
+        else st.sendBackward(id);
+        return;
+      }
+
       if (!isCtrl && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && st.selectedElementIds.length) {
         if (st.annotationsLocked) return;
         e.preventDefault();
@@ -81,6 +90,7 @@ export function useKeyboardShortcuts() {
       if (isCtrl && isShift && (e.key === '0' || e.key === ')')) { e.preventDefault(); st.setStepStartNumber(1); return; }
       if (isCtrl && !isShift && e.key === '0') { e.preventDefault(); st.resetView(); return; }
       if (isCtrl && !isShift && e.key === '1') { e.preventDefault(); st.zoomToActual(); return; }
+      if (isCtrl && !isShift && e.key === '2') { e.preventDefault(); st.zoomToSelection(); return; }
       if (isCtrl && key === 'e' && !isShift) { e.preventDefault(); st.setShowExportDialog(true); return; }
       if (isCtrl && key === 'a' && !isShift) {
         e.preventDefault();
@@ -103,18 +113,23 @@ export function useKeyboardShortcuts() {
           return;
         }
         st.setImageLoading(true);
-        void captureScreenRegion()
-          .then((result) => {
+        void (async () => {
+          try {
+            const result = await captureScreenRegion();
             if (!result.ok) {
               if (result.reason === 'denied') toastInfo('Capture cancelled', 'No screenshot was taken');
               else toastError('Capture failed', result.message);
               return;
             }
-            useEditorStore.getState().setBackgroundImage(result.image);
+            const { image: capped } = await capImageSize(result.image);
+            useEditorStore.getState().setBackgroundImage(capped);
             toastSuccess('Captured', 'Screenshot loaded in the editor');
-          })
-          .catch(() => toastError('Capture failed', 'Something went wrong - try again'))
-          .finally(() => useEditorStore.getState().setImageLoading(false));
+          } catch {
+            toastError('Capture failed', 'Something went wrong - try again');
+          } finally {
+            useEditorStore.getState().setImageLoading(false);
+          }
+        })();
         return;
       }
       if (isCtrl && key === 'c' && !isShift) {

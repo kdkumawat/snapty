@@ -14,8 +14,17 @@ import type {
 } from '@/types/editor';
 import { cn } from '@/lib/utils';
 import { magnifierBounds } from '@/lib/editor/magnifier-geometry';
-import { quadBounds, quadPathD, tangentAtStart, tangentAtEnd } from '@/lib/editor/curve';
-import { arrowHeadPoints } from '@/lib/rough-renderer';
+import { quadBounds, quadPathD, polylinePathD, tangentAtStart, tangentAtEnd } from '@/lib/editor/curve';
+import { arrowHeadPoints, generateRoughDrawable } from '@/lib/rough-renderer';
+import type { RoughDrawInput } from '@/lib/rough-renderer';
+import { RoughSVG } from 'roughjs/bin/svg';
+import {
+  clipRoundedRect,
+  drawDeviceFrameBack,
+  drawDeviceFrameFront,
+  innerRectForFrame,
+  outerSizeForFrame,
+} from '@/lib/editor/device-frames';
 import { toastError, toastSuccess } from '@/lib/app-toast';
 
 const formats: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
@@ -200,28 +209,24 @@ async function captureStagePng(): Promise<{ dataURL: string; width: number; heig
   }
 }
 
-async function dataUrlToBlob(dataURL: string, mime?: string, quality?: number): Promise<Blob> {
-  if (!mime || mime === 'image/png' || quality == null) {
-    const res = await fetch(dataURL);
-    if (!res.ok) throw new Error(`Failed to fetch image data: ${res.status}`);
-    return res.blob();
-  }
-  // Re-encode PNG data URL → jpeg/webp at quality
-  const img = new Image();
-  img.src = dataURL;
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
+/** Decode a PNG data-URL into a canvas at its natural size. */
+function dataUrlToCanvas(dataURL: string): Promise<HTMLCanvasElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext('2d')!.drawImage(img, 0, 0);
+      resolve(c);
+    };
     img.onerror = () => reject(new Error('Failed to decode export image'));
+    img.src = dataURL;
   });
-  const canvas = document.createElement('canvas');
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
-  const ctx = canvas.getContext('2d')!;
-  if (mime === 'image/jpeg') {
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  }
-  ctx.drawImage(img, 0, 0);
+}
+
+/** Single-pass encode from a canvas - no PNG round-trip before JPG/WebP. */
+function canvasToBlob(canvas: HTMLCanvasElement, mime: string, quality?: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (b) => (b ? resolve(b) : reject(new Error('toBlob failed'))),
@@ -231,136 +236,41 @@ async function dataUrlToBlob(dataURL: string, mime?: string, quality?: number): 
   });
 }
 
-/** Draw rounded rect clip path */
-function clipRoundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
-}
-
-/** Draw device frame and return the inner rect where the image goes */
-function drawDeviceFrame(
-  ctx: CanvasRenderingContext2D,
-  frame: CanvasStyle['deviceFrame'],
-  totalW: number, totalH: number, padding: number
-): { x: number; y: number; w: number; h: number } {
-  if (frame === 'none') return { x: padding, y: padding, w: totalW - padding * 2, h: totalH - padding * 2 };
-
-  const imgX = padding;
-  const imgY = padding;
-  const imgW = totalW - padding * 2;
-  const imgH = totalH - padding * 2;
-
-  if (frame === 'browser') {
-    const barH = 36;
-    const titleBarH = 40;
-    const frameW = totalW;
-    const frameH = totalH + titleBarH;
-    // We can't resize the canvas here, so draw the frame inside the padding area
-    // Actually, let's just draw a simple title bar above the image
-    ctx.fillStyle = '#e5e7eb';
-    ctx.fillRect(0, 0, totalW, titleBarH);
-    // Dots
-    const dotY = titleBarH / 2;
-    ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(16, dotY, 6, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#eab308'; ctx.beginPath(); ctx.arc(36, dotY, 6, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(56, dotY, 6, 0, Math.PI * 2); ctx.fill();
-    // URL bar
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(80, dotY - 12, totalW - 120, 24);
-    ctx.strokeStyle = '#d1d5db'; ctx.lineWidth = 1;
-    ctx.strokeRect(80, dotY - 12, totalW - 120, 24);
-    ctx.fillStyle = '#9ca3af'; ctx.font = '12px sans-serif';
-    ctx.fillText('snapty.pages.dev', 90, dotY + 4);
-    return { x: 0, y: titleBarH, w: totalW, h: totalH - titleBarH };
-  }
-
-  if (frame === 'iphone') {
-    const r = 24;
-    const bezel = 12;
-    const frameX = 0;
-    const frameY = 0;
-    const frameW = totalW + bezel * 2;
-    const frameH = totalH + bezel * 2 + 40;
-    // Draw phone body
-    ctx.fillStyle = '#1a1a1a';
-    clipRoundedRect(ctx, frameX, frameY, totalW, totalH, r);
-    ctx.fill();
-    // Notch
-    const notchW = 120;
-    const notchH = 28;
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect((totalW - notchW) / 2, 0, notchW, notchH + bezel);
-    return { x: bezel, y: bezel + 20, w: totalW - bezel * 2, h: totalH - bezel - 20 };
-  }
-
-  if (frame === 'macbook') {
-    const baseH = 16;
-    ctx.fillStyle = '#c0c0c0';
-    // Base
-    ctx.beginPath();
-    ctx.moveTo(0, totalH);
-    ctx.lineTo(totalW * 0.05, totalH + baseH);
-    ctx.lineTo(totalW * 0.95, totalH + baseH);
-    ctx.lineTo(totalW, totalH);
-    ctx.closePath();
-    ctx.fill();
-    // Screen bezel top
-    ctx.fillStyle = '#3a3a3a';
-    ctx.fillRect(0, 0, totalW, 24);
-    // Camera dot
-    ctx.fillStyle = '#1a1a1a';
-    ctx.beginPath(); ctx.arc(totalW / 2, 12, 3, 0, Math.PI * 2); ctx.fill();
-    return { x: 4, y: 24, w: totalW - 8, h: totalH - 28 };
-  }
-
-  return { x: padding, y: padding, w: totalW - padding * 2, h: totalH - padding * 2 };
-}
-
-/** Render the final export with canvas styles applied */
+/**
+ * Render the final export with canvas styles applied. Returns the styled
+ * canvas so formats can encode from it directly (single rasterization pass).
+ */
 async function renderWithCanvasStyle(
   stageDataURL: string,
   canvasStyle: CanvasStyle,
   imgW: number,
   imgH: number
-): Promise<string> {
-  const pad = canvasStyle.padding;
-  // imgW/imgH may already include annotation overflow bounds
-  const totalW = imgW + pad * 2;
-  const totalH = imgH + pad * 2;
+): Promise<HTMLCanvasElement> {
+  const pad = canvasStyle.padding || 0;
+  const frame = canvasStyle.deviceFrame;
+  const { width: totalW, height: totalH } = outerSizeForFrame(frame, pad, imgW, imgH);
+  const inner = innerRectForFrame(frame, pad, imgW, imgH);
+  const radius = canvasStyle.borderRadius || 0;
 
   const canvas = document.createElement('canvas');
   canvas.width = totalW;
   canvas.height = totalH;
   const ctx = canvas.getContext('2d')!;
 
-  // Apply shadow
-  if (canvasStyle.shadowEnabled && canvasStyle.borderRadius > 0) {
+  // Shadow (behind everything, only for the plain rounded-card look)
+  if (canvasStyle.shadowEnabled && radius > 0 && frame === 'none') {
+    ctx.save();
     ctx.shadowOffsetX = canvasStyle.shadowOffsetX;
     ctx.shadowOffsetY = canvasStyle.shadowOffsetY;
     ctx.shadowBlur = canvasStyle.shadowBlur;
     ctx.shadowColor = canvasStyle.shadowColor;
     ctx.fillStyle = '#ffffff';
-    clipRoundedRect(ctx, 0, 0, totalW, totalH, canvasStyle.borderRadius);
+    clipRoundedRect(ctx, 0, 0, totalW, totalH, radius);
     ctx.fill();
-    ctx.shadowColor = 'transparent';
+    ctx.restore();
   }
 
-  // Clip to border radius
-  if (canvasStyle.borderRadius > 0) {
-    clipRoundedRect(ctx, 0, 0, totalW, totalH, canvasStyle.borderRadius);
-    ctx.clip();
-  }
-
-  // Draw background
+  // Background
   if (canvasStyle.bgStyle === 'solid') {
     ctx.fillStyle = canvasStyle.bgColor;
     ctx.fillRect(0, 0, totalW, totalH);
@@ -373,30 +283,36 @@ async function renderWithCanvasStyle(
   } else if (canvasStyle.bgStyle === 'glass') {
     ctx.fillStyle = '#f0f0f0';
     ctx.fillRect(0, 0, totalW, totalH);
-    // Glass overlay
     ctx.fillStyle = 'rgba(255,255,255,0.15)';
     ctx.fillRect(0, 0, totalW, totalH);
-  } else {
-    // none - transparent (will show checkerboard if needed, but export is transparent)
-    // For JPG, fill white
   }
 
-  // Draw device frame (if any)
-  let drawRect = { x: pad, y: pad, w: imgW, h: imgH };
-  if (canvasStyle.deviceFrame !== 'none') {
-    drawRect = drawDeviceFrame(ctx, canvasStyle.deviceFrame, totalW, totalH, pad);
+  // Device chrome behind the image
+  drawDeviceFrameBack(ctx, frame, canvasStyle.frameUrl, totalW, totalH, inner);
+
+  // Rounded-corner clip applies to the image (and bg) only without a device frame
+  let clipped = false;
+  if (radius > 0 && frame === 'none') {
+    ctx.save();
+    clipRoundedRect(ctx, 0, 0, totalW, totalH, radius);
+    ctx.clip();
+    clipped = true;
   }
 
-  // Draw the stage image once it has fully loaded
   const img = new Image();
   img.src = stageDataURL;
   await new Promise<void>((resolve, reject) => {
     img.onload = () => resolve();
     img.onerror = () => reject(new Error('Failed to load stage image for export'));
   });
-  ctx.drawImage(img, drawRect.x, drawRect.y, drawRect.w, drawRect.h);
+  ctx.drawImage(img, inner.x, inner.y, inner.w, inner.h);
 
-  return canvas.toDataURL('image/png');
+  if (clipped) ctx.restore();
+
+  // Chrome details on top of the image edge (notch, camera, home indicator)
+  drawDeviceFrameFront(ctx, frame, totalW, totalH, inner);
+
+  return canvas;
 }
 
 async function waitForStage(maxAttempts = 8): Promise<void> {
@@ -406,7 +322,12 @@ async function waitForStage(maxAttempts = 8): Promise<void> {
   }
 }
 
-async function buildExportDataURL(): Promise<{ dataURL: string; width: number; height: number }> {
+/**
+ * Build the final export canvas (stage capture + optional canvas styling).
+ * Every format then encodes directly from this canvas - one rasterization,
+ * one encode, no intermediate PNG round-trip.
+ */
+async function buildExportCanvas(): Promise<{ canvas: HTMLCanvasElement; width: number; height: number }> {
   await waitForStage();
   const captured = await captureStagePng();
   const canvasStyle = useEditorStore.getState().canvasStyle;
@@ -417,16 +338,17 @@ async function buildExportDataURL(): Promise<{ dataURL: string; width: number; h
     || canvasStyle.bgStyle !== 'none'
     || canvasStyle.deviceFrame !== 'none';
 
-  if (!hasStyle) return captured;
-
-  const styled = await renderWithCanvasStyle(
+  if (!hasStyle) {
+    const canvas = await dataUrlToCanvas(captured.dataURL);
+    return { canvas, width: captured.width, height: captured.height };
+  }
+  const canvas = await renderWithCanvasStyle(
     captured.dataURL,
     canvasStyle,
     captured.width,
     captured.height,
   );
-  // Styled canvas may differ in size; decode to get dimensions if needed later
-  return { dataURL: styled, width: captured.width, height: captured.height };
+  return { canvas, width: captured.width, height: captured.height };
 }
 
 async function exportImage(format: ExportFormat, quality: number): Promise<Blob | null> {
@@ -437,9 +359,9 @@ async function exportImage(format: ExportFormat, quality: number): Promise<Blob 
       const svg = await buildSvgExport();
       return new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
     }
-    const { dataURL } = await buildExportDataURL();
-    if (format === 'png') return dataUrlToBlob(dataURL);
-    return dataUrlToBlob(dataURL, fmt.mime, quality);
+    const { canvas } = await buildExportCanvas();
+    if (format === 'png') return canvasToBlob(canvas, 'image/png');
+    return canvasToBlob(canvas, fmt.mime, quality);
   } catch (error) {
     console.error('Export failed:', error);
     return null;
@@ -466,17 +388,79 @@ async function buildSvgExport(): Promise<string> {
   if (imageDataURL) {
     parts.push(`<image href="${imageDataURL}" x="0" y="0" width="${w}" height="${h}" preserveAspectRatio="xMidYMid meet"/>`);
   }
+  // Hand-drawn shapes export as true rough paths (matching what the canvas
+  // draws) instead of sterile clean outlines. Straight segments only: bent
+  // arrows keep their quadratic path so the curve survives.
+  const roughSvg = (() => {
+    if (!store.handDrawn || typeof document === 'undefined') return null;
+    try {
+      const svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      return new RoughSVG(svgEl);
+    } catch { return null; }
+  })();
+  const roughMarkup = (
+    input: RoughDrawInput,
+    x: number, y: number, elOpacity: number,
+  ): string | null => {
+    if (!roughSvg) return null;
+    try {
+      const node = roughSvg.draw(generateRoughDrawable(input));
+      if (!node || !node.outerHTML) return null;
+      return `<g transform="translate(${x} ${y})" opacity="${elOpacity}">${node.outerHTML}</g>`;
+    } catch { return null; }
+  };
+
   for (const el of elements) {
     const opacity = el.opacity ?? 1;
     const stroke = ('stroke' in el ? (el as { stroke?: string }).stroke : undefined) || '#ef4444';
     const fill = ('fill' in el ? (el as { fill?: string }).fill : undefined) || 'none';
     const sw = ('strokeWidth' in el ? (el as { strokeWidth?: number }).strokeWidth : 2) || 2;
     if (el.type === 'rectangle' || el.type === 'rounded-rect') {
+      const roughRect = roughMarkup({
+        kind: 'rectangle',
+        seed: el.id,
+        stroke: stroke === 'none' ? undefined : stroke,
+        fill: fill === 'transparent' || fill === 'none' ? undefined : fill,
+        strokeWidth: sw,
+        strokeStyle: el.strokeStyle,
+        fillStyle: el.fillStyle,
+        roughness: el.roughness ?? 1.25,
+        width: Math.abs(el.width),
+        height: Math.abs(el.height),
+        cornerRadius: el.type === 'rounded-rect' ? (el.cornerRadius || 8) : 0,
+      }, el.x, el.y, opacity);
+      if (roughRect) { parts.push(roughRect); continue; }
       const r = el.type === 'rounded-rect' ? (el.cornerRadius || 8) : 0;
       parts.push(`<rect x="${el.x}" y="${el.y}" width="${Math.abs(el.width)}" height="${Math.abs(el.height)}" rx="${r}" fill="${fill === 'transparent' ? 'none' : fill}" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}"/>`);
     } else if (el.type === 'circle') {
+      const roughEll = roughMarkup({
+        kind: 'ellipse',
+        seed: el.id,
+        stroke: stroke === 'none' ? undefined : stroke,
+        fill: fill === 'transparent' || fill === 'none' ? undefined : fill,
+        strokeWidth: sw,
+        strokeStyle: el.strokeStyle,
+        fillStyle: el.fillStyle,
+        roughness: el.roughness ?? 1.25,
+        width: Math.abs(el.width),
+        height: Math.abs(el.height),
+      }, el.x, el.y, opacity);
+      if (roughEll) { parts.push(roughEll); continue; }
       parts.push(`<ellipse cx="${el.x + Math.abs(el.width) / 2}" cy="${el.y + Math.abs(el.height) / 2}" rx="${Math.abs(el.width) / 2}" ry="${Math.abs(el.height) / 2}" fill="${fill === 'transparent' ? 'none' : fill}" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}"/>`);
     } else if (el.type === 'diamond') {
+      const roughDia = roughMarkup({
+        kind: 'diamond',
+        seed: el.id,
+        stroke: stroke === 'none' ? undefined : stroke,
+        fill: fill === 'transparent' || fill === 'none' ? undefined : fill,
+        strokeWidth: sw,
+        strokeStyle: el.strokeStyle,
+        fillStyle: el.fillStyle,
+        roughness: el.roughness ?? 1.25,
+        width: Math.abs(el.width),
+        height: Math.abs(el.height),
+      }, el.x, el.y, opacity);
+      if (roughDia) { parts.push(roughDia); continue; }
       const dw = Math.abs(el.width);
       const dh = Math.abs(el.height);
       const cx = el.x + dw / 2;
@@ -485,9 +469,50 @@ async function buildSvgExport(): Promise<string> {
     } else if (el.type === 'line' || el.type === 'arrow') {
       const pts = el.points;
       const bend = el.bend ?? 0;
-      // A plain <line> dropped the curve entirely; emit the same quadratic the
-      // canvas draws.
-      parts.push(`<path d="${quadPathD(el.x, el.y, pts[0], pts[1], pts[2], pts[3], bend)}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" stroke-linecap="round"/>`);
+      const isMulti = pts.length > 4;
+      const dashAttr = el.strokeStyle === 'dashed'
+        ? ' stroke-dasharray="8 6"'
+        : el.strokeStyle === 'dotted'
+          ? ' stroke-dasharray="2 4"'
+          : '';
+      if (bend === 0 && !isMulti) {
+        const roughLine = roughMarkup({
+          kind: 'line',
+          seed: el.id,
+          stroke: stroke === 'none' ? undefined : stroke,
+          strokeWidth: sw,
+          strokeStyle: el.strokeStyle,
+          roughness: el.roughness ?? 1.25,
+          points: [0, 0, pts[2] ?? 0, pts[3] ?? 0],
+        }, el.x, el.y, opacity);
+        if (roughLine) {
+          parts.push(roughLine);
+          const headSize = el.type === 'arrow'
+            ? ((el as ArrowElement).pointerLength ?? Math.max(10, sw * 4))
+            : Math.max(8, sw * 3);
+          const headFill = ('fill' in el ? (el as { fill?: string }).fill : undefined) || stroke;
+          const headPoly = (tipX: number, tipY: number, dir: { x: number; y: number }) =>
+            arrowHeadPoints(tipX + dir.x, tipY + dir.y, tipX, tipY, headSize)
+              .map(([px, py]) => `${el.x + px},${el.y + py}`)
+              .join(' ');
+          if ((el.endArrowhead ?? (el.type === 'arrow' ? 'arrow' : 'none')) !== 'none') {
+            const t = { x: Math.cos(Math.atan2(pts[3] ?? 0, pts[2] ?? 0)), y: Math.sin(Math.atan2(pts[3] ?? 0, pts[2] ?? 0)) };
+            parts.push(`<polygon points="${headPoly(pts[2] ?? 0, pts[3] ?? 0, t)}" fill="${headFill}" opacity="${opacity}"/>`);
+          }
+          if ((el.startArrowhead ?? 'none') !== 'none') {
+            const t = { x: Math.cos(Math.atan2(pts[3] ?? 0, pts[2] ?? 0)), y: Math.sin(Math.atan2(pts[3] ?? 0, pts[2] ?? 0)) };
+            parts.push(`<polygon points="${headPoly(0, 0, { x: -t.x, y: -t.y })}" fill="${headFill}" opacity="${opacity}"/>`);
+          }
+          continue;
+        }
+      }
+      // Emit the same path the canvas draws: a quadratic for the legacy
+      // 2-point + bend form, a straight polyline for multi-point arrows/lines.
+      parts.push(
+        isMulti
+          ? `<path d="${polylinePathD(el.x, el.y, pts)}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" stroke-linecap="round"${dashAttr}/>`
+          : `<path d="${quadPathD(el.x, el.y, pts[0], pts[1], pts[2], pts[3], bend)}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" stroke-linecap="round"${dashAttr}/>`,
+      );
       // Arrowheads were missing from SVG output altogether.
       const headSize = el.type === 'arrow'
         ? ((el as ArrowElement).pointerLength ?? Math.max(10, sw * 4))
@@ -498,11 +523,21 @@ async function buildSvgExport(): Promise<string> {
           .map(([px, py]) => `${el.x + px},${el.y + py}`)
           .join(' ');
       if ((el.endArrowhead ?? (el.type === 'arrow' ? 'arrow' : 'none')) !== 'none') {
-        const t = tangentAtEnd(pts[0], pts[1], pts[2], pts[3], bend);
-        parts.push(`<polygon points="${headPoly(pts[2], pts[3], t)}" fill="${headFill}" opacity="${opacity}"/>`);
+        const t = isMulti
+          ? (() => {
+              const len = Math.hypot(pts[pts.length - 2] - pts[pts.length - 4], pts[pts.length - 1] - pts[pts.length - 3]) || 1;
+              return { x: (pts[pts.length - 2] - pts[pts.length - 4]) / len, y: (pts[pts.length - 1] - pts[pts.length - 3]) / len };
+            })()
+          : tangentAtEnd(pts[0], pts[1], pts[2], pts[3], bend);
+        parts.push(`<polygon points="${headPoly(pts[pts.length - 2], pts[pts.length - 1], t)}" fill="${headFill}" opacity="${opacity}"/>`);
       }
       if ((el.startArrowhead ?? 'none') !== 'none') {
-        const t = tangentAtStart(pts[0], pts[1], pts[2], pts[3], bend);
+        const t = isMulti
+          ? (() => {
+              const len = Math.hypot(pts[2] - pts[0], pts[3] - pts[1]) || 1;
+              return { x: (pts[2] - pts[0]) / len, y: (pts[3] - pts[1]) / len };
+            })()
+          : tangentAtStart(pts[0], pts[1], pts[2], pts[3], bend);
         parts.push(`<polygon points="${headPoly(pts[0], pts[1], { x: -t.x, y: -t.y })}" fill="${headFill}" opacity="${opacity}"/>`);
       }
     } else if (el.type === 'blur' || el.type === 'pixelate' || el.type === 'spotlight') {
@@ -540,7 +575,18 @@ async function buildSvgExport(): Promise<string> {
       parts.push(`<text x="${el.x}" y="${el.y + (el.fontSize || 24)}" font-size="${el.fontSize || 24}" font-family="${el.fontFamily || 'sans-serif'}" fill="${el.fill || stroke}" opacity="${opacity}">${escapeXml(el.text || '')}</text>`);
     } else if (el.type === 'step') {
       const r = el.radius || 16;
-      parts.push(`<circle cx="${el.x}" cy="${el.y}" r="${r}" fill="${el.fill || stroke}" opacity="${opacity}"/>`);
+      const roughStep = roughMarkup({
+        kind: 'ellipse',
+        seed: el.id,
+        stroke: '#ffffff',
+        fill: el.fill || stroke,
+        strokeWidth: 2,
+        roughness: el.roughness ?? 1.25,
+        width: r * 2,
+        height: r * 2,
+      }, el.x - r, el.y - r, opacity);
+      if (roughStep) parts.push(roughStep);
+      else parts.push(`<circle cx="${el.x}" cy="${el.y}" r="${r}" fill="${el.fill || stroke}" opacity="${opacity}"/>`);
       parts.push(`<text x="${el.x}" y="${el.y + r * 0.35}" text-anchor="middle" font-size="${el.fontSize || r * 0.8}" fill="#fff" font-weight="700" font-family="sans-serif">${el.stepNumber}</text>`);
     }
   }
@@ -554,8 +600,8 @@ function escapeXml(s: string) {
 
 async function copyToClipboard() {
   try {
-    const { dataURL } = await buildExportDataURL();
-    const blob = await dataUrlToBlob(dataURL);
+    const { canvas } = await buildExportCanvas();
+    const blob = await canvasToBlob(canvas, 'image/png');
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
   } catch (error) {
     console.error('Error copying to clipboard:', error);

@@ -7,8 +7,8 @@
  * Source radii are independent, so the magnifier can be a circle or an ellipse,
  * and the bubble can be dragged anywhere rather than orbiting at a fixed radius.
  *
- * The zoom is painted into one persistent offscreen canvas on an animation frame —
- * never re-allocated, never routed through React state — so the bubble tracks the
+ * The zoom is painted into one persistent offscreen canvas on an animation frame -
+ * never re-allocated, never routed through React state - so the bubble tracks the
  * source live while drawing, dragging and resizing instead of catching up afterwards.
  * Supports hand-drawn rings via Rough when enabled.
  */
@@ -19,8 +19,10 @@ import type { MagnifierElement } from '@/types/editor';
 import {
   magnifierMetrics,
   resolvePreviewOffset,
+  leaderGeometry,
 } from '@/lib/editor/magnifier-geometry';
-import { selectionHandleProps, getSelectionTheme } from '@/lib/selection-theme';
+import { bendFromHandle } from '@/lib/editor/curve';
+import { selectionHandleProps, getSelectionTheme, handleHoverEvents } from '@/lib/selection-theme';
 import RoughKonvaShape from '@/components/editor/canvas/rough-konva-shape';
 
 type Props = {
@@ -47,6 +49,10 @@ type Props = {
   onRadiiMove?: (radii: { rx: number; ry: number }) => void;
   /** Commit the source radii as a single undo step. */
   onRadiiCommit?: (radii: { rx: number; ry: number }) => void;
+  /** Live update while bending the leader line (0 = straight, ±1 = full curve). */
+  onLeaderBendMove?: (bend: number) => void;
+  /** Commit the leader bend as a single undo step. */
+  onLeaderBendCommit?: (bend: number) => void;
 };
 
 /**
@@ -160,6 +166,15 @@ function useHandleDrag(
 ) {
   const frameRef = useRef<number | null>(null);
   const pendingRef = useRef<{ x: number; y: number } | null>(null);
+  // The gesture listeners are attached once at pointerdown and would otherwise
+  // capture that render's `onMove`/`onCommit` closures - whose geometry (e.g.
+  // the magnifier's w/h while corner-resizing) goes stale as the store updates.
+  // Keeping the latest callbacks in refs makes every frame use fresh values,
+  // so a long corner drag cannot compound drift and outrun the cursor.
+  const onMoveRef = useRef(onMove);
+  const onCommitRef = useRef(onCommit);
+  useEffect(() => { onMoveRef.current = onMove; }, [onMove]);
+  useEffect(() => { onCommitRef.current = onCommit; }, [onCommit]);
 
   /** Native pointer event -> the Group's local coordinate space. */
   const toLocal = useCallback(
@@ -204,7 +219,7 @@ function useHandleDrag(
       if (frameRef.current !== null) return;
       frameRef.current = window.requestAnimationFrame(() => {
         frameRef.current = null;
-        if (pendingRef.current) onMove(pendingRef.current);
+        if (pendingRef.current) onMoveRef.current(pendingRef.current);
       });
     };
 
@@ -215,7 +230,7 @@ function useHandleDrag(
       cancelFrame();
       const local = pendingRef.current;
       pendingRef.current = null;
-      if (local) onCommit(local);
+      if (local) onCommitRef.current(local);
     };
 
     // On window rather than the stage so the gesture survives the pointer
@@ -223,7 +238,7 @@ function useHandleDrag(
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp);
     window.addEventListener('pointercancel', handleUp);
-  }, [toLocal, onMove, onCommit, cancelFrame]);
+  }, [toLocal, cancelFrame]);
 
   /**
    * Konva starts a Group drag from `mousedown`/`touchstart`, which are separate
@@ -251,9 +266,12 @@ function radiiFromCorner(
   w: number,
   h: number,
 ): { rx: number; ry: number } {
+  // Corner handles sit SELECT_PAD outside the ellipse, so subtract that offset
+  // before converting the pointer into radii. Without it the handle is always
+  // rendered ahead of the cursor while resizing, which reads as a laggy drag.
   return {
-    rx: Math.max(8, Math.abs(local.x - w / 2)),
-    ry: Math.max(8, Math.abs(local.y - h / 2)),
+    rx: Math.max(8, Math.abs(local.x - w / 2) - SELECT_PAD),
+    ry: Math.max(8, Math.abs(local.y - h / 2) - SELECT_PAD),
   };
 }
 
@@ -276,6 +294,8 @@ export default function MagnifierKonva({
   onPreviewOffsetCommit,
   onRadiiMove,
   onRadiiCommit,
+  onLeaderBendMove,
+  onLeaderBendCommit,
 }: Props) {
   const m = magnifierMetrics(el);
   const { w, h, rx, ry, mag, previewRx, previewRy } = m;
@@ -288,8 +308,6 @@ export default function MagnifierKonva({
   const off = resolvePreviewOffset(el, imageSize);
   const previewCx = srcCx + off.ox;
   const previewCy = srcCy + off.oy;
-  // Direction from source to bubble, used for the leader line and its endpoints.
-  const angle = Math.atan2(off.oy, off.ox);
 
   const stroke = el.stroke || accent;
   const strokeWidth = el.strokeWidth ?? 2.5;
@@ -357,15 +375,10 @@ export default function MagnifierKonva({
     if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
   }, []);
 
-  // Leader line: from the source rim to the bubble rim along the offset vector.
-  const cosA = Math.cos(angle);
-  const sinA = Math.sin(angle);
-  const leader = [
-    srcCx + cosA * (rx + 3),
-    srcCy + sinA * (ry + 3),
-    previewCx - cosA * (previewRx + 3),
-    previewCy - sinA * (previewRy + 3),
-  ];
+  // Leader line: from the source rim to the bubble rim. When bent, the anchors
+  // slide around the rims toward the control point so the curve stays glued to
+  // both ellipses instead of crossing them at a diagonal.
+  const leader = leaderGeometry(el, imageSize);
 
   // Crosshair alignment lines spanning the source box through its center.
   const crosshairOpacity = handDrawn ? 0.45 : 0.7;
@@ -380,6 +393,7 @@ export default function MagnifierKonva({
   const theme = getSelectionTheme();
   const handle = selectionHandleProps('endpoint');
   const lengthHandle = selectionHandleProps('bend');
+  const hoverEvents = handleHoverEvents();
 
   /** Bubble: free placement, the offset is just pointer-minus-source-center. */
   const bubbleOffsetAt = useCallback(
@@ -392,27 +406,32 @@ export default function MagnifierKonva({
     useCallback((local) => onPreviewOffsetCommit?.(bubbleOffsetAt(local)), [onPreviewOffsetCommit, bubbleOffsetAt]),
   );
 
+  // Midpoint of the leader line, where the bend handle rests when straight.
+  const leaderBend = el.leaderBend ?? 0;
+  const lSx = leader.sx;
+  const lSy = leader.sy;
+  const lEx = leader.ex;
+  const lEy = leader.ey;
+  const leaderControl = leader.bent ? { x: leader.cx, y: leader.cy } : null;
+  const leaderMid = {
+    x: (lSx + lEx) / 2,
+    y: (lSy + lEy) / 2,
+  };
+
   /**
-   * Connector length: keeps the bubble's direction, changes only how far out it
-   * sits. Dragging the bubble itself moves it freely; this handle is for
-   * lengthening or shortening the leader line without re-aiming it.
+   * Leader bend: drag the mid handle sideways to curve the connector. The
+   * handle renders at the live control point, so it follows the pointer.
    */
-  const lengthOffsetAt = useCallback(
-    (local: { x: number; y: number }) => {
-      const dx = local.x - srcCx;
-      const dy = local.y - srcCy;
-      // Project onto the current direction so sideways wobble does not re-aim.
-      const projected = dx * cosA + dy * sinA;
-      const minDist = Math.max(rx, ry) + Math.max(previewRx, previewRy) * 0.15;
-      const dist = Math.max(minDist, projected);
-      return { x: cosA * dist, y: sinA * dist };
-    },
-    [srcCx, srcCy, cosA, sinA, rx, ry, previewRx, previewRy],
-  );
-  const onLengthDrag = useHandleDrag(
+  const onLeaderBendDrag = useHandleDrag(
     groupRef,
-    useCallback((local) => onPreviewOffsetMove?.(lengthOffsetAt(local)), [onPreviewOffsetMove, lengthOffsetAt]),
-    useCallback((local) => onPreviewOffsetCommit?.(lengthOffsetAt(local)), [onPreviewOffsetCommit, lengthOffsetAt]),
+    useCallback(
+      (local) => onLeaderBendMove?.(bendFromHandle(lSx, lSy, lEx, lEy, local.x, local.y)),
+      [onLeaderBendMove, lSx, lSy, lEx, lEy],
+    ),
+    useCallback(
+      (local) => onLeaderBendCommit?.(bendFromHandle(lSx, lSy, lEx, lEy, local.x, local.y)),
+      [onLeaderBendCommit, lSx, lSy, lEx, lEy],
+    ),
   );
 
   const onCornerDrag = useHandleDrag(
@@ -420,12 +439,6 @@ export default function MagnifierKonva({
     useCallback((local) => onRadiiMove?.(radiiFromCorner(local, w, h)), [onRadiiMove, w, h]),
     useCallback((local) => onRadiiCommit?.(radiiFromCorner(local, w, h)), [onRadiiCommit, w, h]),
   );
-
-  // Midpoint of the leader line, where the length handle sits.
-  const leaderMid = {
-    x: (leader[0] + leader[2]) / 2,
-    y: (leader[1] + leader[3]) / 2,
-  };
 
   return (
     <Group
@@ -493,32 +506,41 @@ export default function MagnifierKonva({
         />
       )}
 
-      {/* Crosshair alignment lines through the source center. */}
-      {crosshair.map((pts, i) => (
-        <Line
-          key={`${el.id}-x${i}`}
-          points={pts}
-          stroke={stroke}
-          strokeWidth={Math.max(1, strokeWidth * 0.5)}
-          opacity={crosshairOpacity}
-          dash={[4, 3]}
-          listening={false}
-          perfectDrawEnabled={false}
-        />
-      ))}
-      <Circle
-        x={srcCx}
-        y={srcCy}
-        radius={Math.max(2, strokeWidth * 0.9)}
-        fill={stroke}
-        listening={false}
-        perfectDrawEnabled={false}
-      />
+      {/* Crosshair alignment lines through the source center. Shown only while
+          placing or editing: as a finished annotation the plain ring reads
+          cleaner, and the alignment grid is a tool, not part of the export. */}
+      {(draft || selected) && (
+        <>
+          {crosshair.map((pts, i) => (
+            <Line
+              key={`${el.id}-x${i}`}
+              points={pts}
+              stroke={stroke}
+              strokeWidth={Math.max(1, strokeWidth * 0.5)}
+              opacity={crosshairOpacity}
+              dash={[4, 3]}
+              listening={false}
+              perfectDrawEnabled={false}
+            />
+          ))}
+          <Circle
+            x={srcCx}
+            y={srcCy}
+            radius={Math.max(2, strokeWidth * 0.9)}
+            fill={stroke}
+            listening={false}
+            perfectDrawEnabled={false}
+          />
+        </>
+      )}
 
       {hasPreview && (
         <>
           <Line
-            points={leader}
+            points={leaderControl
+              ? [lSx, lSy, leaderControl.x, leaderControl.y, lEx, lEy]
+              : [lSx, lSy, lEx, lEy]}
+            tension={leaderControl ? 0.5 : 0}
             stroke={stroke}
             strokeWidth={Math.max(1.25, strokeWidth * 0.65)}
             lineCap="round"
@@ -608,13 +630,15 @@ export default function MagnifierKonva({
             perfectDrawEnabled={false}
           />
 
-          {/* Connector length: slide the bubble in/out along its current direction. */}
+          {/* Leader bend: drag sideways to curve the connector (the bubble is
+              itself freely draggable, so a separate length handle was redundant). */}
           {canReposition && (
             <Circle
-              x={leaderMid.x}
-              y={leaderMid.y}
+              x={leaderControl ? leaderControl.x : leaderMid.x}
+              y={leaderControl ? leaderControl.y : leaderMid.y}
               {...lengthHandle}
-              {...onLengthDrag}
+              {...onLeaderBendDrag}
+              {...hoverEvents}
             />
           )}
         </>
@@ -645,6 +669,7 @@ export default function MagnifierKonva({
               y={fy ? h + SELECT_PAD : -SELECT_PAD}
               {...handle}
               {...onCornerDrag}
+              {...hoverEvents}
             />
           ))}
         </>
