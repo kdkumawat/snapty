@@ -15,10 +15,12 @@ import {
   handDrawnEllipsePoints,
   wobbleFreehandPoint,
 } from '@/lib/hand-drawn';
-import { getSelectionTheme, styleSelectionAnchor, selectionHandleProps } from '@/lib/selection-theme';
+import { getSelectionTheme, styleSelectionAnchor, selectionHandleProps, handleHoverEvents } from '@/lib/selection-theme';
 import RoughKonvaShape from '@/components/editor/canvas/rough-konva-shape';
 import CachedKonvaImage from '@/components/editor/canvas/cached-konva-image';
 import MagnifierKonva from '@/components/editor/canvas/magnifier-konva';
+import DeviceFrameKonva from '@/components/editor/canvas/device-frame-konva';
+import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
 import { arrowHeadPoints } from '@/lib/rough-renderer';
 import { snapBounds, type GuideLine } from '@/lib/editor/snap-guides';
 import { getElementBounds, boundsIntersect } from '@/lib/editor/selection';
@@ -52,6 +54,66 @@ function isTransformerTarget(target: Konva.Node): boolean {
     node = node.getParent();
   }
   return false;
+}
+
+/** Axis-aligned hit box of an element, used by the eraser (shared by commit + preview). */
+function getElementHitBox(el: EditorElement): { x1: number; y1: number; x2: number; y2: number } {
+  let elX = el.x;
+  let elY = el.y;
+  let elRight = elX;
+  let elBottom = elY;
+
+  if (el.type === 'pencil' || el.type === 'highlighter') {
+    const pts = (el as PencilElement).points;
+    if (pts && pts.length >= 2) {
+      elX = Math.min(...pts.filter((_, i) => i % 2 === 0));
+      elY = Math.min(...pts.filter((_, i) => i % 2 === 1));
+      elRight = Math.max(...pts.filter((_, i) => i % 2 === 0));
+      elBottom = Math.max(...pts.filter((_, i) => i % 2 === 1));
+    }
+  } else if ('width' in el) {
+    elRight = el.x + (el as ShapeElement).width;
+    elBottom = el.y + (el as ShapeElement).height;
+  } else if (el.type === 'arrow' || el.type === 'line') {
+    const pts = (el as ArrowElement | LineElement).points;
+    if (pts && pts.length >= 4) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (let i = 0; i < pts.length; i += 2) {
+        minX = Math.min(minX, pts[i]);
+        minY = Math.min(minY, pts[i + 1]);
+        maxX = Math.max(maxX, pts[i]);
+        maxY = Math.max(maxY, pts[i + 1]);
+      }
+      elX = el.x + minX;
+      elY = el.y + minY;
+      elRight = el.x + maxX;
+      elBottom = el.y + maxY;
+    }
+  } else if (el.type === 'step') {
+    const r = (el as StepElement).radius ?? 16;
+    elX = el.x - r;
+    elY = el.y - r;
+    elRight = el.x + r;
+    elBottom = el.y + r;
+  }
+
+  return {
+    x1: Math.min(elX, elRight),
+    y1: Math.min(elY, elBottom),
+    x2: Math.max(elX, elRight),
+    y2: Math.max(elY, elBottom),
+  };
+}
+
+/** True when the element's hit box intersects the given rect (any overlap). */
+function elementIntersectsRect(el: EditorElement, x1: number, y1: number, x2: number, y2: number): boolean {
+  const b = getElementHitBox(el);
+  return b.x1 < x2 && b.x2 > x1 && b.y1 < y2 && b.y2 > y1;
+}
+
+/** Dash pattern for dashed/dotted strokes (matches the other shapes' styling). */
+function strokeDash(strokeStyle?: string): number[] | undefined {
+  return strokeStyle === 'dashed' ? [8, 6] : strokeStyle === 'dotted' ? [2, 4] : undefined;
 }
 
 /**
@@ -392,12 +454,21 @@ const EditorCanvas: React.FC = () => {
   runOCRRef.current = () => { void runOCR(); };
 
   // Cursor based on tool (+ next step number for the stepper tool)
+  // With a drawing tool active the pointer moves whatever annotation is
+  // selected, so swap to the plain arrow cursor while a selection exists and
+  // hand the tool cursor back the moment it is cleared.
+  const selectionCursorActive =
+    activeTool !== 'select'
+    && activeTool !== 'hand'
+    && selectedElementIds.length > 0
+    && !isDrawing
+    && !isErasing;
   const cursorCSS = useMemo(
     () => getToolCursorCSS(activeTool, isHandDragging, {
       color: strokeColor,
       stepNumber: stepCounter,
-    }, hoverSelectMode),
-    [activeTool, isHandDragging, strokeColor, stepCounter, hoverSelectMode],
+    }, hoverSelectMode || selectionCursorActive),
+    [activeTool, isHandDragging, strokeColor, stepCounter, hoverSelectMode, selectionCursorActive],
   );
 
   // Apply cursor on container + every Konva canvas layer (they override parent cursor)
@@ -434,7 +505,7 @@ const EditorCanvas: React.FC = () => {
       return createGridPattern(`color-mix(in srgb, ${fg} 20%, transparent)`);
     },
     // resolvedTheme is the trigger; the value itself is read from CSS.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
     [resolvedTheme],
   );
 
@@ -640,6 +711,8 @@ const EditorCanvas: React.FC = () => {
         // Unrounded: the settings <-> element round trip must be lossless.
         fontSize: st.fontSize * scale,
         fontFamily: st.fontFamily || HANDWRITTEN_FONT,
+        fontStyle: st.fontStyle || 'normal',
+        align: st.textAlign || 'left',
         fill: st.strokeColor,
         opacity: st.opacity,
         padding: TEXT_PADDING,
@@ -689,9 +762,12 @@ const EditorCanvas: React.FC = () => {
     if (!pos) return null;
     const s = useEditorStore.getState();
     const pad = s.canvasStyle.padding || 0;
+    const ins = DEVICE_FRAME_INSETS[s.canvasStyle.deviceFrame];
+    const ox = pad + ins.left;
+    const oy = pad + ins.top;
     return {
-      x: (pos.x - s.stagePosition.x) / s.zoom - pad,
-      y: (pos.y - s.stagePosition.y) / s.zoom - pad,
+      x: (pos.x - s.stagePosition.x) / s.zoom - ox,
+      y: (pos.y - s.stagePosition.y) / s.zoom - oy,
     };
   }
 
@@ -794,7 +870,7 @@ const EditorCanvas: React.FC = () => {
         rebakeTimerRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [elements, backgroundImage, updateElementSilent]);
 
   // Create a spotlight image: show only the selected area at full brightness, transparent elsewhere
@@ -890,6 +966,25 @@ const EditorCanvas: React.FC = () => {
     if (clickedId && !isBg) {
         const clicked = s.elements.find((x) => x.id === clickedId);
         if (clicked?.locked) return;
+
+        // Double-click a text annotation to edit it in place (select tool, text
+        // tool, or hover-select from any drawing tool). Uses the native click
+        // count rather than Konva's dblclick, which a draggable node can
+        // swallow - the same pattern as the double-click-to-deselect above.
+        if (e.evt.detail >= 2 && clicked?.type === 'text') {
+          if (s.activeTool === 'select' || s.activeTool === 'text' || hoverSelectModeRef.current) {
+            e.cancelBubble = true;
+            s.setSelectedElementIds([]);
+            setTextInput({
+              x: clicked.x,
+              y: clicked.y,
+              visible: true,
+              editId: clicked.id,
+              initialText: (clicked as TextElement).text,
+            });
+            return;
+          }
+        }
 
         // Alt+drag duplicate: mark for duplication on drag start
         if (e.evt.altKey) {
@@ -1256,41 +1351,9 @@ const EditorCanvas: React.FC = () => {
       const y1 = Math.min(eraserStart.y, eraserEnd.y);
       const x2 = Math.max(eraserStart.x, eraserEnd.x);
       const y2 = Math.max(eraserStart.y, eraserEnd.y);
-      const toRemove = s.elements.filter((el) => {
-        // Get element bounding box
-        let elX = el.x;
-        let elY = el.y;
-        let elRight = elX;
-        let elBottom = elY;
-
-        if (el.type === 'pencil' || el.type === 'highlighter') {
-          const pts = (el as any).points;
-          if (pts && pts.length >= 2) {
-            elX = Math.min(...pts.filter((_: number, i: number) => i % 2 === 0));
-            elY = Math.min(...pts.filter((_: number, i: number) => i % 2 === 1));
-            elRight = Math.max(...pts.filter((_: number, i: number) => i % 2 === 0));
-            elBottom = Math.max(...pts.filter((_: number, i: number) => i % 2 === 1));
-          }
-        } else if ('width' in el) {
-          elRight = el.x + (el as any).width;
-          elBottom = el.y + (el as any).height;
-        } else if (el.type === 'arrow' || el.type === 'line') {
-          const pts = (el as any).points;
-          if (pts && pts.length >= 4) {
-            elRight = el.x + pts[2];
-            elBottom = el.y + pts[3];
-          }
-        } else if (el.type === 'step') {
-          const r = (el as any).radius ?? 16;
-          elX = el.x - r;
-          elY = el.y - r;
-          elRight = el.x + r;
-          elBottom = el.y + r;
-        }
-
-        // Check if bounding boxes intersect (not just containment)
-        return elX < x2 && elRight > x1 && elY < y2 && elBottom > y1;
-      }).map((el) => el.id);
+      const toRemove = s.elements
+        .filter((el) => elementIntersectsRect(el, x1, y1, x2, y2))
+        .map((el) => el.id);
       if (toRemove.length) s.removeElements(toRemove);
       setIsErasing(false);
       setEraserStart(null);
@@ -1541,7 +1604,9 @@ const EditorCanvas: React.FC = () => {
 
   function handleTextDblClick(el: TextElement, e: Konva.KonvaEventObject<any>) {
     const st = useEditorStore.getState();
-    if (st.activeTool !== 'select' && !hoverSelectModeRef.current) return;
+    // Select and text tools edit on double-click; other drawing tools fall
+    // back to the temporary hover-select mode.
+    if (st.activeTool !== 'select' && st.activeTool !== 'text' && !hoverSelectModeRef.current) return;
     e.cancelBubble = true;
     const s = useEditorStore.getState();
     s.setSelectedElementIds([]);
@@ -1763,6 +1828,51 @@ const EditorCanvas: React.FC = () => {
       if (node) handleTransform(id, node);
     });
   }, []);
+
+  /**
+   * Live-update an arrow/line node while one of its handles is dragged.
+   *
+   * The handle's drag is Konva-owned; writing the geometry to the store on
+   * every pointermove re-renders the handle at the recomputed position, which
+   * fights Konva's drag and makes the first drag barely bend (the handle keeps
+   * snapping back toward the chord). Instead the node is mutated in place and
+   * the store is only touched on commit, so one continuous drag deforms
+   * smoothly and stays a single undo step. Works for the legacy 2-point + bend
+   * form and for multi-point polylines, and carries the stroke dash so a bent
+   * dotted arrow stays dotted.
+   */
+  const applyArrowLineLive = (
+    id: string,
+    points: number[],
+    bendVal: number,
+    strokeWidth: number,
+    handDrawnStyle: boolean,
+    strokeStyle?: string,
+  ) => {
+    const st = stageRef.current;
+    if (!st) return;
+    const node = findAnnotationNode(st, id);
+    if (!node) return;
+    const multi = points.length > 4;
+    const basePoints = multi
+      ? points
+      : renderPoints(points[0] ?? 0, points[1] ?? 0, points[2] ?? 0, points[3] ?? 0, bendVal);
+    const drawPoints = handDrawnStyle
+      ? handDrawnPolyline(basePoints, id, strokeWidth, 0.2)
+      : basePoints;
+    // Multi-point stays straight-segment: Konva's tension spline only
+    // interpolates every other vertex past 4 points (the line would skip the
+    // interior dots). The jitter already provides the hand-drawn wobble.
+    const tension = multi
+      ? 0
+      : (handDrawnStyle ? (bendVal ? 0.45 : 0.2) : (bendVal ? 0.5 : 0));
+    node.setAttrs({
+      points: drawPoints,
+      tension,
+      dash: strokeDash(strokeStyle),
+    });
+    node.getLayer()?.batchDraw();
+  };
 
   function renderElement(el: EditorElement, isDraft = false) {
     const s = useEditorStore.getState();
@@ -1991,6 +2101,8 @@ const EditorCanvas: React.FC = () => {
             onPreviewOffsetCommit={(offset) => commitElementUpdate(mag.id, { previewOffset: offset })}
             onRadiiMove={(radii) => resizeToRadii(radii, false)}
             onRadiiCommit={(radii) => resizeToRadii(radii, true)}
+            onLeaderBendMove={(bend) => updateElementSilent(mag.id, { leaderBend: bend })}
+            onLeaderBendCommit={(bend) => commitElementUpdate(mag.id, { leaderBend: bend })}
           />
         );
       }
@@ -2055,29 +2167,89 @@ const EditorCanvas: React.FC = () => {
         const showHandles = !isDraft && isSelected;
         const handleProps = selectionHandleProps('endpoint');
         const bendHandleProps = selectionHandleProps('bend');
+        const styleDash = strokeDash(arrow.strokeStyle);
+        const isMulti = arrow.points.length > 4;
+        const multiPoints = isMulti ? arrow.points : [];
+        const hoverHandles = handleHoverEvents();
+
+        // Simple 3-dot editing: start, middle (bend), end. In hand-drawn mode
+        // the polyline is jittered, so handles must sit on the *drawn* points
+        // or the dots visibly float off the line.
+        const basePoints = isMulti ? arrow.points : renderPoints(sx, sy, ex, ey, bend);
+        const drawPoints = handDrawn
+          ? handDrawnPolyline(basePoints, arrow.id, arrow.strokeWidth || 2, 0.2)
+          : basePoints;
+        /** Per-index jitter delta (0 when not hand-drawn). */
+        const jit = handDrawn ? basePoints.map((v, i) => drawPoints[i] - v) : null;
+        const offAt = (i: number) => (jit ? jit[i] : 0);
+
+        /** Middle vertex index for multi-point elements (mid handle target). */
+        const midVertexIdx = isMulti ? Math.floor(multiPoints.length / 4) * 2 : -1;
+
+        const updatePoint = (idx: number, node: Konva.Node, commit: boolean) => {
+          // The handle sits on the drawn point; store the raw point so the
+          // drawn vertex stays glued to the pointer through the jitter.
+          const localX = node.x() - arrow.x - offAt(idx);
+          const localY = node.y() - arrow.y - offAt(idx + 1);
+          const newPoints = [...arrow.points];
+          newPoints[idx] = localX;
+          newPoints[idx + 1] = localY;
+          if (commit) commitElementUpdate(arrow.id, { points: newPoints });
+          else applyArrowLineLive(arrow.id, newPoints, 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
+        };
         const updateBendFromHandle = (node: Konva.Node, commit = false) => {
+          // The bend handle sits on the drawn control point; only the bent
+          // (6-coordinate) form has a jittered middle point to compensate.
+          const hasDrawnControl = drawPoints.length > 4;
           const bendVal = bendFromHandle(
             sx, sy, ex, ey,
-            node.x() - arrow.x, node.y() - arrow.y,
+            node.x() - arrow.x - (hasDrawnControl ? offAt(2) : 0),
+            node.y() - arrow.y - (hasDrawnControl ? offAt(3) : 0),
           );
-          if (commit) commitElementUpdate(arrow.id, { bend: bendVal });
-          else updateElementSilent(arrow.id, { bend: bendVal });
+          if (commit) {
+            // A click on the handle without movement fires dragEnd too; do not
+            // push a history entry for a bend that never changed. Compare with
+            // the live store value: the hand-drawn path may have already
+            // written a silent bend on the first move.
+            const current = useEditorStore.getState().elements.find((x) => x.id === arrow.id) as ArrowElement | undefined;
+            if (bendVal !== (current?.bend ?? 0)) commitElementUpdate(arrow.id, { bend: bendVal });
+          } else if (handDrawn) {
+            // Rough shapes bake their path at render, so a rough arrow cannot
+            // bend live: one silent write switches it to the jittered curve
+            // path, after which the drag continues imperatively.
+            const live = useEditorStore.getState().elements.find((x) => x.id === arrow.id);
+            if (!(live as ArrowElement | undefined)?.bend) {
+              updateElementSilent(arrow.id, { bend: bendVal });
+            }
+            applyArrowLineLive(arrow.id, [sx, sy, ex, ey], bendVal, arrow.strokeWidth ?? 2, true, arrow.strokeStyle);
+          } else {
+            applyArrowLineLive(arrow.id, [sx, sy, ex, ey], bendVal, arrow.strokeWidth ?? 2, false, arrow.strokeStyle);
+          }
         };
         const updateEndpoint = (which: 'start' | 'end', node: Konva.Node, commit = false) => {
-          const localX = node.x() - arrow.x;
-          const localY = node.y() - arrow.y;
-          const newPoints: [number, number, number, number] = which === 'start'
-            ? [localX, localY, ex, ey]
-            : [sx, sy, localX, localY];
+          // Copy the points and replace only the dragged endpoint, so multi-point
+          // polylines keep their interior vertices instead of collapsing to two.
+          const eIdx = which === 'start' ? 0 : arrow.points.length - 2;
+          const newPoints = [...arrow.points];
+          newPoints[eIdx] = node.x() - arrow.x - offAt(eIdx);
+          newPoints[eIdx + 1] = node.y() - arrow.y - offAt(eIdx + 1);
           if (commit) commitElementUpdate(arrow.id, { points: newPoints, bend: arrow.bend ?? 0 });
-          else updateElementSilent(arrow.id, { points: newPoints });
+          else applyArrowLineLive(arrow.id, newPoints, arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
         };
 
         const headSize = arrow.pointerLength ?? Math.max(10, (arrow.strokeWidth || 2) * 4);
         const showHead = (arrow.endArrowhead ?? 'arrow') !== 'none';
         const showStartHead = (arrow.startArrowhead ?? 'none') !== 'none';
+        const startTangent = isMulti
+          ? (() => {
+              const dx = multiPoints[2] - multiPoints[0];
+              const dy = multiPoints[3] - multiPoints[1];
+              const len = Math.hypot(dx, dy) || 1;
+              return { x: dx / len, y: dy / len };
+            })()
+          : tangentAtStart(sx, sy, ex, ey, bend);
 
-        if (handDrawn && bend === 0) {
+        if (handDrawn && bend === 0 && !isMulti) {
           return (
             <React.Fragment key={arrow.id}>
               <RoughKonvaShape
@@ -2113,16 +2285,19 @@ const EditorCanvas: React.FC = () => {
                     onMouseDown={(e) => { e.cancelBubble = true; }}
                     onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
                     onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
+                    {...hoverHandles}
                   />
                   <Circle x={arrow.x + control.x} y={arrow.y + control.y} {...bendHandleProps} draggable
                     onMouseDown={(e) => { e.cancelBubble = true; }}
                     onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
                     onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
+                    {...hoverHandles}
                   />
                   <Circle x={arrow.x + ex} y={arrow.y + ey} {...handleProps} draggable
                     onMouseDown={(e) => { e.cancelBubble = true; }}
                     onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
                     onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true); }}
+                    {...hoverHandles}
                   />
                 </>
               )}
@@ -2130,10 +2305,6 @@ const EditorCanvas: React.FC = () => {
           );
         }
 
-        const basePoints = renderPoints(sx, sy, ex, ey, bend);
-        const drawPoints = handDrawn
-          ? handDrawnPolyline(basePoints, arrow.id, arrow.strokeWidth || 2, 0.2)
-          : basePoints;
         return (
           <React.Fragment key={arrow.id}>
             <Arrow
@@ -2144,13 +2315,17 @@ const EditorCanvas: React.FC = () => {
               fill={arrow.fill}
               pointerLength={showHead ? headSize : 0}
               pointerWidth={showHead ? (arrow.pointerWidth ?? headSize) : 0}
-              tension={handDrawn ? (bend === 0 ? 0.2 : 0.45) : (bend === 0 ? 0 : 0.5)}
+              dash={styleDash}
+              // Multi-point stays straight-segment (tension 0): Konva's tension
+              // spline only interpolates every other vertex past 4 points, which
+              // made the line skip the interior dots. The jitter already gives
+              // hand-drawn wobble, so no smoothing is needed here.
+              tension={isMulti ? 0 : (handDrawn ? (bend === 0 ? 0.2 : 0.45) : (bend === 0 ? 0 : 0.5))}
             />
             {showStartHead && (() => {
               // Point the head along the curve's own tangent: using the straight
               // chord aimed it visibly wrong on a bent arrow.
-              const t = tangentAtStart(sx, sy, ex, ey, bend);
-              const tri = arrowHeadPoints(sx + t.x, sy + t.y, sx, sy, headSize);
+              const tri = arrowHeadPoints(sx + startTangent.x, sy + startTangent.y, sx, sy, headSize);
               return (
                 <Line
                   x={arrow.x}
@@ -2167,20 +2342,40 @@ const EditorCanvas: React.FC = () => {
             })()}
             {showHandles && (
               <>
-                <Circle x={arrow.x + sx} y={arrow.y + sy} {...handleProps} draggable
+                <Circle x={arrow.x + drawPoints[0]} y={arrow.y + drawPoints[1]} {...handleProps} draggable
                   onMouseDown={(e) => { e.cancelBubble = true; }}
                   onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
                   onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
+                  {...hoverHandles}
                 />
-                <Circle x={arrow.x + control.x} y={arrow.y + control.y} {...bendHandleProps} draggable
-                  onMouseDown={(e) => { e.cancelBubble = true; }}
-                  onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
-                  onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
-                />
-                <Circle x={arrow.x + ex} y={arrow.y + ey} {...handleProps} draggable
+                {isMulti ? (
+                  // Multi-point polylines keep just the middle vertex handle;
+                  // everything else is the classic 3-dot model.
+                  <Circle x={arrow.x + drawPoints[midVertexIdx]}
+                    y={arrow.y + drawPoints[midVertexIdx + 1]}
+                    {...bendHandleProps} draggable
+                    onMouseDown={(e) => { e.cancelBubble = true; }}
+                    onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
+                    {...hoverHandles}
+                  />
+                ) : (
+                  <Circle x={arrow.x + (drawPoints.length > 4 ? drawPoints[2] : control.x)}
+                    y={arrow.y + (drawPoints.length > 4 ? drawPoints[3] : control.y)}
+                    {...bendHandleProps} draggable
+                    onMouseDown={(e) => { e.cancelBubble = true; }}
+                    onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
+                    {...hoverHandles}
+                  />
+                )}
+                <Circle x={arrow.x + drawPoints[drawPoints.length - 2]}
+                  y={arrow.y + drawPoints[drawPoints.length - 1]}
+                  {...handleProps} draggable
                   onMouseDown={(e) => { e.cancelBubble = true; }}
                   onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
                   onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true); }}
+                  {...hoverHandles}
                 />
               </>
             )}
@@ -2196,34 +2391,83 @@ const EditorCanvas: React.FC = () => {
         const showHandles = !isDraft && isSelected;
         const handleProps = selectionHandleProps('endpoint');
         const bendHandleProps = selectionHandleProps('bend');
-        const updateEndpoint = (which: 'start' | 'end', node: Konva.Node, commit = false) => {
-          const localX = node.x() - line.x;
-          const localY = node.y() - line.y;
-          const newPoints: [number, number, number, number] = which === 'start'
-            ? [localX, localY, ex, ey]
-            : [sx, sy, localX, localY];
+        const styleDash = strokeDash(line.strokeStyle);
+        const isMulti = line.points.length > 4;
+        const multiPoints = isMulti ? line.points : [];
+        const hoverHandles = handleHoverEvents();
+
+        // Simple 3-dot editing: start, middle (bend), end. In hand-drawn mode
+        // the polyline is jittered, so handles must sit on the *drawn* points
+        // or the dots visibly float off the line.
+        const basePoints = isMulti ? line.points : renderPoints(sx, sy, ex, ey, bend);
+        const drawPoints = handDrawn
+          ? handDrawnPolyline(basePoints, line.id, line.strokeWidth || 2, 0.2)
+          : basePoints;
+        /** Per-index jitter delta (0 when not hand-drawn). */
+        const jit = handDrawn ? basePoints.map((v, i) => drawPoints[i] - v) : null;
+        const offAt = (i: number) => (jit ? jit[i] : 0);
+
+        /** Middle vertex index for multi-point elements (mid handle target). */
+        const midVertexIdx = isMulti ? Math.floor(multiPoints.length / 4) * 2 : -1;
+
+        const updatePoint = (idx: number, node: Konva.Node, commit: boolean) => {
+          // The handle sits on the drawn point; store the raw point so the
+          // drawn vertex stays glued to the pointer through the jitter.
+          const localX = node.x() - line.x - offAt(idx);
+          const localY = node.y() - line.y - offAt(idx + 1);
+          const newPoints = [...line.points];
+          newPoints[idx] = localX;
+          newPoints[idx + 1] = localY;
           if (commit) commitElementUpdate(line.id, { points: newPoints });
-          else updateElementSilent(line.id, { points: newPoints });
+          else applyArrowLineLive(line.id, newPoints, 0, line.strokeWidth ?? 2, handDrawn, line.strokeStyle);
+        };
+        const updateEndpoint = (which: 'start' | 'end', node: Konva.Node, commit = false) => {
+          // Copy the points and replace only the dragged endpoint, so multi-point
+          // polylines keep their interior vertices instead of collapsing to two.
+          const eIdx = which === 'start' ? 0 : line.points.length - 2;
+          const newPoints = [...line.points];
+          newPoints[eIdx] = node.x() - line.x - offAt(eIdx);
+          newPoints[eIdx + 1] = node.y() - line.y - offAt(eIdx + 1);
+          if (commit) commitElementUpdate(line.id, { points: newPoints });
+          else applyArrowLineLive(line.id, newPoints, line.bend ?? 0, line.strokeWidth ?? 2, handDrawn, line.strokeStyle);
         };
         const updateBendFromHandle = (node: Konva.Node, commit = false) => {
+          // The bend handle sits on the drawn control point; only the bent
+          // (6-coordinate) form has a jittered middle point to compensate.
+          const hasDrawnControl = drawPoints.length > 4;
           const bendVal = bendFromHandle(
             sx, sy, ex, ey,
-            node.x() - line.x, node.y() - line.y,
+            node.x() - line.x - (hasDrawnControl ? offAt(2) : 0),
+            node.y() - line.y - (hasDrawnControl ? offAt(3) : 0),
           );
-          if (commit) commitElementUpdate(line.id, { bend: bendVal });
-          else updateElementSilent(line.id, { bend: bendVal });
+          if (commit) {
+            const current = useEditorStore.getState().elements.find((x) => x.id === line.id) as LineElement | undefined;
+            if (bendVal !== (current?.bend ?? 0)) commitElementUpdate(line.id, { bend: bendVal });
+          } else if (handDrawn) {
+            const live = useEditorStore.getState().elements.find((x) => x.id === line.id);
+            if (!(live as LineElement | undefined)?.bend) {
+              updateElementSilent(line.id, { bend: bendVal });
+            }
+            applyArrowLineLive(line.id, [sx, sy, ex, ey], bendVal, line.strokeWidth ?? 2, true, line.strokeStyle);
+          } else {
+            applyArrowLineLive(line.id, [sx, sy, ex, ey], bendVal, line.strokeWidth ?? 2, false, line.strokeStyle);
+          }
         };
-        const bendHandle = showHandles ? (
-          <Circle x={line.x + control.x} y={line.y + control.y} {...bendHandleProps} draggable
+        const bendHandle = showHandles && !isMulti ? (
+          <Circle
+            x={line.x + (drawPoints.length > 4 ? drawPoints[2] : control.x)}
+            y={line.y + (drawPoints.length > 4 ? drawPoints[3] : control.y)}
+            {...bendHandleProps} draggable
             onMouseDown={(e) => { e.cancelBubble = true; }}
             onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
             onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
+            {...hoverHandles}
           />
         ) : null;
 
         // Rough draws straight segments only; a bent line falls back to the
         // jittered polyline the arrow tool already uses for its curves.
-        if (handDrawn && bend === 0) {
+        if (handDrawn && bend === 0 && !isMulti) {
           return (
             <React.Fragment key={line.id}>
               <RoughKonvaShape
@@ -2256,12 +2500,14 @@ const EditorCanvas: React.FC = () => {
                     onMouseDown={(e) => { e.cancelBubble = true; }}
                     onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
                     onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
+                    {...hoverHandles}
                   />
                   {bendHandle}
                   <Circle x={line.x + ex} y={line.y + ey} {...handleProps} draggable
                     onMouseDown={(e) => { e.cancelBubble = true; }}
                     onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
                     onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true); }}
+                    {...hoverHandles}
                   />
                 </>
               )}
@@ -2269,10 +2515,6 @@ const EditorCanvas: React.FC = () => {
           );
         }
 
-        const basePoints = renderPoints(sx, sy, ex, ey, bend);
-        const drawPoints = handDrawn
-          ? handDrawnPolyline(basePoints, line.id, line.strokeWidth || 2, 0.2)
-          : basePoints;
         return (
           <React.Fragment key={line.id}>
             <Line
@@ -2280,21 +2522,38 @@ const EditorCanvas: React.FC = () => {
               points={drawPoints}
               stroke={line.stroke}
               strokeWidth={line.strokeWidth}
-              tension={handDrawn ? (bend === 0 ? 0.2 : 0.45) : (bend === 0 ? 0 : 0.5)}
+              dash={styleDash}
+              // Multi-point stays straight-segment (tension 0): see the arrow.
+              tension={isMulti ? 0 : (handDrawn ? (bend === 0 ? 0.2 : 0.45) : (bend === 0 ? 0 : 0.5))}
               hitStrokeWidth={16}
             />
             {showHandles && (
               <>
-                <Circle x={line.x + sx} y={line.y + sy} {...handleProps} draggable
+                <Circle x={line.x + drawPoints[0]} y={line.y + drawPoints[1]} {...handleProps} draggable
                   onMouseDown={(e) => { e.cancelBubble = true; }}
                   onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
                   onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true); }}
+                  {...hoverHandles}
                 />
-                {bendHandle}
-                <Circle x={line.x + ex} y={line.y + ey} {...handleProps} draggable
+                {isMulti ? (
+                  <Circle x={line.x + drawPoints[midVertexIdx]}
+                    y={line.y + drawPoints[midVertexIdx + 1]}
+                    {...bendHandleProps} draggable
+                    onMouseDown={(e) => { e.cancelBubble = true; }}
+                    onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
+                    {...hoverHandles}
+                  />
+                ) : (
+                  bendHandle
+                )}
+                <Circle x={line.x + drawPoints[drawPoints.length - 2]}
+                  y={line.y + drawPoints[drawPoints.length - 1]}
+                  {...handleProps} draggable
                   onMouseDown={(e) => { e.cancelBubble = true; }}
                   onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
                   onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true); }}
+                  {...hoverHandles}
                 />
               </>
             )}
@@ -2418,25 +2677,56 @@ const EditorCanvas: React.FC = () => {
     }
   }
 
-  // Render eraser draft (red dotted box while dragging)
+  // Render eraser draft: red dotted box while dragging + red tint on every
+  // element that would be deleted, so the eraser is a preview instead of a
+  // surprise. Both use the same hit test as the commit, so what you see is
+  // exactly what gets removed on mouse-up.
   function renderEraserDraft() {
     if (!isErasing || !eraserStart || !eraserEnd) return null;
-    const x = Math.min(eraserStart.x, eraserEnd.x);
-    const y = Math.min(eraserStart.y, eraserEnd.y);
-    const w = Math.abs(eraserEnd.x - eraserStart.x);
-    const h = Math.abs(eraserEnd.y - eraserStart.y);
+    const x1 = Math.min(eraserStart.x, eraserEnd.x);
+    const y1 = Math.min(eraserStart.y, eraserEnd.y);
+    const x2 = Math.max(eraserStart.x, eraserEnd.x);
+    const y2 = Math.max(eraserStart.y, eraserEnd.y);
+    const w = x2 - x1;
+    const h = y2 - y1;
+    const hitIds = new Set(
+      useEditorStore.getState().elements
+        .filter((el) => elementIntersectsRect(el, x1, y1, x2, y2))
+        .map((el) => el.id),
+    );
     return (
-      <Rect
-        x={x}
-        y={y}
-        width={w}
-        height={h}
-        fill="rgba(239,68,68,0.06)"
-        stroke="#ef4444"
-        strokeWidth={1.5}
-        dash={[6, 4]}
-        listening={false}
-      />
+      <>
+        <Rect
+          x={x1}
+          y={y1}
+          width={w}
+          height={h}
+          fill="rgba(239,68,68,0.06)"
+          stroke="#ef4444"
+          strokeWidth={1.5}
+          dash={[6, 4]}
+          listening={false}
+        />
+        {elements
+          .filter((el) => hitIds.has(el.id))
+          .map((el) => {
+            const b = getElementHitBox(el);
+            return (
+              <Group key={`erase-preview-${el.id}`} listening={false}>
+                <Rect
+                  x={b.x1 - 2}
+                  y={b.y1 - 2}
+                  width={b.x2 - b.x1 + 4}
+                  height={b.y2 - b.y1 + 4}
+                  fill="rgba(239,68,68,0.22)"
+                  stroke="#ef4444"
+                  strokeWidth={1.5}
+                  dash={[4, 3]}
+                />
+              </Group>
+            );
+          })}
+      </>
     );
   }
 
@@ -2484,9 +2774,14 @@ const EditorCanvas: React.FC = () => {
 
   const annotationsLocked = useEditorStore((s) => s.annotationsLocked);
   const contentPad = canvasStyle.padding || 0;
-  const frameW = (imageSize.width || 0) + contentPad * 2;
-  const frameH = (imageSize.height || 0) + contentPad * 2;
-  const showFrame = !!backgroundImage && (contentPad > 0 || canvasStyle.bgStyle !== 'none' || canvasStyle.shadowEnabled || canvasStyle.borderRadius > 0);
+  // Device chrome extends the frame beyond the image + padding (live ≈ export).
+  const frameInsets = DEVICE_FRAME_INSETS[canvasStyle.deviceFrame];
+  const contentOffsetX = contentPad + frameInsets.left;
+  const contentOffsetY = contentPad + frameInsets.top;
+  const frameW = (imageSize.width || 0) + contentPad * 2 + frameInsets.left + frameInsets.right;
+  const frameH = (imageSize.height || 0) + contentPad * 2 + frameInsets.top + frameInsets.bottom;
+  const showFrame = !!backgroundImage && (contentPad > 0 || canvasStyle.bgStyle !== 'none' || canvasStyle.shadowEnabled || canvasStyle.borderRadius > 0 || canvasStyle.deviceFrame !== 'none');
+  const frameInner = { x: contentOffsetX, y: contentOffsetY, w: imageSize.width || 0, h: imageSize.height || 0 };
 
   // Get current zoom/position for textarea positioning using fresh values
   const currentZoom = useEditorStore((s) => s.zoom);
@@ -2531,6 +2826,7 @@ const EditorCanvas: React.FC = () => {
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
         onMouseUp={handleMouseUp}
+        dragDistance={2}
         onTouchStart={handleMouseDown as any}
         onTouchMove={handleMouseMove as any}
         onTouchEnd={handleMouseUp as any}
@@ -2584,7 +2880,10 @@ const EditorCanvas: React.FC = () => {
               listening={false}
             />
           )}
-          <Group x={contentPad} y={contentPad}>
+          {canvasStyle.deviceFrame !== 'none' && (
+            <DeviceFrameKonva frame={canvasStyle.deviceFrame} frameUrl={canvasStyle.frameUrl} outerW={frameW} outerH={frameH} inner={frameInner} pass="behind" />
+          )}
+          <Group x={contentOffsetX} y={contentOffsetY}>
             <Rect
               name="background"
               x={0}
@@ -2618,10 +2917,13 @@ const EditorCanvas: React.FC = () => {
               )
             )}
           </Group>
+          {canvasStyle.deviceFrame !== 'none' && (
+            <DeviceFrameKonva frame={canvasStyle.deviceFrame} frameUrl={canvasStyle.frameUrl} outerW={frameW} outerH={frameH} inner={frameInner} pass="overlay" />
+          )}
         </Layer>
 
-        {/* Annotation layer (same content pad as image) */}
-        <Layer name="annotation-layer" x={contentPad} y={contentPad}>
+        {/* Annotation layer (same offset as the framed image) */}
+        <Layer name="annotation-layer" x={contentOffsetX} y={contentOffsetY}>
           {elements.map((el) => renderElement(el))}
           {drawingElement && renderElement(drawingElement, true)}
           {renderSpotlightDraft()}
@@ -2724,14 +3026,18 @@ const EditorCanvas: React.FC = () => {
         const displayFont = editEl?.fontSize ?? fontSize * scale;
         const displayColor = editEl?.fill ?? strokeColor;
         const displayFamily = editEl?.fontFamily ?? fontFamily ?? HANDWRITTEN_FONT;
+        // Bold/italic come from the element when editing, else the live setting;
+        // the overlay must preview the exact style the committed node will use.
+        const displayFontStyle = editEl?.fontStyle ?? useEditorStore.getState().fontStyle;
+        const displayAlign = editEl?.align ?? useEditorStore.getState().textAlign;
         const pad = (editEl?.padding ?? TEXT_PADDING) * currentZoom;
         return (
           <textarea
             ref={textAreaRef}
             className="absolute z-50 bg-transparent border border-dashed border-accent outline-none resize-none"
             style={{
-              left: currentStagePos.x + (textInput.x + contentPad) * currentZoom,
-              top: currentStagePos.y + (textInput.y + contentPad) * currentZoom,
+              left: currentStagePos.x + (textInput.x + contentOffsetX) * currentZoom,
+              top: currentStagePos.y + (textInput.y + contentOffsetY) * currentZoom,
               fontSize: displayFont * currentZoom,
               fontFamily: displayFamily,
               color: displayColor,
@@ -2743,6 +3049,11 @@ const EditorCanvas: React.FC = () => {
               minWidth: 100,
               minHeight: 40,
               lineHeight: editEl?.lineHeight ?? TEXT_LINE_HEIGHT,
+              fontStyle: displayFontStyle === 'normal' || displayFontStyle === 'italic'
+                ? displayFontStyle
+                : 'normal',
+              fontWeight: displayFontStyle.includes('bold') ? 'bold' : 'normal',
+              textAlign: displayAlign ?? 'left',
             }}
             onKeyDown={handleTextAreaKeyDown}
             onBlur={() => {

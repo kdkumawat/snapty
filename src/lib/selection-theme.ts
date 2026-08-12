@@ -47,10 +47,13 @@ export function styleSelectionAnchor(anchor: Konva.Rect) {
   anchor.shadowOffset({ x: 0, y: 1 });
 }
 
-/** Shared props for custom endpoint / bend handles. */
+/**
+ * Shared props for custom endpoint / bend handles, sized like Excalidraw's
+ * grab points (screen-comfortable and easy to hit at high zoom-out).
+ */
 export function selectionHandleProps(variant: 'endpoint' | 'bend' | 'rotate' = 'endpoint') {
   const theme = getSelectionTheme();
-  const r = variant === 'bend' ? 7 : variant === 'rotate' ? 6 : 5;
+  const r = variant === 'bend' ? 9 : variant === 'rotate' ? 6 : 7;
   return {
     radius: r,
     fill: theme.surface,
@@ -60,6 +63,45 @@ export function selectionHandleProps(variant: 'endpoint' | 'bend' | 'rotate' = '
     shadowBlur: 8,
     shadowOpacity: 0.35,
     shadowOffset: { x: 0, y: 1 },
-    hitStrokeWidth: variant === 'endpoint' ? 16 : 20,
+    hitStrokeWidth: variant === 'endpoint' ? 18 : 22,
+  };
+}
+
+/**
+ * Excalidraw-style handle feedback: subtle. The grab circle grows a touch and
+ * greys out while the pointer hovers it - just enough to say "grabbable"
+ * without shouting, exactly like Excalidraw's quiet handle hover.
+ */
+export function handleHoverEvents() {
+  return {
+    onMouseEnter: (e: Konva.KonvaEventObject<MouseEvent>) => {
+      const node = e.target as Konva.Shape;
+      node.scale({ x: 1.15, y: 1.15 });
+      node.fill('rgba(128, 128, 128, 0.55)');
+      node.getLayer()?.batchDraw();
+    },
+    onMouseLeave: (e: Konva.KonvaEventObject<MouseEvent>) => {
+      const node = e.target as Konva.Shape;
+      node.scale({ x: 1, y: 1 });
+      node.fill(getSelectionTheme().surface);
+      node.getLayer()?.batchDraw();
+    },
+  };
+}
+
+/** Midpoint 'ghost' handle that inserts a new vertex when dragged/clicked. */
+export function midHandleProps() {
+  const theme = getSelectionTheme();
+  return {
+    radius: 6,
+    fill: theme.surface,
+    stroke: theme.accent,
+    strokeWidth: 1.5,
+    shadowColor: theme.shadow,
+    shadowBlur: 6,
+    shadowOpacity: 0.3,
+    shadowOffset: { x: 0, y: 1 },
+    hitStrokeWidth: 16,
+    dash: [3, 2],
   };
 }

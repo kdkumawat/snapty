@@ -11,12 +11,14 @@ import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { useEditorStore } from '@/store/editor-store';
-import type { BgStyle } from '@/types/editor';
+import type { BgStyle, DeviceFrame } from '@/types/editor';
+import { DEVICE_FRAME_LABELS, DEVICE_FRAME_OPTIONS } from '@/lib/editor/device-frames';
 import { SegmentedControl } from '@/components/editor/ui/segmented-control';
 import { toastSuccess } from '@/lib/app-toast';
 import { openInBrowser } from '@/lib/open-external';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { isScreenCaptureSupported } from '@/lib/screen-capture';
+import { readAnalyticsConsent, setAnalyticsConsent } from '@/components/google-analytics';
 import { cn } from '@/lib/utils';
 
 const actionBtn =
@@ -35,6 +37,9 @@ export default function SettingsDialog() {
   const annotationsLocked = useEditorStore((s) => s.annotationsLocked);
   const setImageLocked = useEditorStore((s) => s.setImageLocked);
   const setAnnotationsLocked = useEditorStore((s) => s.setAnnotationsLocked);
+  const keepOriginal = useEditorStore((s) => s.keepOriginal);
+  const setKeepOriginal = useEditorStore((s) => s.setKeepOriginal);
+  const [analyticsOn, setAnalyticsOn] = React.useState(() => readAnalyticsConsent());
   const handDrawn = useEditorStore((s) => s.handDrawn);
   const setHandDrawn = useEditorStore((s) => s.setHandDrawn);
   const resetToolSettings = useEditorStore((s) => s.resetToolSettings);
@@ -199,6 +204,29 @@ export default function SettingsDialog() {
                 <Switch checked={annotationsLocked} onCheckedChange={setAnnotationsLocked} />
               </div>
 
+              <div className="panel-toggle-row">
+                <div>
+                  <Label className="text-sm">Keep original resolution</Label>
+                  <p className="text-[11px] text-muted-foreground">Huge images (8K, 100MP) are downscaled to ~4096px for speed. Enable to keep full resolution.</p>
+                </div>
+                <Switch checked={keepOriginal} onCheckedChange={setKeepOriginal} />
+              </div>
+
+              <div className="panel-toggle-row">
+                <div>
+                  <Label className="text-sm">Usage analytics</Label>
+                  <p className="text-[11px] text-muted-foreground">Anonymous page views only. Your images never leave your device.</p>
+                </div>
+                <Switch
+                  checked={analyticsOn}
+                  onCheckedChange={(v) => {
+                    setAnalyticsOn(v);
+                    setAnalyticsConsent(v);
+                    toastSuccess(v ? 'Analytics on' : 'Analytics off', v ? 'Anonymous usage data shared' : 'No usage data is sent');
+                  }}
+                />
+              </div>
+
               <div className="panel-slider-group">
                 <div className="panel-slider-label">
                   <Label className="text-xs text-muted-foreground">Padding</Label>
@@ -209,6 +237,8 @@ export default function SettingsDialog() {
                   min={0}
                   max={120}
                   step={4}
+                  onPointerDown={() => useEditorStore.getState().beginSettingGesture()}
+                  onValueCommit={() => useEditorStore.getState().endSettingGesture()}
                   onValueChange={([v]) => setCanvasStyle({ padding: v })}
                 />
                 <p className="text-[11px] text-muted-foreground">Live frame around the screenshot (also used on export)</p>
@@ -240,6 +270,38 @@ export default function SettingsDialog() {
                 )}
               </div>
 
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">Device frame</Label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {DEVICE_FRAME_OPTIONS.map((f: DeviceFrame) => (
+                    <button
+                      key={f}
+                      type="button"
+                      className={cn(
+                        'h-9 rounded-lg border text-xs font-medium transition-colors',
+                        canvasStyle.deviceFrame === f
+                          ? 'border-accent bg-accent/12 text-accent'
+                          : 'border-border text-muted-foreground hover:bg-secondary hover:text-foreground',
+                      )}
+                      onClick={() => setCanvasStyle({ deviceFrame: f })}
+                    >
+                      {DEVICE_FRAME_LABELS[f]}
+                    </button>
+                  ))}
+                </div>
+                {canvasStyle.deviceFrame === 'browser' && (
+                  <input
+                    type="text"
+                    value={canvasStyle.frameUrl || ''}
+                    onChange={(e) => setCanvasStyle({ frameUrl: e.target.value })}
+                    placeholder="snapty.pages.dev"
+                    aria-label="URL shown in browser frame"
+                    className="w-full h-9 rounded-lg border border-border bg-transparent px-3 text-sm placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                )}
+                <p className="text-[11px] text-muted-foreground">Wrap the screenshot in device or browser chrome (live preview and export).</p>
+              </div>
+
               <div className="panel-slider-group">
                 <div className="panel-slider-label">
                   <Label className="text-xs text-muted-foreground">Corner radius</Label>
@@ -250,6 +312,8 @@ export default function SettingsDialog() {
                   min={0}
                   max={48}
                   step={2}
+                  onPointerDown={() => useEditorStore.getState().beginSettingGesture()}
+                  onValueCommit={() => useEditorStore.getState().endSettingGesture()}
                   onValueChange={([v]) => setCanvasStyle({ borderRadius: v })}
                 />
               </div>
@@ -279,7 +343,18 @@ export default function SettingsDialog() {
                   className="w-full h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary transition-colors inline-flex items-center justify-center gap-2"
                   onClick={() => {
                     setOpen(false);
-                    openInBrowser('/info');
+                    openInBrowser('/privacy');
+                  }}
+                >
+                  <Info className="w-4 h-4" />
+                  Privacy
+                </button>
+                <button
+                  type="button"
+                  className="w-full h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary transition-colors inline-flex items-center justify-center gap-2"
+                  onClick={() => {
+                    setOpen(false);
+                    openInBrowser('/');
                   }}
                 >
                   <Info className="w-4 h-4" />

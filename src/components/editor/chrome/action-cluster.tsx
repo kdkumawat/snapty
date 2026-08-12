@@ -13,6 +13,7 @@ import { copyToClipboard, exportCanvasBlob } from '@/components/editor/export-di
 import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
 import { modKey } from '@/hooks/use-keyboard-shortcuts';
 import { captureScreenRegion, isScreenCaptureSupported } from '@/lib/screen-capture';
+import { capImageSize } from '@/lib/image-load';
 import { clearAutosave } from '@/lib/editor/autosave';
 import { useIsMobile } from '@/hooks/use-mobile';
 import type { ExportFormat } from '@/types/editor';
@@ -141,7 +142,8 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
         else toastError('Capture failed', result.message);
         return;
       }
-      useEditorStore.getState().setBackgroundImage(result.image);
+      const { image: capped } = await capImageSize(result.image);
+      useEditorStore.getState().setBackgroundImage(capped);
       toastSuccess('Captured', 'Screenshot loaded');
     } catch {
       toastError('Capture failed', 'Try again');

@@ -9,6 +9,9 @@ import GoogleAnalytics from "@/components/google-analytics";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
+// Caveat: the classic marker-style handwriting face. It is a variable font
+// (400-700), so a real 600 weight renders as a readable medium marker instead
+// of a synthesized bold - keeps the handwritten character without the scribble.
 const caveat = Caveat({ variable: "--font-handwritten", subsets: ["latin"], weight: ["400", "600", "700"] });
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://snapty.pages.dev";

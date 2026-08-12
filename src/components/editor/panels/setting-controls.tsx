@@ -51,7 +51,7 @@ export function IconToggle({
   );
 }
 
-/** Compact visual for the vertical settings rail — shows the active value at a glance. */
+/** Compact visual for the vertical settings rail - shows the active value at a glance. */
 export function SettingRailPreview({ settingKey }: { settingKey: SettingKey }) {
   const s = useEditorStore();
   const label = settingValueLabel(settingKey, s);
@@ -108,7 +108,7 @@ export function SettingRailPreview({ settingKey }: { settingKey: SettingKey }) {
   }
   if (settingKey === 'arrowheads') {
     const sym = s.startArrowhead !== 'none' && s.endArrowhead !== 'none'
-      ? '↔' : s.endArrowhead !== 'none' ? '→' : '—';
+      ? '↔' : s.endArrowhead !== 'none' ? '→' : '-';
     return <span className="text-xs font-medium leading-none">{sym}</span>;
   }
   if (settingKey === 'fontFamily') {
@@ -164,6 +164,12 @@ export function settingValueLabel(
       return 'None';
     case 'fontFamily':
       return isHandwritten(s.fontFamily) ? 'Handwritten' : 'Standard';
+    case 'fontStyle':
+      return s.fontStyle.includes('bold')
+        ? s.fontStyle.includes('italic') ? 'Bold italic' : 'Bold'
+        : s.fontStyle.includes('italic') ? 'Italic' : 'Normal';
+    case 'textAlign':
+      return s.textAlign[0].toUpperCase() + s.textAlign.slice(1);
     case 'stepNumbering':
       return String(s.stepCounter);
     default: {
@@ -387,6 +393,55 @@ export function SettingControl({ spec }: { spec: SettingSpec }) {
         </div>
       );
 
+    case 'fontStyle': {
+      const isBold = s.fontStyle.includes('bold');
+      const isItalic = s.fontStyle.includes('italic');
+      const apply = (bold: boolean, italic: boolean) => {
+        // Konva fontStyle is a single string: 'normal' | 'bold' | 'italic' | 'bold italic'.
+        const next = bold && italic ? 'bold italic' : bold ? 'bold' : italic ? 'italic' : 'normal';
+        s.setFontStyle(next);
+      };
+      return (
+        <div className="flex gap-0.5">
+          <IconToggle active={isBold} label="Bold" onClick={() => apply(!isBold, isItalic)}>
+            <span className="text-xs font-bold">B</span>
+          </IconToggle>
+          <IconToggle active={isItalic} label="Italic" onClick={() => apply(isBold, !isItalic)}>
+            <span className="text-xs italic">I</span>
+          </IconToggle>
+        </div>
+      );
+    }
+
+    case 'textAlign':
+      return (
+        <div className="flex gap-0.5">
+          {(['left', 'center', 'right'] as const).map((a) => (
+            <IconToggle
+              key={a}
+              active={s.textAlign === a}
+              label={a[0].toUpperCase() + a.slice(1)}
+              onClick={() => s.setTextAlign(a)}
+            >
+              <svg width="16" height="10" viewBox="0 0 16 10" aria-hidden>
+                <line
+                  x1={a === 'right' ? 4 : 1} y1="1" x2="15" y2="1"
+                  stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+                />
+                <line
+                  x1={a === 'left' ? 1 : a === 'center' ? 4.5 : 7} y1="5" x2="15" y2="5"
+                  stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+                />
+                <line
+                  x1={a === 'left' ? 1 : a === 'center' ? 3 : 10} y1="9" x2="15" y2="9"
+                  stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+                />
+              </svg>
+            </IconToggle>
+          ))}
+        </div>
+      );
+
     case 'stepNumbering':
       return (
         <div className="space-y-1.5">
@@ -413,7 +468,8 @@ export function SettingControl({ spec }: { spec: SettingSpec }) {
       );
 
     default: {
-      // Every remaining setting is a plain numeric slider.
+      // Every remaining setting is a plain numeric slider. A drag is one undo
+      // gesture: changes apply live, history is committed once on release.
       if (spec.kind !== 'slider') return null;
       const value = (s as unknown as Record<string, number>)[spec.key] ?? spec.min;
       const onChange = sliderSetterFor(s, spec.key);
@@ -424,6 +480,8 @@ export function SettingControl({ spec }: { spec: SettingSpec }) {
           min={spec.min}
           max={spec.max}
           step={spec.step}
+          onPointerDown={() => s.beginSettingGesture()}
+          onValueCommit={() => s.endSettingGesture()}
           onValueChange={([v]) => onChange(v)}
         />
       );
@@ -491,6 +549,8 @@ export function SettingMeter({ spec }: { spec: SettingSpec }) {
       min={spec.min}
       max={spec.max}
       step={spec.step}
+      onPointerDown={() => s.beginSettingGesture()}
+      onValueCommit={() => s.endSettingGesture()}
       onValueChange={([v]) => onChange(v)}
       aria-label={spec.label}
     />

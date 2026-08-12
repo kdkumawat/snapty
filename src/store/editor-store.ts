@@ -7,6 +7,7 @@ import { HANDWRITTEN_FONT } from '@/types/editor';
 import { trackPageView } from '@/lib/analytics';
 import { getElementBounds, unionBounds } from '@/lib/editor/selection';
 import { applySettingToElement } from '@/lib/editor/settings-sync';
+import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
 import type { SettingKey } from '@/lib/editor/tool-settings';
 
 // Persisted settings (restored on refresh)
@@ -15,6 +16,8 @@ const PERSIST_KEYS = [
   'opacity', 'cornerRadius', 'exportFormat', 'stepStartNumber', 'stepRadius',
   'exportQuality', 'gridEnabled', 'blurRadius', 'pixelSize', 'highlighterWidth',
   'strokeStyle', 'fillStyle', 'roughness', 'magnification', 'endArrowhead', 'startArrowhead',
+  'fontStyle', 'textAlign',
+  'transparentExport', 'keepOriginal',
   // panelCollapsed is responsive/session - not persisted across reloads
 ] as const;
 type PersistKey = typeof PERSIST_KEYS[number];
@@ -33,8 +36,9 @@ function savePersisted(state: Record<string, any>) {
   try {
     const toSave: Record<string, any> = {};
     for (const k of PERSIST_KEYS) toSave[k] = state[k];
-    // gridEnabled lives on canvasStyle
+    // Members that live on canvasStyle (grid + transparent export)
     toSave.gridEnabled = state.canvasStyle?.gridEnabled ?? state.gridEnabled;
+    toSave.transparentExport = state.canvasStyle?.transparentExport ?? false;
     localStorage.setItem('snapty-settings', JSON.stringify(toSave));
   } catch { /* quota exceeded */ }
 }
@@ -56,6 +60,8 @@ export type HistorySnapshot = {
   activeTool?: ToolType;
   /** Next step number at snapshot time, so undo does not skip a badge number. */
   stepCounter?: number;
+  /** Canvas styling (padding / bg / frame / transparent) so style edits are undoable. */
+  canvasStyle: CanvasStyle;
 };
 
 interface EditorState {
@@ -73,6 +79,12 @@ interface EditorState {
   fontSize: number;
   /** Font stack for new text annotations. See HANDWRITTEN_FONT / STANDARD_FONT. */
   fontFamily: string;
+  /** CSS font-style string for new/selected text ('normal' | 'italic' | 'bold 24px ...'). */
+  fontStyle: string;
+  /** Text alignment for new/selected text annotations. */
+  textAlign: 'left' | 'center' | 'right';
+  setFontStyle: (style: string) => void;
+  setTextAlign: (align: 'left' | 'center' | 'right') => void;
   opacity: number;
   cornerRadius: number;
   blurRadius: number;
@@ -106,6 +118,12 @@ interface EditorState {
   startArrowhead: Arrowhead;
   imageLocked: boolean;
   annotationsLocked: boolean;
+  /** Keep full resolution when importing very large images (default off: downscale past ~4096px). */
+  keepOriginal: boolean;
+  setKeepOriginal: (v: boolean) => void;
+  /** Slider-style edits: coalesce per-gesture history pushes into one undo step. */
+  beginSettingGesture: () => void;
+  endSettingGesture: () => void;
 
   launchEditor: () => void;
   setImageLoading: (loading: boolean) => void;
@@ -143,6 +161,7 @@ interface EditorState {
   setStrokeWidth: (width: number) => void;
   setFontSize: (size: number) => void;
   setFontFamily: (family: string) => void;
+
   setOpacity: (opacity: number) => void;
   setCornerRadius: (radius: number) => void;
   setBlurRadius: (r: number) => void;
@@ -198,6 +217,8 @@ const defaults: Record<string, any> = {
   strokeWidth: 3,
   fontSize: 24,
   fontFamily: HANDWRITTEN_FONT,
+  fontStyle: 'normal',
+  textAlign: 'left' as 'left' | 'center' | 'right',
   opacity: 1,
   cornerRadius: 8,
   exportFormat: 'png' as ExportFormat,
@@ -224,8 +245,8 @@ function normalizeExportQuality(q: unknown): number {
 }
 
 const persisted = loadPersisted();
-const editorPath = '/';
-const infoPath = '/info';
+const editorPath = '/editor';
+const infoPath = '/';
 
 function isStandalonePwa(): boolean {
   if (typeof window === 'undefined') return false;
@@ -233,6 +254,34 @@ function isStandalonePwa(): boolean {
   return window.matchMedia('(display-mode: standalone)').matches
     || window.matchMedia('(display-mode: window-controls-overlay)').matches
     || nav.standalone === true;
+}
+
+/**
+ * Space taken up by the floating toolbar (top) and the settings rail (left)
+ * that overlaps the canvas, so fit-to-screen never hides content behind them.
+ */
+function getChromeReserve(container: HTMLElement | null): { top: number; left: number } {
+  if (!container || typeof document === 'undefined') return { top: 0, left: 0 };
+  const cRect = container.getBoundingClientRect();
+  let top = 0;
+  let left = 0;
+  const toolbar = document.querySelector('[data-snapty-toolbar]') as HTMLElement | null;
+  if (toolbar) {
+    const r = toolbar.getBoundingClientRect();
+    if (r.bottom > cRect.top && r.bottom < cRect.bottom) {
+      // The contextual tool-tip line sits just under the toolbar; reserve it too
+      // so a fitted image never slides under either floating strip.
+      top = Math.max(top, r.bottom - cRect.top + 30);
+    }
+  }
+  const rail = document.querySelector('[data-snapty-rail]') as HTMLElement | null;
+  if (rail) {
+    const r = rail.getBoundingClientRect();
+    if (r.right > cRect.left && r.right < cRect.right) {
+      left = Math.max(left, r.right - cRect.left + 12);
+    }
+  }
+  return { top, left };
 }
 
 function syncEditorRoute(launched: boolean) {
@@ -247,21 +296,33 @@ function syncEditorRoute(launched: boolean) {
   const nextPath = launched ? editorPath : infoPath;
   const samePath = window.location.pathname === nextPath;
   const hasLegacyHash = window.location.hash === '#editor';
-  const onLegacyEditor = window.location.pathname === '/editor';
-  if (!samePath || hasLegacyHash || onLegacyEditor) {
-    const method = (hasLegacyHash || onLegacyEditor) ? 'replaceState' : 'pushState';
+  const onLegacyInfo = window.location.pathname === '/info';
+  if (!samePath || hasLegacyHash || onLegacyInfo) {
+    const method = (hasLegacyHash || onLegacyInfo) ? 'replaceState' : 'pushState';
     window.history[method]({}, '', nextPath);
     trackPageView(nextPath);
   }
 }
 
-// Editor is the default surface (/ and legacy /editor). Landing lives at /info.
+// Editor lives at /editor; the marketing surface is the root.
 const shouldAutoLaunch = typeof window === 'undefined'
   ? true
-  : window.location.pathname !== infoPath;
+  : window.location.pathname !== infoPath && window.location.pathname !== '/info';
 
 const generateId = () => `el${Math.random().toString(36).slice(2, 11)}`;
-const cloneElements = (els: EditorElement[]) => JSON.parse(JSON.stringify(els)) as EditorElement[];
+/**
+ * Elements are immutable - every update maps to fresh objects and nothing
+ * mutates an element in place - so history snapshots can share element
+ * references instead of deep-cloning the whole array on every edit. This turns
+ * undo/redo from O(n) JSON clone per mutation into O(1) array copy.
+ *
+ * INVARIANT: snapshots share element references, so no code may ever mutate an
+ * element object (or its nested arrays like `points`) in place - that would
+ * corrupt every history entry that shares it. Always spread-copy: `{ ...el }`,
+ * `[...pts]`. If a future feature needs in-place mutation, this must become a
+ * deep clone again.
+ */
+const cloneElements = (els: EditorElement[]) => [...els] as EditorElement[];
 
 type HistorySource = {
   _history: HistorySnapshot[];
@@ -270,6 +331,7 @@ type HistorySource = {
   imageSize: { width: number; height: number };
   activeTool: ToolType;
   stepCounter: number;
+  canvasStyle: CanvasStyle;
 };
 
 function makeSnapshot(
@@ -278,6 +340,7 @@ function makeSnapshot(
   imageSize: { width: number; height: number },
   activeTool?: ToolType,
   stepCounter?: number,
+  canvasStyle?: CanvasStyle,
 ): HistorySnapshot {
   return {
     elements: cloneElements(elements),
@@ -285,8 +348,12 @@ function makeSnapshot(
     imageSize: { width: imageSize.width, height: imageSize.height },
     activeTool,
     stepCounter,
+    canvasStyle: canvasStyle ?? initialCanvasStyle,
   };
 }
+
+/** Bounded history: drop the oldest entries so undo stays cheap on long sessions. */
+const MAX_HISTORY = 100;
 
 /** Push a new history entry. Pass `image` when the background changed (crop). */
 function pushHistory(
@@ -296,14 +363,23 @@ function pushHistory(
 ) {
   const imageDataURL = image ? image.imageDataURL : s.imageDataURL;
   const imageSize = image ? image.imageSize : s.imageSize;
-  const snap = makeSnapshot(elements, imageDataURL, imageSize, s.activeTool, s.stepCounter);
+  const snap = makeSnapshot(
+    elements, imageDataURL, imageSize, s.activeTool, s.stepCounter, s.canvasStyle,
+  );
+  const next = [...s._history.slice(0, s._historyIndex + 1), snap];
+  let index = s._historyIndex + 1;
+  if (next.length > MAX_HISTORY) {
+    const drop = next.length - MAX_HISTORY;
+    next.splice(0, drop);
+    index -= drop;
+  }
   return {
     elements,
     ...(image
       ? { imageDataURL: image.imageDataURL, imageSize: { ...image.imageSize } }
       : {}),
-    _history: [...s._history.slice(0, s._historyIndex + 1), snap],
-    _historyIndex: s._historyIndex + 1,
+    _history: next,
+    _historyIndex: index,
   };
 }
 
@@ -312,9 +388,10 @@ function emptyHistory(
   imageSize: { width: number; height: number } = { width: 0, height: 0 },
   activeTool?: ToolType,
   stepCounter?: number,
+  canvasStyle: CanvasStyle = initialCanvasStyle,
 ) {
   return {
-    _history: [makeSnapshot([], imageDataURL, imageSize, activeTool, stepCounter)] as HistorySnapshot[],
+    _history: [makeSnapshot([], imageDataURL, imageSize, activeTool, stepCounter, canvasStyle)] as HistorySnapshot[],
     _historyIndex: 0,
   };
 }
@@ -327,6 +404,14 @@ function emptyHistory(
  * instead of three hand-maintained type lists that had already drifted apart.
  * Returns `{}` when nothing in the selection accepts the setting.
  */
+/**
+ * Slider-style editing: while a gesture is active, settings changes apply
+ * silently and one history entry is pushed on endSettingGesture instead of
+ * one per pointer tick (dragging opacity used to create dozens of undos).
+ */
+let settingsGestureActive = false;
+let settingsGestureDirty = false;
+
 function applyToSelection(
   s: EditorState,
   key: SettingKey,
@@ -343,7 +428,12 @@ function applyToSelection(
     changed = true;
     return { ...el, ...patch } as EditorElement;
   });
-  return changed ? pushHistory(s, els) : {};
+  if (!changed) return {};
+  if (settingsGestureActive) {
+    settingsGestureDirty = true;
+    return { elements: els };
+  }
+  return pushHistory(s, els);
 }
 
 /** Encode current HTMLImageElement for history (reuse data: URLs as-is). */
@@ -393,6 +483,7 @@ function applyHistorySnapshot(
       elements: cloneElements(snap.elements),
       _historyIndex: index,
       selectedElementIds: [],
+      canvasStyle: snap.canvasStyle,
       ...counterPatch,
     });
     return;
@@ -407,6 +498,7 @@ function applyHistorySnapshot(
       backgroundImage: null,
       imageDataURL: null,
       imageSize: { width: 0, height: 0 },
+      canvasStyle: snap.canvasStyle,
       ...toolPatch,
       ...counterPatch,
     });
@@ -423,6 +515,7 @@ function applyHistorySnapshot(
       backgroundImage: img,
       imageDataURL: snap.imageDataURL,
       imageSize: { width: snap.imageSize.width, height: snap.imageSize.height },
+      canvasStyle: snap.canvasStyle,
       ...toolPatch,
       ...counterPatch,
     });
@@ -434,6 +527,7 @@ function applyHistorySnapshot(
       elements: cloneElements(snap.elements),
       _historyIndex: index,
       selectedElementIds: [],
+      canvasStyle: snap.canvasStyle,
       ...toolPatch,
       ...counterPatch,
     });
@@ -454,6 +548,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   strokeWidth: persisted.strokeWidth ?? defaults.strokeWidth,
   fontSize: persisted.fontSize ?? defaults.fontSize,
   fontFamily: persisted.fontFamily ?? defaults.fontFamily,
+  fontStyle: persisted.fontStyle ?? defaults.fontStyle,
+  textAlign: persisted.textAlign ?? defaults.textAlign,
   opacity: persisted.opacity ?? defaults.opacity,
   cornerRadius: persisted.cornerRadius ?? defaults.cornerRadius,
   blurRadius: persisted.blurRadius ?? defaults.blurRadius,
@@ -465,7 +561,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   stepStartNumber: persisted.stepStartNumber ?? defaults.stepStartNumber,
   stepRadius: persisted.stepRadius ?? defaults.stepRadius,
   ...emptyHistory(),
-  canvasStyle: { ...initialCanvasStyle, gridEnabled: persisted.gridEnabled ?? initialCanvasStyle.gridEnabled },
+  canvasStyle: {
+    ...initialCanvasStyle,
+    gridEnabled: persisted.gridEnabled ?? initialCanvasStyle.gridEnabled,
+    transparentExport: persisted.transparentExport ?? initialCanvasStyle.transparentExport,
+  },
   exportFormat: persisted.exportFormat ?? defaults.exportFormat,
   exportQuality: normalizeExportQuality(persisted.exportQuality ?? defaults.exportQuality),
   showExportDialog: false,
@@ -483,6 +583,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   startArrowhead: persisted.startArrowhead ?? defaults.startArrowhead,
   imageLocked: false,
   annotationsLocked: false,
+  keepOriginal: persisted.keepOriginal ?? false,
   // Hand-drawn mode: default true unless explicitly disabled in previous settings
   handDrawn: (typeof window !== 'undefined')
     ? ((): boolean => { try { return JSON.parse(localStorage.getItem('snapty-tool-settings') || '{"handDrawn":true}').handDrawn !== false; } catch { return true; } })()
@@ -528,6 +629,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
   setImageLocked: (v) => set({ imageLocked: v }),
   setAnnotationsLocked: (v) => set({ annotationsLocked: v }),
+  setKeepOriginal: (v) => {
+    set({ keepOriginal: v });
+    savePersisted({ ...get(), keepOriginal: v });
+  },
+  beginSettingGesture: () => { settingsGestureActive = true; settingsGestureDirty = false; },
+  endSettingGesture: () => {
+    settingsGestureActive = false;
+    if (settingsGestureDirty) {
+      settingsGestureDirty = false;
+      // One undo step for the whole gesture (e.g. one slider drag).
+      set((s) => pushHistory(s, s.elements));
+    }
+  },
   setShowCommandPalette: (show) => set({ showCommandPalette: show }),
   setShowSettings: (show) => set({ showSettings: show }),
 
@@ -607,7 +721,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         imageDataURL: dataURL,
         imageSize: size,
         elements: [], selectedElementIds: [],
-        ...emptyHistory(dataURL, size),
+        ...emptyHistory(dataURL, size, undefined, undefined, get().canvasStyle),
         stepCounter: start, isEditorLaunched: true,
         imageLoading: false,
       });
@@ -630,7 +744,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         imageDataURL: null,
         imageSize: { width: 0, height: 0 },
         elements: [], selectedElementIds: [],
-        ...emptyHistory(),
+        ...emptyHistory(undefined, undefined, undefined, undefined, get().canvasStyle),
         stepCounter: get().stepStartNumber,
         zoom: 1, stagePosition: { x: 0, y: 0 },
         isEditorLaunched: true,
@@ -642,7 +756,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       imageDataURL: null,
       imageSize: { width: 0, height: 0 },
       elements: [], selectedElementIds: [],
-      ...emptyHistory(),
+      ...emptyHistory(undefined, undefined, undefined, undefined, get().canvasStyle),
       stepCounter: get().stepStartNumber,
       zoom: 1, stagePosition: { x: 0, y: 0 },
       isEditorLaunched: false,
@@ -659,7 +773,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       imageDataURL: null,
       imageSize: { width: 0, height: 0 },
       elements: [], selectedElementIds: [],
-      ...emptyHistory(),
+      ...emptyHistory(undefined, undefined, undefined, undefined, get().canvasStyle),
       stepCounter: get().stepStartNumber,
       zoom: 1, stagePosition: { x: 0, y: 0 },
       // intentionally keep activeTool, colors, sizes, canvasStyle
@@ -682,16 +796,24 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ? container.clientHeight
       : Math.max(200, (root?.clientHeight || window.innerHeight) - 96);
     if (cw < 40 || ch < 40) return;
+    // Reserve the floating chrome so a fitted image is never hidden behind the
+    // top toolbar or the left settings rail (fullscreen pastes used to slip
+    // underneath both). Measured from the live DOM so it tracks whatever is
+    // actually on screen, and only counts what overlaps the canvas.
+    const reserve = getChromeReserve(container);
+    const availW = cw - reserve.left;
+    const availH = ch - reserve.top;
     const framePad = canvasStyle.padding || 0;
-    const contentW = imageSize.width + framePad * 2;
-    const contentH = imageSize.height + framePad * 2;
-    const pad = Math.min(80, Math.max(16, Math.min(cw, ch) * 0.08));
-    const z = Math.min((cw - pad) / contentW, (ch - pad) / contentH, 1);
+    const ins = DEVICE_FRAME_INSETS[canvasStyle.deviceFrame];
+    const contentW = imageSize.width + framePad * 2 + ins.left + ins.right;
+    const contentH = imageSize.height + framePad * 2 + ins.top + ins.bottom;
+    const pad = Math.min(80, Math.max(16, Math.min(availW, availH) * 0.08));
+    const z = Math.min((availW - pad) / contentW, (availH - pad) / contentH, 1);
     set({
       zoom: Math.max(0.05, z),
       stagePosition: {
-        x: (cw - contentW * z) / 2,
-        y: (ch - contentH * z) / 2,
+        x: reserve.left + (availW - contentW * z) / 2,
+        y: reserve.top + (availH - contentH * z) / 2,
       },
     });
   },
@@ -702,8 +824,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const cw = container?.clientWidth || window.innerWidth;
     const ch = container?.clientHeight || window.innerHeight;
     const framePad = canvasStyle.padding || 0;
-    const contentW = imageSize.width + framePad * 2;
-    const contentH = imageSize.height + framePad * 2;
+    const ins = DEVICE_FRAME_INSETS[canvasStyle.deviceFrame];
+    const contentW = imageSize.width + framePad * 2 + ins.left + ins.right;
+    const contentH = imageSize.height + framePad * 2 + ins.top + ins.bottom;
     set({
       zoom: 1,
       stagePosition: {
@@ -777,6 +900,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setFontFamily: (family) => {
     set((s) => ({ fontFamily: family, ...applyToSelection(s, 'fontFamily', family) }));
     savePersisted({ ...get(), fontFamily: family });
+  },
+  setFontStyle: (style) => {
+    set((s) => ({ fontStyle: style, ...applyToSelection(s, 'fontStyle', style) }));
+    savePersisted({ ...get(), fontStyle: style });
+  },
+  setTextAlign: (align) => {
+    set((s) => ({ textAlign: align, ...applyToSelection(s, 'textAlign', align) }));
+    savePersisted({ ...get(), textAlign: align });
   },
   setOpacity: (opacity) => {
     const o = Math.max(0, Math.min(1, opacity));
@@ -951,7 +1082,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       const updated = { ...s.canvasStyle, ...style };
       if ('gridEnabled' in style) savePersisted({ ...get(), canvasStyle: updated, gridEnabled: updated.gridEnabled });
-      return { canvasStyle: updated };
+      // Style edits are undoable; sliders coalesce via the settings gesture.
+      // (Same gate as applyToSelection - a padding drag must be one undo step.)
+      if (settingsGestureActive) {
+        settingsGestureDirty = true;
+        return { canvasStyle: updated };
+      }
+      return { canvasStyle: updated, ...pushHistory(s, s.elements) };
     });
     if ('padding' in style && style.padding !== prevPad) {
       // Re-fit so the framed image stays centered when padding changes
@@ -974,7 +1111,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       imageSize: { width: 0, height: 0 }, zoom: 1, stagePosition: { x: 0, y: 0 },
       isEditorLaunched: true,
       elements: [], selectedElementIds: [],
-      ...emptyHistory(),
+      ...emptyHistory(undefined, undefined, undefined, undefined, get().canvasStyle),
       showExportDialog: false, showHelpDialog: false,
     });
   },

@@ -2,9 +2,9 @@
   "name": "Snapty",
   "short_name": "Snapty",
   "description": "Privacy-first browser screenshot editor. Annotate, style, and export - all on your device.",
-  "start_url": "/",
+  "start_url": "/editor",
   "scope": "/",
-  "id": "/",
+  "id": "/editor",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
   "background_color": "#0a0a0a",
@@ -45,7 +45,38 @@
     }
   ],
   "categories": ["productivity", "utilities", "photo"],
-  "screenshots": [],
+  "screenshots": [
+    {
+      "src": "/screenshots/desktop.png",
+      "sizes": "1280x900",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Annotate, style, and export screenshots entirely in your browser"
+    },
+    {
+      "src": "/screenshots/mobile.png",
+      "sizes": "480x1000",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Full editing on your phone - paste, draw, copy"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "New annotation",
+      "short_name": "New",
+      "description": "Open the editor with a fresh canvas",
+      "url": "/editor",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Keyboard shortcuts",
+      "short_name": "Shortcuts",
+      "description": "See every Snapty shortcut",
+      "url": "/editor?help=1",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ],
   "prefer_related_applications": false,
   "handle_links": "not-preferred",
   "launch_handler": {
