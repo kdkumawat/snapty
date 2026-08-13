@@ -10,23 +10,68 @@ import {
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useEditorStore } from '@/store/editor-store';
 import type { BgStyle, DeviceFrame } from '@/types/editor';
 import { DEVICE_FRAME_LABELS, DEVICE_FRAME_OPTIONS } from '@/lib/editor/device-frames';
 import { SegmentedControl } from '@/components/editor/ui/segmented-control';
 import { toastSuccess } from '@/lib/app-toast';
-import { openInBrowser } from '@/lib/open-external';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { isScreenCaptureSupported } from '@/lib/screen-capture';
 import { readAnalyticsConsent, setAnalyticsConsent } from '@/components/google-analytics';
+import { isRecoveryPromptEnabled, setRecoveryPromptEnabled } from '@/lib/editor/autosave';
 import { cn } from '@/lib/utils';
 
 const actionBtn =
   'h-10 rounded-lg border border-border text-xs font-medium hover:bg-secondary transition-colors inline-flex items-center justify-center gap-1.5';
 
+const sectionLabel = 'text-[11px] font-semibold uppercase tracking-wider text-muted-foreground';
+
 /**
- * Canvas settings slide-in sidebar. Theme, locks, padding, and export actions
- * live here; tool stroke settings stay in the left properties panel.
+ * One-column toggle row: label + app-styled hover info on the left, switch on
+ * the right. The description lives in the Tooltip so rows stay short.
+ */
+function CompactToggle({
+  label,
+  checked,
+  onChange,
+  info,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  info?: string;
+}) {
+  const row = (
+    <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-secondary/25 px-3 py-2">
+      <span className="text-[13px] font-medium flex items-center gap-1.5 min-w-0">
+        <span className="truncate">{label}</span>
+        {info && (
+          <Info className="w-3.5 h-3.5 shrink-0 text-muted-foreground/70" />
+        )}
+      </span>
+      <Switch checked={checked} onCheckedChange={onChange} className="shrink-0" />
+    </div>
+  );
+
+  // The app-styled tooltip shows on hover over the whole row (not just the
+  // info icon), so descriptions are always one hover away.
+  if (!info) return row;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {row}
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[15rem]">
+        {info}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * Canvas settings slide-in sidebar. Theme, locks, toggles, padding, and export
+ * actions live here; tool stroke settings stay in the left properties panel.
  */
 export default function SettingsDialog() {
   const open = useEditorStore((s) => s.showSettings);
@@ -39,7 +84,9 @@ export default function SettingsDialog() {
   const setAnnotationsLocked = useEditorStore((s) => s.setAnnotationsLocked);
   const keepOriginal = useEditorStore((s) => s.keepOriginal);
   const setKeepOriginal = useEditorStore((s) => s.setKeepOriginal);
+  const setInfoDialog = useEditorStore((s) => s.setInfoDialog);
   const [analyticsOn, setAnalyticsOn] = React.useState(() => readAnalyticsConsent());
+  const [recoveryPrompt, setRecoveryPrompt] = React.useState(() => isRecoveryPromptEnabled());
   const handDrawn = useEditorStore((s) => s.handDrawn);
   const setHandDrawn = useEditorStore((s) => s.setHandDrawn);
   const resetToolSettings = useEditorStore((s) => s.resetToolSettings);
@@ -100,10 +147,10 @@ export default function SettingsDialog() {
               </button>
             </div>
 
-            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4 space-y-5">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4 space-y-4">
               {isMobile && (
                 <div className="space-y-2">
-                  <Label className="text-xs text-muted-foreground">Actions</Label>
+                  <Label className={sectionLabel}>Actions</Label>
                   <div className="grid grid-cols-2 gap-1.5">
                     {isScreenCaptureSupported() && (
                       <button
@@ -141,22 +188,22 @@ export default function SettingsDialog() {
                           <Download className="w-4 h-4" />
                           Export
                         </button>
-                    <button
-                      type="button"
-                      className={actionBtn}
-                      onClick={() => { setOpen(false); window.dispatchEvent(new CustomEvent('snapty-share')); }}
-                    >
-                      <Share2 className="w-4 h-4" />
-                      Share
-                    </button>
-                  </>
-                )}
+                        <button
+                          type="button"
+                          className={actionBtn}
+                          onClick={() => { setOpen(false); window.dispatchEvent(new CustomEvent('snapty-share')); }}
+                        >
+                          <Share2 className="w-4 h-4" />
+                          Share
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               )}
 
               <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground">Theme</Label>
+                <Label className={sectionLabel}>Theme</Label>
                 <SegmentedControl<'light' | 'dark' | 'system'>
                   value={(mounted ? theme : 'system') as 'light' | 'dark' | 'system'}
                   onChange={setTheme}
@@ -169,61 +216,65 @@ export default function SettingsDialog() {
                 />
               </div>
 
-              <div className="panel-toggle-row">
-                <div>
-                  <Label className="text-sm">Hand-drawn</Label>
-                  <p className="text-[11px] text-muted-foreground">Sketchy Excalidraw-like strokes</p>
-                </div>
-                <Switch checked={handDrawn} onCheckedChange={setHandDrawn} />
-              </div>
-
-              <div className="panel-toggle-row">
-                <div>
-                  <Label className="text-sm">Dot grid</Label>
-                  <p className="text-[11px] text-muted-foreground">Workspace and exported screenshot grid</p>
-                </div>
-                <Switch
-                  checked={canvasStyle.gridEnabled}
-                  onCheckedChange={(v) => setCanvasStyle({ gridEnabled: v })}
+              <div className="space-y-1.5">
+                <Label className={sectionLabel}>General</Label>
+                <CompactToggle
+                  label="Hand-drawn"
+                  checked={handDrawn}
+                  onChange={setHandDrawn}
+                  info="Sketchy Excalidraw-like strokes for shapes and freehand"
                 />
-              </div>
-
-              <div className="panel-toggle-row">
-                <div>
-                  <Label className="text-sm">Lock image</Label>
-                  <p className="text-[11px] text-muted-foreground">Block replace, drop, and capture</p>
-                </div>
-                <Switch checked={imageLocked} onCheckedChange={setImageLocked} />
-              </div>
-
-              <div className="panel-toggle-row">
-                <div>
-                  <Label className="text-sm">Lock annotations</Label>
-                  <p className="text-[11px] text-muted-foreground">Freeze move, resize, and draw edits</p>
-                </div>
-                <Switch checked={annotationsLocked} onCheckedChange={setAnnotationsLocked} />
-              </div>
-
-              <div className="panel-toggle-row">
-                <div>
-                  <Label className="text-sm">Keep original resolution</Label>
-                  <p className="text-[11px] text-muted-foreground">Huge images (8K, 100MP) are downscaled to ~4096px for speed. Enable to keep full resolution.</p>
-                </div>
-                <Switch checked={keepOriginal} onCheckedChange={setKeepOriginal} />
-              </div>
-
-              <div className="panel-toggle-row">
-                <div>
-                  <Label className="text-sm">Usage analytics</Label>
-                  <p className="text-[11px] text-muted-foreground">Anonymous page views only. Your images never leave your device.</p>
-                </div>
-                <Switch
+                <CompactToggle
+                  label="Dot grid"
+                  checked={canvasStyle.gridEnabled}
+                  onChange={(v) => setCanvasStyle({ gridEnabled: v })}
+                  info="Workspace and exported screenshot grid"
+                />
+                <CompactToggle
+                  label="Lock image"
+                  checked={imageLocked}
+                  onChange={setImageLocked}
+                  info="Block replace, drop, and capture"
+                />
+                <CompactToggle
+                  label="Lock annotations"
+                  checked={annotationsLocked}
+                  onChange={setAnnotationsLocked}
+                  info="Freeze move, resize, and draw edits"
+                />
+                <CompactToggle
+                  label="Keep resolution"
+                  checked={keepOriginal}
+                  onChange={setKeepOriginal}
+                  info="Huge images (8K, 100MP) are downscaled to ~4096px for speed. Enable to keep full resolution."
+                />
+                <CompactToggle
+                  label="Usage analytics"
                   checked={analyticsOn}
-                  onCheckedChange={(v) => {
+                  onChange={(v) => {
                     setAnalyticsOn(v);
                     setAnalyticsConsent(v);
                     toastSuccess(v ? 'Analytics on' : 'Analytics off', v ? 'Anonymous usage data shared' : 'No usage data is sent');
                   }}
+                  info="Anonymous page views only. Your images never leave your device."
+                />
+                <CompactToggle
+                  label="Recovery prompt"
+                  checked={recoveryPrompt}
+                  onChange={(v) => {
+                    setRecoveryPrompt(v);
+                    setRecoveryPromptEnabled(v);
+                    toastSuccess(v ? 'Recovery prompt on' : 'Recovery prompt off', v
+                      ? 'You will be asked to recover drafts again'
+                      : 'Drafts are still saved - you just won\u2019t be asked');
+                  }}
+                  info="Ask to recover autosaved drafts when you return"
+                />
+                <CompactToggle
+                  label="Shadow"
+                  checked={canvasStyle.shadowEnabled}
+                  onChange={(v) => setCanvasStyle({ shadowEnabled: v })}
+                  info="Drop shadow behind the exported card"
                 />
               </div>
 
@@ -245,7 +296,7 @@ export default function SettingsDialog() {
               </div>
 
               <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground">Background</Label>
+                <Label className={sectionLabel}>Background</Label>
                 <SegmentedControl<BgStyle>
                   value={canvasStyle.bgStyle}
                   onChange={(v) => setCanvasStyle({ bgStyle: v })}
@@ -271,7 +322,7 @@ export default function SettingsDialog() {
               </div>
 
               <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground">Device frame</Label>
+                <Label className={sectionLabel}>Device frame</Label>
                 <div className="grid grid-cols-3 gap-1.5">
                   {DEVICE_FRAME_OPTIONS.map((f: DeviceFrame) => (
                     <button
@@ -318,14 +369,6 @@ export default function SettingsDialog() {
                 />
               </div>
 
-              <div className="panel-toggle-row">
-                <Label className="text-sm">Shadow</Label>
-                <Switch
-                  checked={canvasStyle.shadowEnabled}
-                  onCheckedChange={(v) => setCanvasStyle({ shadowEnabled: v })}
-                />
-              </div>
-
               <div className="pt-2 border-t border-border space-y-2">
                 <button
                   type="button"
@@ -338,28 +381,30 @@ export default function SettingsDialog() {
                   <Keyboard className="w-4 h-4" />
                   Keyboard shortcuts
                 </button>
-                <button
-                  type="button"
-                  className="w-full h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary transition-colors inline-flex items-center justify-center gap-2"
-                  onClick={() => {
-                    setOpen(false);
-                    openInBrowser('/privacy');
-                  }}
-                >
-                  <Info className="w-4 h-4" />
-                  Privacy
-                </button>
-                <button
-                  type="button"
-                  className="w-full h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary transition-colors inline-flex items-center justify-center gap-2"
-                  onClick={() => {
-                    setOpen(false);
-                    openInBrowser('/');
-                  }}
-                >
-                  <Info className="w-4 h-4" />
-                  About Snapty
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    className={cn(actionBtn, 'text-sm')}
+                    onClick={() => {
+                      setOpen(false);
+                      setInfoDialog('about');
+                    }}
+                  >
+                    <Info className="w-4 h-4" />
+                    About
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(actionBtn, 'text-sm')}
+                    onClick={() => {
+                      setOpen(false);
+                      setInfoDialog('privacy');
+                    }}
+                  >
+                    <Info className="w-4 h-4" />
+                    Privacy
+                  </button>
+                </div>
               </div>
 
               <div className="pt-2 border-t border-border space-y-1.5 pb-4">

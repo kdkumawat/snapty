@@ -9,6 +9,7 @@ import { captureScreenRegion, isScreenCaptureSupported } from '@/lib/screen-capt
 import type { ToolType } from '@/types/editor';
 import { letterToTool, digitToTool } from '@/lib/tool-shortcuts';
 import { cycleToolSetting } from '@/lib/editor/tool-setting-cycle';
+import { copySelectedAnnotations, pasteAnnotationsFromClipboard, hasAnnotationClipboard, suppressNextImagePaste, isImagePasteSuppressed } from '@/lib/editor/annotation-clipboard';
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.userAgent);
 const modKey = isMac ? 'Cmd' : 'Ctrl';
@@ -76,13 +77,30 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      if (!isCtrl && !isShift && (backgroundImage || ['v', 'h', '1', '2'].includes(key))) {
+      // Without an image only the safe tools may be reached by keyboard: with
+      // the renumbered digits, 1 = select and 2 = arrow (which is disabled on
+      // an empty canvas), so only the select/hand letters plus digit 1 apply.
+      if (!isCtrl && !isShift && (backgroundImage || ['v', 'h', '1'].includes(key))) {
         const tool = letterToTool[key] || digitToTool[key];
         if (tool) {
           e.preventDefault();
           if (st.activeTool === tool) cycleToolSetting(tool);
           else st.setActiveTool(tool);
           return;
+        }
+      }
+      if (!isCtrl && e.key === 'Enter' && !e.repeat) {
+        // Enter edits the selected annotation's text in place: text elements
+        // are edited directly, any other shape gets (or edits) an attached
+        // text label — Excalidraw-style "Enter to type text".
+        const anyModal = st.showHelpDialog || st.showExportDialog || st.showCommandPalette || st.showSettings;
+        if (!anyModal && !st.annotationsLocked && st.selectedElementIds.length === 1) {
+          const el = st.elements.find((x) => x.id === st.selectedElementIds[0]);
+          if (el && !el.locked) {
+            e.preventDefault();
+            window.dispatchEvent(new CustomEvent('snapty-edit-text', { detail: el.id }));
+            return;
+          }
         }
       }
       if (isCtrl && (e.key === '=' || e.key === '+')) { e.preventDefault(); st.setZoom(st.zoom * 1.2); return; }
@@ -133,11 +151,33 @@ export function useKeyboardShortcuts() {
         return;
       }
       if (isCtrl && key === 'c' && !isShift) {
+        // With a selection, copy the annotations themselves (paste with Ctrl+V).
+        // Without one, fall back to copying the whole annotated image.
+        const copied = copySelectedAnnotations();
+        if (copied > 0) {
+          e.preventDefault();
+          toastSuccess('Copied', `${copied} annotation${copied > 1 ? 's' : ''} copied — paste with ${modKey}+V`);
+          return;
+        }
         if (st.backgroundImage) {
           e.preventDefault();
           void copyToClipboard()
             .then(() => toastSuccess('Copied', 'Image on clipboard - ready to paste'))
             .catch(() => toastError('Couldn’t copy', 'Allow clipboard access and try again'));
+        }
+        return;
+      }
+      if (isCtrl && key === 'v' && !isShift) {
+        // Paste annotations first; otherwise let the native paste event paste
+        // an image from the OS clipboard.
+        if (hasAnnotationClipboard()) {
+          const pasted = pasteAnnotationsFromClipboard();
+          if (pasted > 0) {
+            e.preventDefault();
+            suppressNextImagePaste();
+            toastSuccess('Pasted', `${pasted} annotation${pasted > 1 ? 's' : ''} pasted`);
+            return;
+          }
         }
         return;
       }
@@ -213,6 +253,9 @@ export function useClipboardPaste() {
     const handler = async (e: ClipboardEvent) => {
       const tgt = e.target as HTMLElement;
       if (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable) return;
+      // Ctrl+V just pasted annotations; some browsers still fire the paste
+      // event afterwards, which must not also paste an image.
+      if (isImagePasteSuppressed()) return;
 
       const hasImageItem = e.clipboardData
         ? Array.from(e.clipboardData.items || []).some((i) => i.type.startsWith('image/'))

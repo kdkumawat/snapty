@@ -255,12 +255,12 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
 }
 
 .toolbar-btn {
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
+  border-radius: 9px;
   color: var(--muted-foreground);
   background: transparent;
   border: none;
@@ -281,12 +281,30 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   outline-offset: 1px;
 }
 
-/* Light selected chip, stays inside the pill, never clashes with the toolbar border */
+/*
+  Selected tool: the button box fills with the theme accent color and the icon
+  flips to accent-foreground (white). The box fills, not the icon glyph itself.
+*/
 .toolbar-btn-active {
-  background: color-mix(in srgb, var(--accent) 16%, transparent) !important;
-  color: var(--accent) !important;
+  background: var(--accent) !important;
+  color: var(--accent-foreground) !important;
   box-shadow: none !important;
   outline: none !important;
+}
+
+/* Sticky mode: a small dot under the active chip, like Excalidraw's lock hint. */
+.toolbar-btn-sticky-dot {
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--accent-foreground);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-fast) ease;
 }
 
 .toolbar-btn-shortcut {
@@ -303,7 +321,7 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
 }
 
 .toolbar-btn-active .toolbar-btn-shortcut {
-  color: color-mix(in srgb, var(--accent) 70%, transparent);
+  color: color-mix(in srgb, var(--accent-foreground) 70%, transparent);
 }
 
 .icon-btn {
@@ -345,15 +363,14 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
 /*
   Touch targets. Keyed on pointer type rather than viewport width so a touch
   laptop gets them too, and a narrow desktop window does not.
-*/
-@media (pointer: coarse) {
+*/  @media (pointer: coarse) {
   .toolbar-btn,
   .icon-btn {
-    width: 44px;
-    height: 44px;
+    width: 42px;
+    height: 42px;
   }
   [data-snapty-toolbar] {
-    height: 52px;
+    height: 50px;
   }
 }
 

@@ -105,6 +105,9 @@ interface EditorState {
   showExportDialog: boolean;
   showCommandPalette: boolean;
   showSettings: boolean;
+  /** In-app About / Privacy dialog (PWA-safe - never navigates the editor). */
+  infoDialog: 'about' | 'privacy' | null;
+  setInfoDialog: (v: 'about' | 'privacy' | null) => void;
   panelCollapsed: boolean;
   /** True while a paste/URL/file image is decoding - drives skeleton UI */
   imageLoading: boolean;
@@ -152,6 +155,8 @@ interface EditorState {
   unlockSelected: () => void;
   setShowCommandPalette: (show: boolean) => void;
   setShowSettings: (show: boolean) => void;
+  /** Attach a text label to a shape (shared groupId) as a single undo step. */
+  attachText: (shapeId: string, textEl: import('@/types/editor').TextElement) => void;
   /** Live preview during drag, does not push undo history. */
   updateElementSilent: (id: string, updates: Partial<EditorElement>) => void;
   /** Commit a previewed change as a single undo step. */
@@ -178,6 +183,8 @@ interface EditorState {
   updateElement: (id: string, updates: Partial<EditorElement>) => void;
   updateSelectedElements: (updates: Partial<EditorElement>) => void;
   nudgeSelected: (dx: number, dy: number) => void;
+  /** Move an explicit set of elements (selection + group members) by a delta in one undo step. */
+  moveElementsBy: (ids: string[], dx: number, dy: number) => void;
   removeElements: (ids: string[]) => void;
   setSelectedElementIds: (ids: string[]) => void;
   clearElements: () => void;
@@ -572,6 +579,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   showHelpDialog: false,
   showCommandPalette: false,
   showSettings: false,
+  infoDialog: null,
+  setInfoDialog: (v) => set({ infoDialog: v }),
   panelCollapsed: typeof window !== 'undefined' && window.innerWidth < 900,
   imageLoading: false,
   stickyTool: false,
@@ -649,15 +658,32 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       const ids = new Set(s.selectedElementIds);
       if (!ids.size) return s;
+      // Clones of grouped members get a fresh shared group id: without this a
+      // duplicated group joined the original group (and attached text labels
+      // dragged the original shape around with them).
+      const groupMap = new Map<string, string>();
       const clones: EditorElement[] = [];
       const newIds: string[] = [];
       for (const el of s.elements) {
         if (!ids.has(el.id)) continue;
         const id = generateId();
+        const c = JSON.parse(JSON.stringify(el)) as EditorElement;
+        if (c.groupId) {
+          if (!groupMap.has(c.groupId)) groupMap.set(c.groupId, generateId());
+          c.groupId = groupMap.get(c.groupId);
+        }
         newIds.push(id);
-        clones.push({ ...JSON.parse(JSON.stringify(el)), id, x: el.x + 16, y: el.y + 16 } as EditorElement);
+        clones.push({ ...c, id, x: el.x + 16, y: el.y + 16 } as EditorElement);
       }
       return { ...pushHistory(s, [...s.elements, ...clones]), selectedElementIds: newIds };
+    });
+  },
+  attachText: (shapeId, textEl) => {
+    set((s) => {
+      const els = s.elements.map((el) =>
+        el.id === shapeId ? { ...el, groupId: textEl.groupId } as EditorElement : el
+      );
+      return pushHistory(s, [...els, textEl]);
     });
   },
   groupSelected: () => {
@@ -716,6 +742,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const dataURL = imageToDataURL(img);
     syncEditorRoute(true);
     if (clearAnnotations) {
+      // A fresh screenshot starts with an empty annotation clipboard, so a
+      // stale Ctrl+V never hijacks the primary paste-a-screenshot flow.
+      void import('@/lib/editor/annotation-clipboard').then((m) => m.clearAnnotationClipboard());
       set({
         backgroundImage: img,
         imageDataURL: dataURL,
@@ -737,6 +766,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   clearImage: () => {
+    void import('@/lib/editor/annotation-clipboard').then((m) => m.clearAnnotationClipboard());
     // In PWA, stay in editor rather than bouncing to landing
     if (isStandalonePwa()) {
       return set({
@@ -767,6 +797,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   replaceImage: () => {
     if (get().imageLocked) return;
     syncEditorRoute(true);
+    void import('@/lib/editor/annotation-clipboard').then((m) => m.clearAnnotationClipboard());
     void import('@/lib/editor/autosave').then(({ clearAutosave }) => clearAutosave());
     return set({
       backgroundImage: null,
@@ -1021,6 +1052,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return pushHistory(s, els);
     });
   },
+  moveElementsBy: (ids, dx, dy) => {
+    set((s) => {
+      if (!ids.length || (dx === 0 && dy === 0)) return s;
+      const toMove = new Set(ids);
+      const els = s.elements.map((el) => {
+        if (!toMove.has(el.id) || el.locked) return el;
+        return { ...el, x: el.x + dx, y: el.y + dy } as EditorElement;
+      });
+      return pushHistory(s, els);
+    });
+  },
   removeElements: (ids) => {
     set((s) => {
       const els = s.elements.filter((el) => !ids.includes(el.id));
@@ -1105,6 +1147,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setShowHelpDialog: (show) => set({ showHelpDialog: show }),
 
   resetAll: () => {
+    void import('@/lib/editor/annotation-clipboard').then((m) => m.clearAnnotationClipboard());
     set({
       backgroundImage: null,
       imageDataURL: null,

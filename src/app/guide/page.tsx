@@ -13,7 +13,7 @@ const TOOLS: { name: string; keys: string[]; desc: string }[] = [
   { name: "Rectangle / Circle / Diamond", keys: ["R", "O", "D"], desc: "Drag to size. Shift keeps it square, Alt draws from the center." },
   { name: "Line", keys: ["L"], desc: "Straight or gently curved; Shift snaps to 45° increments." },
   { name: "Pencil / Highlighter", keys: ["P", "H"], desc: "Freehand strokes with a hand-drawn wobble. Highlighter has its own thickness." },
-  { name: "Text", keys: ["T"], desc: "Click to type. Bold, italic, and alignment live in the left panel." },
+  { name: "Text", keys: ["T"], desc: "Click to type. Double-click the canvas or any annotation to add text there - a shape gets a label stuck to its center (or midpoint for lines), an existing text opens for editing." },
   { name: "Step numbers", keys: ["N"], desc: "Click to drop numbered badges for walkthroughs. Start number is set in the panel." },
   { name: "Blur / Pixelate", keys: ["B", "Z"], desc: "Drag a region to hide sensitive content. Resize or move it and the region re-bakes." },
   { name: "Spotlight", keys: ["S"], desc: "Dim everything except the region you draw." },
@@ -25,12 +25,13 @@ const TOOLS: { name: string; keys: string[]; desc: string }[] = [
 const SHORTCUTS: { keys: string; desc: string }[] = [
   { keys: "Ctrl/⌘ + V", desc: "Paste a screenshot from the clipboard" },
   { keys: "Ctrl/⌘ + O", desc: "Open an image file" },
-  { keys: "Ctrl/⌘ + C", desc: "Copy the annotated image to the clipboard" },
+  { keys: "Ctrl/⌘ + C", desc: "Copy selected annotations (paste them with Ctrl/⌘ + V), or the whole annotated image when nothing is selected" },
   { keys: "Ctrl/⌘ + S", desc: "Capture a screen region (supported browsers)" },
   { keys: "Ctrl/⌘ + Z / Shift+Z", desc: "Undo / redo" },
   { keys: "Ctrl/⌘ + D", desc: "Duplicate the selection" },
   { keys: "Ctrl/⌘ + G", desc: "Group / ungroup selection" },
   { keys: "Ctrl/⌘ + A", desc: "Select all annotations" },
+  { keys: "Enter", desc: "Add or edit text on the selected annotation" },
   { keys: "Ctrl/⌘ + E", desc: "Open export" },
   { keys: "Ctrl/⌘ + K", desc: "Command palette" },
   { keys: "Ctrl/⌘ + 0", desc: "Fit to screen" },
@@ -75,7 +76,7 @@ export default function GuidePage() {
             <li>Copy a screenshot anywhere on your machine.</li>
             <li>Open Snapty and press <Kbd>Ctrl/⌘ + V</Kbd> - the image lands centered, ready to edit.</li>
             <li>Pick a tool (try <Kbd>A</Kbd> for arrows), draw, and tweak it in the left panel.</li>
-            <li>Press <Kbd>Ctrl/⌘ + C</Kbd> to copy straight into Slack, Jira, or Notion.</li>
+            <li>Press <Kbd>Ctrl/⌘ + C</Kbd> to copy straight into Slack, Jira, or Notion (make sure nothing is selected - with a selection, <Kbd>C</Kbd> copies the annotations instead).</li>
           </ol>
           <p className="text-xs text-muted-foreground">
             Target: capture → paste → annotate → copy in under 30 seconds.

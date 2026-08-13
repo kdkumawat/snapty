@@ -90,7 +90,6 @@ export default function FloatingToolbar({
             className={cn(
               'toolbar-btn shrink-0',
               active && 'toolbar-btn-active',
-              stickyTool && active && 'ring-1 ring-inset ring-accent/40',
               drawingDisabled && 'opacity-30 pointer-events-none',
             )}
             aria-label={tool.label}
@@ -99,6 +98,11 @@ export default function FloatingToolbar({
           >
             {tool.icon}
             {badge && <span className="toolbar-btn-shortcut">{badge}</span>}
+            <span
+              className="toolbar-btn-sticky-dot"
+              style={{ opacity: stickyTool && active ? 1 : 0 }}
+              aria-hidden
+            />
           </button>
         </TooltipTrigger>
         <TooltipContent side="bottom" className="flex items-center gap-2">
@@ -128,11 +132,9 @@ export default function FloatingToolbar({
       <FloatingSurface
         pill
         data-snapty-toolbar
-        className="px-1.5 flex items-center gap-0.5 w-full max-w-full"
+        className="px-1 flex items-center gap-0.5 w-full max-w-full"
       >
         {tools.map(renderTool)}
-
-        <div className="w-px h-5 mx-0.5 bg-border shrink-0" aria-hidden />
 
         <Tooltip>
           <TooltipTrigger asChild>
@@ -148,8 +150,6 @@ export default function FloatingToolbar({
           </TooltipTrigger>
           <TooltipContent side="bottom">Extract text (OCR)</TooltipContent>
         </Tooltip>
-
-        <div className="w-px h-5 mx-0.5 bg-border shrink-0" aria-hidden />
 
         <Tooltip>
           <TooltipTrigger asChild>
@@ -182,7 +182,7 @@ const TOOL_TIPS: Record<string, React.ReactNode> = {
   'rounded-rect': <>Drag to draw. <Kbd>Shift</Kbd> for square. <Kbd>Alt</Kbd> from center.</>,
   circle: <>Drag to draw. <Kbd>O</Kbd> again cycles fill style.</>,
   diamond: <>Drag to draw. <Kbd>D</Kbd> again cycles fill style.</>,
-  text: <>Click to place text. Double-click text to edit. <Kbd>T</Kbd> toggles font.</>,
+  text: <>Click to place text. Double-click the canvas or any annotation to add text anywhere. Double-click text to edit. <Kbd>Enter</Kbd> on a selection edits it too.</>,
   pencil: <>Draw freely. <Kbd>P</Kbd> again cycles stroke width.</>,
   highlighter: <>Semi-transparent highlight. <Kbd>K</Kbd> again cycles thickness.</>,
   blur: <>Drag a region to blur. <Kbd>B</Kbd> again cycles intensity.</>,

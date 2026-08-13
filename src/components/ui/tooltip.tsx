@@ -42,7 +42,7 @@ function TooltipContent({
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         className={cn(
-          "bg-popover text-popover-foreground border border-border z-[200] w-fit rounded-lg px-3 py-1.5 text-xs text-balance shadow-md pointer-events-none",
+          "bg-popover text-popover-foreground border border-border z-[300] w-fit rounded-lg px-3 py-1.5 text-xs text-balance shadow-md pointer-events-none",
           // Fade only, zoom/slide animates from the wrong origin in portals
           "data-[state=delayed-open]:animate-in data-[state=instant-open]:animate-in data-[state=closed]:animate-out",
           "fade-in-0 fade-out-0 duration-100",

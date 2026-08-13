@@ -323,7 +323,9 @@ const EditorCanvas: React.FC = () => {
   const [guides, setGuides] = useState<GuideLine[]>([]);
   const middlePanRef = useRef<{ lastX: number; lastY: number } | null>(null);
   const altDuplicateRef = useRef<string | null>(null);
-  const [textInput, setTextInput] = useState<{ x: number; y: number; visible: boolean; editId?: string; initialText?: string }>({ x: 0, y: 0, visible: false });
+  /** Last annotation mousedown, for time+position double-click detection. */
+  const lastAnnotationTapRef = useRef<{ id: string; x: number; y: number; t: number } | null>(null);
+  const [textInput, setTextInput] = useState<{ x: number; y: number; visible: boolean; editId?: string; initialText?: string; pendingNewId?: string }>({ x: 0, y: 0, visible: false });
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [ocrOpen, setOcrOpen] = useState(false);
@@ -732,6 +734,11 @@ const EditorCanvas: React.FC = () => {
     }
     if (e.key === 'Escape') {
       e.preventDefault();
+      const ti = textInputRef.current;
+      // Abandoning a freshly attached (still empty) label removes it again.
+      if (ti.pendingNewId) {
+        useEditorStore.getState().removeElements([ti.pendingNewId]);
+      }
       setTextInput({ x: 0, y: 0, visible: false });
     }
   }
@@ -921,9 +928,42 @@ const EditorCanvas: React.FC = () => {
   function handleMouseDown(e: Konva.KonvaEventObject<MouseEvent>) {
     // Read ALL values from the store to avoid stale closure issues with React Konva
     const s = useEditorStore.getState();
+    const st = stageRef.current;
 
-    // Let Konva Transformer own corner / edge / rotate handles (any active tool).
+    // Robust double-click detection. The Transformer that appears after the
+    // first click can swallow the second click, and a few pixels of drag drift
+    // can move the annotation out from under the cursor, so a click within
+    // 400ms and ~14px of a previous annotation click also counts as a
+    // double-click on that same annotation - even when the native click count
+    // or the hit target disagrees.
+    const tapPos = st?.getPointerPosition();
+    const prevTap = lastAnnotationTapRef.current;
+    const isDoubleTap = e.evt.detail >= 2 || (
+      !!prevTap && !!tapPos
+      && e.evt.button !== 1
+      && e.evt.timeStamp - prevTap.t < 400
+      && Math.hypot(tapPos.x - prevTap.x, tapPos.y - prevTap.y) < 14
+    );
+
+    // Let Konva Transformer own corner / edge / rotate handles (any active tool),
+    // except when the second click of a double-click lands on the transformer
+    // border - that still counts as a double-click on the annotation under it.
     if (isTransformerTarget(e.target)) {
+      if (isDoubleTap && prevTap?.id) {
+        const under = s.elements.find((x) => x.id === prevTap.id);
+        if (under && !under.locked && !s.annotationsLocked) {
+          if (under.type === 'text') {
+            e.cancelBubble = true;
+            openTextEditor(under as TextElement);
+            return;
+          }
+          if (!['eraser', 'crop', 'hand'].includes(s.activeTool)) {
+            e.cancelBubble = true;
+            attachTextToAnnotation(under);
+            return;
+          }
+        }
+      }
       e.cancelBubble = true;
       return;
     }
@@ -945,16 +985,28 @@ const EditorCanvas: React.FC = () => {
       return;
     }
 
-    const st = stageRef.current;
-    if (!st) return;
-
     const isBg = e.target === st
       || e.target.name() === 'background'
       || e.target.name() === 'background-darkened'
       || e.target.id() === 'grid-bg';
 
-    // Double-click empty canvas deselects
+    // Double-click empty canvas → create a text box here (Excalidraw behavior:
+    // double-click anywhere to start typing). Excluded for tools that own the
+    // gesture; falls back to deselect otherwise.
     if (e.evt.detail >= 2 && isBg) {
+      if (
+        s.backgroundImage
+        && !s.annotationsLocked
+        && !['eraser', 'crop', 'hand'].includes(s.activeTool)
+      ) {
+        const pos = getCanvasPoint();
+        if (pos) {
+          textIgnoreBlurRef.current = Date.now() + 250;
+          setTextInput({ x: pos.x, y: pos.y, visible: true });
+          e.cancelBubble = true;
+          return;
+        }
+      }
       s.setSelectedElementIds([]);
       return;
     }
@@ -965,23 +1017,40 @@ const EditorCanvas: React.FC = () => {
     const clickedId = findAnnotationId(e.target);
     if (clickedId && !isBg) {
         const clicked = s.elements.find((x) => x.id === clickedId);
+        // Record this tap so a fast follow-up click (even one that lands on the
+        // transformer or misses a slightly-dragged node) reads as a double-click.
+        if (tapPos) lastAnnotationTapRef.current = { id: clickedId, x: tapPos.x, y: tapPos.y, t: e.evt.timeStamp };
         if (clicked?.locked) return;
 
-        // Double-click a text annotation to edit it in place (select tool, text
-        // tool, or hover-select from any drawing tool). Uses the native click
-        // count rather than Konva's dblclick, which a draggable node can
-        // swallow - the same pattern as the double-click-to-deselect above.
-        if (e.evt.detail >= 2 && clicked?.type === 'text') {
-          if (s.activeTool === 'select' || s.activeTool === 'text' || hoverSelectModeRef.current) {
+        // Text tool: clicking an existing text annotation edits it in place.
+        if (s.activeTool === 'text' && clicked?.type === 'text') {
+          if (!s.annotationsLocked) {
             e.cancelBubble = true;
-            s.setSelectedElementIds([]);
-            setTextInput({
-              x: clicked.x,
-              y: clicked.y,
-              visible: true,
-              editId: clicked.id,
-              initialText: (clicked as TextElement).text,
-            });
+            openTextEditor(clicked as TextElement);
+            return;
+          }
+        }
+
+        // Double-click a text annotation to edit it in place, from any tool
+        // (except eraser/crop/hand). Uses the native click count (or the
+        // time/position heuristic above) rather than Konva's dblclick, which a
+        // draggable node can swallow - the same pattern as the
+        // double-click-to-deselect above.
+        if (isDoubleTap && clicked?.type === 'text') {
+          if (!s.annotationsLocked && !['eraser', 'crop', 'hand'].includes(s.activeTool)) {
+            e.cancelBubble = true;
+            openTextEditor(clicked as TextElement);
+            return;
+          }
+        }
+
+        // Double-click any other annotation → attach a text label grouped to it
+        // (center of a box, middle of a line/arrow). The editor opens with an
+        // empty label; Esc or an empty commit removes it again.
+        if (isDoubleTap && clicked && clicked.type !== 'text') {
+          if (!s.annotationsLocked && !['eraser', 'crop', 'hand'].includes(s.activeTool)) {
+            e.cancelBubble = true;
+            attachTextToAnnotation(clicked);
             return;
           }
         }
@@ -1005,6 +1074,25 @@ const EditorCanvas: React.FC = () => {
         s.setSelectedElementIds(nextIds);
         syncSettingsFromSelection(nextIds);
         return;
+    }
+
+    // The second click of a double-click drifted just PAST a thin annotation
+    // (arrow, line, small badge): count it as a double-click on the annotation
+    // from the first click instead of starting a marquee / draw.
+    if (!clickedId && isDoubleTap && prevTap?.id) {
+      const prev = s.elements.find((x) => x.id === prevTap.id);
+      if (prev && !prev.locked && !s.annotationsLocked) {
+        if (prev.type === 'text') {
+          e.cancelBubble = true;
+          openTextEditor(prev as TextElement);
+          return;
+        }
+        if (!['eraser', 'crop', 'hand'].includes(s.activeTool)) {
+          e.cancelBubble = true;
+          attachTextToAnnotation(prev);
+          return;
+        }
+      }
     }
 
     // Hand tool: pan only (Stage.draggable)
@@ -1351,9 +1439,21 @@ const EditorCanvas: React.FC = () => {
       const y1 = Math.min(eraserStart.y, eraserEnd.y);
       const x2 = Math.max(eraserStart.x, eraserEnd.x);
       const y2 = Math.max(eraserStart.y, eraserEnd.y);
-      const toRemove = s.elements
-        .filter((el) => elementIntersectsRect(el, x1, y1, x2, y2))
-        .map((el) => el.id);
+      const hitIds = new Set(
+        s.elements
+          .filter((el) => elementIntersectsRect(el, x1, y1, x2, y2))
+          .map((el) => el.id),
+      );
+      // Erasing one member removes the whole group (attached text labels must
+      // never outlive the shape they belong to).
+      for (const el of s.elements) {
+        if (el.groupId && hitIds.has(el.id)) {
+          for (const other of s.elements) {
+            if (other.groupId === el.groupId) hitIds.add(other.id);
+          }
+        }
+      }
+      const toRemove = [...hitIds];
       if (toRemove.length) s.removeElements(toRemove);
       setIsErasing(false);
       setEraserStart(null);
@@ -1602,24 +1702,114 @@ const EditorCanvas: React.FC = () => {
     syncSettingsFromSelection(nextIds);
   }
 
-  function handleTextDblClick(el: TextElement, e: Konva.KonvaEventObject<any>) {
-    const st = useEditorStore.getState();
-    // Select and text tools edit on double-click; other drawing tools fall
-    // back to the temporary hover-select mode.
-    if (st.activeTool !== 'select' && st.activeTool !== 'text' && !hoverSelectModeRef.current) return;
-    e.cancelBubble = true;
-    const s = useEditorStore.getState();
-    s.setSelectedElementIds([]);
+  /**
+   * Open the in-place editor for a text annotation. Shared by double-click,
+   * Enter-on-selection, and double-clicking a shape that already has a label.
+   */
+  function openTextEditor(textEl: TextElement, pendingNewId?: string) {
+    useEditorStore.getState().setSelectedElementIds([]);
     setTextInput({
-      x: el.x,
-      y: el.y,
+      x: textEl.x,
+      y: textEl.y,
       visible: true,
-      editId: el.id,
-      initialText: el.text,
+      editId: textEl.id,
+      initialText: textEl.text,
+      pendingNewId,
     });
     // Hydrate before the overlay mounts so it renders in this element's own
     // font and size rather than the last-used defaults.
-    syncSettingsFromSelection([el.id]);
+    syncSettingsFromSelection([textEl.id]);
+  }
+
+  /**
+   * Enter on a selected annotation → edit its text in place. Text elements are
+   * edited directly; any other shape gets (or edits) an attached text label,
+   * mirroring Excalidraw's "Enter to type text on the selected shape".
+   */
+  useEffect(() => {
+    const onEditText = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      const s = useEditorStore.getState();
+      if (s.annotationsLocked) return;
+      const el = s.elements.find((x) => x.id === id);
+      if (!el || el.locked) return;
+      if (el.type === 'text') {
+        openTextEditor(el as TextElement);
+      } else {
+        attachTextToAnnotation(el);
+      }
+    };
+    window.addEventListener('snapty-edit-text', onEditText);
+    return () => window.removeEventListener('snapty-edit-text', onEditText);
+  }, []);
+
+  /**
+   * Double-click any annotation → attach a text label grouped to it (center of
+   * a box, middle of a line/arrow) so it moves and resizes with the shape. The
+   * text editor opens immediately; Esc or an empty commit removes the label.
+   */
+  function attachTextToAnnotation(el: EditorElement) {
+    const s = useEditorStore.getState();
+    if (s.annotationsLocked || !s.imageSize.width) return;
+    // Already has an attached label → just edit that one.
+    if (el.groupId) {
+      const existing = s.elements.find(
+        (e) => e.type === 'text' && e.groupId === el.groupId,
+      ) as TextElement | undefined;
+      if (existing) {
+        openTextEditor(existing);
+        return;
+      }
+    }
+    const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
+    const bounds = getElementBounds(el, s.imageSize);
+    const groupId = generateId();
+    const fontSize = s.fontSize * scale;
+    const cx = bounds.x + bounds.w / 2;
+    const cy = bounds.y + bounds.h / 2;
+    // The label box is centered on the shape (or on the midpoint of a line /
+    // arrow), with the shape's inner width so `align: center` keeps the text
+    // centered while typing and after commit. A line's bbox width is its
+    // length, so the box hugs the stroke.
+    const isLineLike = el.type === 'arrow' || el.type === 'line'
+      || el.type === 'pencil' || el.type === 'highlighter';
+    const labelW = isLineLike
+      ? Math.max(48, Math.min(bounds.w, 220))
+      : Math.max(32, bounds.w - (TEXT_PADDING + 4) * 2);
+    // Single-line estimate; multi-line grows downward from the vertical middle.
+    const estHalfH = (fontSize * TEXT_LINE_HEIGHT) / 2;
+    const textEl: TextElement = {
+      id: generateId(),
+      type: 'text',
+      x: cx - labelW / 2,
+      y: cy - estHalfH,
+      text: '',
+      // Unrounded: settings are canonical, elements are settings*scale.
+      fontSize,
+      fontFamily: s.fontFamily || HANDWRITTEN_FONT,
+      fontStyle: s.fontStyle || 'normal',
+      align: 'center',
+      width: labelW,
+      fill: s.strokeColor,
+      opacity: s.opacity,
+      padding: TEXT_PADDING,
+      lineHeight: TEXT_LINE_HEIGHT,
+      groupId,
+    };
+    // One undo step for the shape group + the label.
+    s.attachText(el.id, textEl);
+    openTextEditor(textEl, textEl.id);
+  }
+
+  function handleTextDblClick(el: TextElement, e: Konva.KonvaEventObject<any>) {
+    const st = useEditorStore.getState();
+    // Double-click edits text from any tool (except tools with their own
+    // double-click semantics); hover-select made this work already for most
+    // drawing tools, now it is deterministic.
+    if (['eraser', 'crop', 'hand'].includes(st.activeTool)) return;
+    if (st.annotationsLocked) return;
+    e.cancelBubble = true;
+    openTextEditor(el);
   }
 
   function loadDroppedImage(file: File) {
@@ -1782,6 +1972,9 @@ const EditorCanvas: React.FC = () => {
           id: generateId(),
           x,
           y,
+          // A fresh group id so the clone never joins the original group
+          // (attached labels would drag the original shape around).
+          ...(source.groupId ? { groupId: generateId() } : {}),
         } as EditorElement;
         // Restore original position, add clone at new position
         const orig = s.elements.find((item) => item.id === id);
@@ -1794,7 +1987,28 @@ const EditorCanvas: React.FC = () => {
       }
     }
 
-    updateElement(id, { x, y });
+    // Dragging a grouped element must carry its whole group (attached text
+    // labels included). Konva only moves the dragged node, so shift the dragged
+    // element plus every selected element and their group members by the same
+    // delta in one undo step.
+    if (el) {
+      const dx = x - el.x;
+      const dy = y - el.y;
+      if (dx !== 0 || dy !== 0) {
+        const toMove = new Set<string>([id, ...s.selectedElementIds]);
+        const groupIds = new Set(
+          s.elements
+            .filter((e) => toMove.has(e.id) && e.groupId)
+            .map((e) => e.groupId as string),
+        );
+        for (const e of s.elements) {
+          if (e.groupId && groupIds.has(e.groupId)) toMove.add(e.id);
+        }
+        s.moveElementsBy([...toMove], dx, dy);
+      }
+    } else {
+      updateElement(id, { x, y });
+    }
   }
 
   function handleDragMove(id: string, e: Konva.KonvaEventObject<DragEvent>) {
@@ -3046,6 +3260,9 @@ const EditorCanvas: React.FC = () => {
               // one pixel off from where the glyph lands after commit.
               boxSizing: 'border-box',
               margin: -1,
+              // Match the committed label box so a centered attached label
+              // previews exactly where it will land after commit.
+              width: editEl?.width ? Math.max(100, editEl.width * currentZoom) : undefined,
               minWidth: 100,
               minHeight: 40,
               lineHeight: editEl?.lineHeight ?? TEXT_LINE_HEIGHT,

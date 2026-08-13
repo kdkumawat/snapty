@@ -13,6 +13,7 @@ import EmptyState from '@/components/editor/empty/empty-state';
 import ExportDialog from '@/components/editor/export-dialog';
 import HelpDialog from '@/components/editor/help-dialog';
 import SettingsDialog from '@/components/editor/dialogs/settings-dialog';
+import InfoDialog from '@/components/editor/dialogs/info-dialog';
 import CommandPalette from '@/components/editor/menus/command-palette';
 import CanvasContextMenu from '@/components/editor/menus/canvas-context-menu';
 import ImageLoadingSkeleton from '@/components/editor/image-loading-skeleton';
@@ -35,6 +36,13 @@ const EditorCanvas = dynamic(() => import('@/components/editor/editor-canvas'), 
  * is safe to clear stale drafts when there is no image.
  */
 function useAutosaveLifecycle(recoveryResolved: boolean) {
+  // One autosave history entry per page load, so recovery can offer the last
+  // few *sessions* rather than snapshots from a single long editing run.
+  const sessionIdRef = React.useRef(
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `s${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`,
+  );
   const backgroundImage = useEditorStore((s) => s.backgroundImage);
   const elements = useEditorStore((s) => s.elements);
   const canvasStyle = useEditorStore((s) => s.canvasStyle);
@@ -56,6 +64,7 @@ function useAutosaveLifecycle(recoveryResolved: boolean) {
       if (!s.imageDataURL) return null;
       return {
         version: 1,
+        sessionId: sessionIdRef.current,
         updatedAt: Date.now(),
         imageDataURL: s.imageDataURL,
         imageSize: s.imageSize,
@@ -170,6 +179,7 @@ export default function EditorShell() {
         <ExportDialog />
         <HelpDialog />
         <SettingsDialog />
+        <InfoDialog />
         <CommandPalette />
       </div>
     </TooltipProvider>

@@ -12,7 +12,6 @@ import { cn } from '@/lib/utils';
 import { useEditorStore } from '@/store/editor-store';
 import ImageLoadingSkeleton from '@/components/editor/image-loading-skeleton';
 import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
-import { openInBrowser } from '@/lib/open-external';
 import { Kbd } from '@/components/editor/ui/kbd';
 
 export default function EmptyState() {
@@ -25,6 +24,7 @@ export default function EmptyState() {
   const [online, setOnline] = useState(true);
   const imageLoading = useEditorStore((s) => s.imageLoading);
   const setShowHelpDialog = useEditorStore((s) => s.setShowHelpDialog);
+  const setInfoDialog = useEditorStore((s) => s.setInfoDialog);
   const setImageLoading = useEditorStore((s) => s.setImageLoading);
 
   // Offline still works for files/paste/capture - only URL import needs a network.
@@ -171,7 +171,7 @@ export default function EmptyState() {
           <button
             type="button"
             className={rowClass}
-            onClick={() => openInBrowser('/')}
+            onClick={() => setInfoDialog('about')}
           >
             <Info className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
             <span className="flex-1 font-hand text-[1.1rem]">About Snapty</span>

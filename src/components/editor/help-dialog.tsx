@@ -19,14 +19,15 @@ const GENERAL: Row[] = [
   { keys: `${M}+K`, name: 'Command palette', hint: 'Search tools and actions' },
   { keys: `${M}+Z`, name: 'Undo', hint: 'Undo last change' },
   { keys: `${M}+Shift+Z`, name: 'Redo', hint: 'Redo last undo' },
+  { keys: 'Enter', name: 'Add / edit text', hint: 'Type on the selected shape, or edit a text annotation' },
   { keys: 'Delete', name: 'Delete selected', hint: 'Remove selection' },
   { keys: 'Arrows', name: 'Nudge', hint: 'Move 1px (Shift moves 10px)' },
   { keys: `${M}+A`, name: 'Select all', hint: 'Select every annotation' },
   { keys: `${M}+D`, name: 'Duplicate', hint: 'Clone selection' },
   { keys: `${M}+G`, name: 'Group', hint: 'Group selection' },
   { keys: `${M}+Shift+G`, name: 'Ungroup', hint: 'Ungroup selection' },
-  { keys: `${M}+C`, name: 'Copy image', hint: 'Copy canvas to clipboard' },
-  { keys: `${M}+V`, name: 'Paste image', hint: 'Paste a screenshot' },
+  { keys: `${M}+C`, name: 'Copy', hint: 'Copy selected annotations, or the whole image when nothing is selected' },
+  { keys: `${M}+V`, name: 'Paste', hint: 'Paste annotations, or a screenshot from the clipboard' },
   { keys: `${M}+O`, name: 'Open file', hint: 'Browse a local image' },
   { keys: `${M}+E`, name: 'Export', hint: 'Open export dialog' },
   { keys: `${M}+Shift+S`, name: 'Capture screen', hint: 'Grab a window or display' },
@@ -77,7 +78,7 @@ export default function HelpDialog() {
                 Keyboard shortcuts
               </DialogTitle>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Letters and number keys both select tools
+                Double-click the canvas or any annotation to add text
               </p>
             </div>
           </div>

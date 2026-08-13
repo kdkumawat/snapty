@@ -10,6 +10,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Switch } from '@/components/ui/switch';
 import { useEditorStore } from '@/store/editor-store';
 import { copyToClipboard, exportCanvasBlob } from '@/components/editor/export-dialog';
+import { copySelectedAnnotations } from '@/lib/editor/annotation-clipboard';
 import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
 import { modKey } from '@/hooks/use-keyboard-shortcuts';
 import { captureScreenRegion, isScreenCaptureSupported } from '@/lib/screen-capture';
@@ -70,7 +71,19 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
   }, [menu, confirmClear]);
 
   const handleCopy = async () => {
-    if (!backgroundImage || busy) return;
+    if (busy) return;
+    // With a selection, copy the annotations themselves (paste with Ctrl+V);
+    // the whole image is only copied when nothing is selected - matching the
+    // keyboard shortcut.
+    const copied = copySelectedAnnotations();
+    if (copied > 0) {
+      setBusy(true);
+      setCopied(true);
+      toastSuccess('Copied', `${copied} annotation${copied > 1 ? 's' : ''} copied — paste with ${modKey}+V`);
+      setTimeout(() => { setCopied(false); setBusy(false); }, 2000);
+      return;
+    }
+    if (!backgroundImage) return;
     setBusy(true);
     try {
       await copyToClipboard();
@@ -223,7 +236,7 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
           <>
             <Tooltip>
               <TooltipTrigger asChild>
-                <IconButton aria-label="Copy as PNG" onClick={() => void handleCopy()} disabled={busy}>
+                <IconButton aria-label="Copy" onClick={() => void handleCopy()} disabled={busy}>
                   {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                 </IconButton>
               </TooltipTrigger>
