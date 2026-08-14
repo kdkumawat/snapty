@@ -10,6 +10,13 @@ import { labelAnchorForElement } from '@/lib/editor/text-labels';
 import { applySettingToElement } from '@/lib/editor/settings-sync';
 import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
 import type { SettingKey } from '@/lib/editor/tool-settings';
+import {
+  isBindableElement,
+  isLineLike,
+  pinBoundEndpoints,
+  recomputeBindings,
+  sweepDanglingBindings,
+} from '@/lib/editor/binding';
 
 // Persisted settings (restored on refresh)
 const PERSIST_KEYS = [
@@ -18,7 +25,8 @@ const PERSIST_KEYS = [
   'exportQuality', 'gridEnabled', 'blurRadius', 'pixelSize', 'highlighterWidth',
   'strokeStyle', 'fillStyle', 'roughness', 'magnification', 'endArrowhead', 'startArrowhead',
   'fontStyle', 'textAlign', 'textVerticalAlign',
-  'transparentExport', 'keepOriginal',
+  'transparentExport', 'keepOriginal', 'isBindingEnabled',
+  'exportScale', 'exportSelectionOnly',
   // panelCollapsed is responsive/session - not persisted across reloads
 ] as const;
 type PersistKey = typeof PERSIST_KEYS[number];
@@ -105,6 +113,12 @@ interface EditorState {
   canvasStyle: CanvasStyle;
   exportFormat: ExportFormat;
   exportQuality: number;
+  /** Raster export multiplier (1x / 2x / 3x). SVG is vector and ignores it. */
+  exportScale: number;
+  /** When true, export only the selected elements' union bounds (crop). */
+  exportSelectionOnly: boolean;
+  setExportScale: (v: number) => void;
+  setExportSelectionOnly: (v: boolean) => void;
   showHelpDialog: boolean;
   showExportDialog: boolean;
   showCommandPalette: boolean;
@@ -125,6 +139,9 @@ interface EditorState {
   startArrowhead: Arrowhead;
   imageLocked: boolean;
   annotationsLocked: boolean;
+  /** Arrow/line endpoints snap to and follow shapes when enabled. */
+  isBindingEnabled: boolean;
+  setBindingEnabled: (v: boolean) => void;
   /** Keep full resolution when importing very large images (default off: downscale past ~4096px). */
   keepOriginal: boolean;
   setKeepOriginal: (v: boolean) => void;
@@ -155,6 +172,10 @@ interface EditorState {
   duplicateSelected: () => void;
   groupSelected: () => void;
   ungroupSelected: () => void;
+  /** Align multi-selected elements' bounds to the selection union (one undo step). */
+  alignSelected: (align: 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom') => void;
+  /** Distribute multi-selected elements evenly along an axis (one undo step). */
+  distributeSelected: (axis: 'horizontal' | 'vertical') => void;
   lockSelected: () => void;
   unlockSelected: () => void;
   setShowCommandPalette: (show: boolean) => void;
@@ -234,6 +255,8 @@ const defaults: Record<string, any> = {
   opacity: 1,
   cornerRadius: 8,
   exportFormat: 'png' as ExportFormat,
+  exportScale: 1,
+  exportSelectionOnly: false,
   stepStartNumber: 1,
   stepRadius: 16,
   blurRadius: 12,
@@ -460,6 +483,93 @@ function reflowAttachedLabel(
   );
 }
 
+/**
+ * Translate an element by a delta. Freehand strokes store absolute points
+ * (element pinned at 0,0 — an invariant cropToRegion relies on), so they
+ * shift their points instead of x/y; everything else shifts x/y.
+ */
+function translateElement(el: EditorElement, dx: number, dy: number): EditorElement {
+  if (el.type === 'pencil' || el.type === 'highlighter') {
+    const pts = [...el.points];
+    for (let i = 0; i < pts.length; i += 2) {
+      pts[i] += dx;
+      pts[i + 1] += dy;
+    }
+    return { ...el, points: pts } as EditorElement;
+  }
+  return { ...el, x: el.x + dx, y: el.y + dy } as EditorElement;
+}
+
+/**
+ * Expand a selection to include every element sharing a selected member's
+ * groupId (attached text labels / user group members), so aligning a shape
+ * never strands its label.
+ */
+function expandGroupMembers(elements: EditorElement[], ids: Set<string>): Set<string> {
+  const out = new Set(ids);
+  for (const el of elements) {
+    if (ids.has(el.id) && el.groupId) {
+      for (const other of elements) {
+        if (other.groupId === el.groupId) out.add(other.id);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The ids that move as one unit for a z-order operation: the element plus
+ * everything sharing its groupId (attached text labels / user group members)
+ * and any arrows bound to it — see excalidraw-parity-spec.md §6.2.3.
+ */
+function clusterMemberIds(elements: EditorElement[], id: string): string[] {
+  const target = elements.find((el) => el.id === id);
+  const ids = new Set<string>([id]);
+  if (target?.groupId) {
+    for (const el of elements) if (el.groupId === target.groupId) ids.add(el.id);
+  }
+  // Arrows bound to a shape travel with it in z-order too.
+  if (target && isBindableElement(target)) {
+    for (const el of elements) {
+      if (
+        isLineLike(el)
+        && (el.startBinding?.elementId === id || el.endBinding?.elementId === id)
+      ) {
+        ids.add(el.id);
+      }
+    }
+  }
+  return [...ids];
+}
+
+/**
+ * Translate a set of elements while preserving arrow bindings: moved bound
+ * arrows keep their anchored endpoints pinned to their targets (stretching),
+ * and moved shapes pull every arrow bound to them along (fully sticky).
+ * Shared by moveElementsBy and nudgeSelected.
+ */
+function moveElementsImpl(
+  s: EditorState,
+  toMove: Set<string>,
+  dx: number,
+  dy: number,
+): Partial<EditorState> {
+  const els = s.elements.map((el) => {
+    if (!toMove.has(el.id) || el.locked) return el;
+    return { ...el, x: el.x + dx, y: el.y + dy } as EditorElement;
+  });
+  let out = els;
+  // Moved bound arrows: re-pin anchored endpoints to their targets.
+  for (const el of els) {
+    if (toMove.has(el.id) && isLineLike(el)) out = pinBoundEndpoints(out, el.id, s.imageSize);
+  }
+  // Moved shapes: pull every arrow bound to them along.
+  for (const el of els) {
+    if (toMove.has(el.id) && isBindableElement(el)) out = recomputeBindings(out, el.id, s.imageSize);
+  }
+  return pushHistory(s, out);
+}
+
 function applyToSelection(
   s: EditorState,
   key: SettingKey,
@@ -617,6 +727,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
   exportFormat: persisted.exportFormat ?? defaults.exportFormat,
   exportQuality: normalizeExportQuality(persisted.exportQuality ?? defaults.exportQuality),
+  exportScale: persisted.exportScale ?? defaults.exportScale,
+  exportSelectionOnly: persisted.exportSelectionOnly ?? defaults.exportSelectionOnly,
   showExportDialog: false,
   showHelpDialog: false,
   showCommandPalette: false,
@@ -634,6 +746,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   startArrowhead: persisted.startArrowhead ?? defaults.startArrowhead,
   imageLocked: false,
   annotationsLocked: false,
+  isBindingEnabled: persisted.isBindingEnabled ?? true,
   keepOriginal: persisted.keepOriginal ?? false,
   // Hand-drawn mode: default true unless explicitly disabled in previous settings
   handDrawn: (typeof window !== 'undefined')
@@ -680,6 +793,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
   setImageLocked: (v) => set({ imageLocked: v }),
   setAnnotationsLocked: (v) => set({ annotationsLocked: v }),
+  setBindingEnabled: (v) => {
+    set({ isBindingEnabled: v });
+    savePersisted({ ...get(), isBindingEnabled: v });
+  },
   setKeepOriginal: (v) => {
     set({ keepOriginal: v });
     savePersisted({ ...get(), keepOriginal: v });
@@ -704,11 +821,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // duplicated group joined the original group (and attached text labels
       // dragged the original shape around with them).
       const groupMap = new Map<string, string>();
+      const idMap = new Map<string, string>();
       const clones: EditorElement[] = [];
       const newIds: string[] = [];
       for (const el of s.elements) {
         if (!ids.has(el.id)) continue;
         const id = generateId();
+        idMap.set(el.id, id);
         const c = JSON.parse(JSON.stringify(el)) as EditorElement;
         if (c.groupId) {
           if (!groupMap.has(c.groupId)) groupMap.set(c.groupId, generateId());
@@ -717,15 +836,34 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         newIds.push(id);
         clones.push({ ...c, id, x: el.x + 16, y: el.y + 16 } as EditorElement);
       }
-      return { ...pushHistory(s, [...s.elements, ...clones]), selectedElementIds: newIds };
+      // Duplicated bound arrows track the duplicated target when it was
+      // cloned too (both shift by the same +16, so the anchor stays glued);
+      // otherwise they keep binding to the original element.
+      const remapped = clones.map((c) => {
+        if (!isLineLike(c)) return c;
+        const startBinding = c.startBinding && idMap.has(c.startBinding.elementId)
+          ? { ...c.startBinding, elementId: idMap.get(c.startBinding.elementId)! }
+          : c.startBinding;
+        const endBinding = c.endBinding && idMap.has(c.endBinding.elementId)
+          ? { ...c.endBinding, elementId: idMap.get(c.endBinding.elementId)! }
+          : c.endBinding;
+        return { ...c, startBinding, endBinding } as EditorElement;
+      });
+      return { ...pushHistory(s, [...s.elements, ...remapped]), selectedElementIds: newIds };
     });
   },
   attachText: (shapeId, textEl) => {
     set((s) => {
+      // Join the label to the shape's EXISTING group instead of replacing the
+      // shape's groupId with the label's. The old code kicked a user-grouped
+      // shape out of its user group the moment it got a label (the label and
+      // shape shared a brand-new id, leaving the other group members behind).
+      const shape = s.elements.find((el) => el.id === shapeId);
+      const groupId = shape?.groupId ?? textEl.groupId;
       const els = s.elements.map((el) =>
-        el.id === shapeId ? { ...el, groupId: textEl.groupId } as EditorElement : el
+        el.id === shapeId ? { ...el, groupId } as EditorElement : el
       );
-      return pushHistory(s, [...els, textEl]);
+      return pushHistory(s, [...els, { ...textEl, groupId }]);
     });
   },
   groupSelected: () => {
@@ -733,7 +871,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (s.selectedElementIds.length < 2) return s;
       const groupId = generateId();
       const ids = new Set(s.selectedElementIds);
-      const els = s.elements.map((el) => ids.has(el.id) ? { ...el, groupId } as EditorElement : el);
+      // Carry attached labels along: if a selected element is part of a
+      // label/shape pair (one text, one non-text, sharing a groupId), the
+      // unselected half joins the new group too — otherwise grouping a shape
+      // strands its label (or vice versa) in the old group.
+      const absorbed = new Set(ids);
+      for (const el of s.elements) {
+        if (!ids.has(el.id) || !el.groupId) continue;
+        for (const other of s.elements) {
+          if (other.id === el.id || other.groupId !== el.groupId) continue;
+          if ((el.type === 'text') !== (other.type === 'text')) absorbed.add(other.id);
+        }
+      }
+      const els = s.elements.map((el) => absorbed.has(el.id) ? { ...el, groupId } as EditorElement : el);
       return pushHistory(s, els);
     });
   },
@@ -748,6 +898,72 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const els = s.elements.map((el) =>
         el.groupId && groupIds.has(el.groupId) ? { ...el, groupId: undefined } as EditorElement : el,
       );
+      return pushHistory(s, els);
+    });
+  },
+  alignSelected: (align) => {
+    set((s) => {
+      const ids = new Set(
+        s.selectedElementIds.filter((id) => {
+          const el = s.elements.find((e) => e.id === id);
+          return !!el && !el.locked;
+        }),
+      );
+      if (ids.size < 2) return s;
+      const sel = s.elements.filter((el) => ids.has(el.id));
+      const union = unionBounds(sel.map((el) => getElementBounds(el, s.imageSize)));
+      if (!union) return s;
+      const move = expandGroupMembers(s.elements, ids);
+      const els = s.elements.map((el) => {
+        if (!move.has(el.id) || el.locked) return el;
+        const b = getElementBounds(el, s.imageSize);
+        let dx = 0;
+        let dy = 0;
+        switch (align) {
+          case 'left': dx = union.x - b.x; break;
+          case 'centerX': dx = (union.x + union.w / 2) - (b.x + b.w / 2); break;
+          case 'right': dx = (union.x + union.w) - (b.x + b.w); break;
+          case 'top': dy = union.y - b.y; break;
+          case 'centerY': dy = (union.y + union.h / 2) - (b.y + b.h / 2); break;
+          case 'bottom': dy = (union.y + union.h) - (b.y + b.h); break;
+        }
+        if (!dx && !dy) return el;
+        return translateElement(el, dx, dy);
+      });
+      return pushHistory(s, els);
+    });
+  },
+  distributeSelected: (axis) => {
+    set((s) => {
+      const ids = new Set(
+        s.selectedElementIds.filter((id) => {
+          const el = s.elements.find((e) => e.id === id);
+          return !!el && !el.locked;
+        }),
+      );
+      if (ids.size < 3) return s;
+      const sorted = s.elements
+        .filter((el) => ids.has(el.id))
+        .map((el) => ({ el, b: getElementBounds(el, s.imageSize) }))
+        .sort((a, b) => (axis === 'horizontal' ? a.b.x - b.b.x : a.b.y - b.b.y));
+      const union = unionBounds(sorted.map((it) => it.b));
+      if (!union) return s;
+      const sizes = sorted.map((it) => (axis === 'horizontal' ? it.b.w : it.b.h));
+      const span = axis === 'horizontal' ? union.w : union.h;
+      const gap = (span - sizes.reduce((a, b) => a + b, 0)) / (sorted.length - 1);
+      const start = axis === 'horizontal' ? union.x : union.y;
+      const move = expandGroupMembers(s.elements, ids);
+      const els = s.elements.map((el) => {
+        if (!move.has(el.id) || el.locked) return el;
+        const idx = sorted.findIndex((it) => it.el.id === el.id);
+        if (idx < 0) return el;
+        let pos = start;
+        for (let i = 0; i < idx; i++) pos += sizes[i] + gap;
+        const dx = axis === 'horizontal' ? pos - sorted[idx].b.x : 0;
+        const dy = axis === 'horizontal' ? 0 : pos - sorted[idx].b.y;
+        if (!dx && !dy) return el;
+        return translateElement(el, dx, dy);
+      });
       return pushHistory(s, els);
     });
   },
@@ -951,7 +1167,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const els = s.elements.map((el) =>
         el.id === id ? { ...el, ...updates } as EditorElement : el
       );
-      return pushHistory(s, reflowAttachedLabel(els, id, s.imageSize));
+      let next = reflowAttachedLabel(els, id, s.imageSize);
+      // A shape edit re-anchors every arrow bound to it (fully sticky).
+      const moved = next.find((el) => el.id === id);
+      if (moved && isBindableElement(moved)) next = recomputeBindings(next, id, s.imageSize);
+      return pushHistory(s, next);
     });
   },
   setStrokeColor: (color) => {
@@ -1074,8 +1294,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
   updateElement: (id, updates) => {
     set((s) => {
+      const old = s.elements.find((el) => el.id === id);
       const els = s.elements.map((el) => el.id === id ? { ...el, ...updates } as EditorElement : el);
-      return pushHistory(s, reflowAttachedLabel(els, id, s.imageSize));
+      let next = reflowAttachedLabel(els, id, s.imageSize);
+      const moved = next.find((el) => el.id === id);
+      if (!moved) return pushHistory(s, next);
+      // Dragging a bound arrow keeps its anchored end(s) pinned (it stretches
+      // between the anchor and the pointer, Excalidraw behavior).
+      if (old && isLineLike(moved) && (updates.x !== undefined || updates.y !== undefined)) {
+        const dx = (moved.x ?? 0) - (old.x ?? 0);
+        const dy = (moved.y ?? 0) - (old.y ?? 0);
+        if (dx !== 0 || dy !== 0) next = pinBoundEndpoints(next, id, s.imageSize);
+      }
+      // A shape edit re-anchors every arrow bound to it (fully sticky).
+      if (isBindableElement(moved)) next = recomputeBindings(next, id, s.imageSize);
+      return pushHistory(s, next);
     });
   },
   updateSelectedElements: (updates) => {
@@ -1090,31 +1323,25 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   nudgeSelected: (dx, dy) => {
     set((s) => {
       if (!s.selectedElementIds.length || (dx === 0 && dy === 0)) return s;
-      const ids = new Set(s.selectedElementIds);
-      const els = s.elements.map((el) => {
-        if (!ids.has(el.id) || el.locked) return el;
-        return { ...el, x: el.x + dx, y: el.y + dy } as EditorElement;
-      });
-      return pushHistory(s, els);
+      return moveElementsImpl(s, new Set(s.selectedElementIds), dx, dy);
     });
   },
   moveElementsBy: (ids, dx, dy) => {
     set((s) => {
       if (!ids.length || (dx === 0 && dy === 0)) return s;
-      const toMove = new Set(ids);
-      const els = s.elements.map((el) => {
-        if (!toMove.has(el.id) || el.locked) return el;
-        return { ...el, x: el.x + dx, y: el.y + dy } as EditorElement;
-      });
-      return pushHistory(s, els);
+      return moveElementsImpl(s, new Set(ids), dx, dy);
     });
   },
   removeElements: (ids) => {
     set((s) => {
-      const els = s.elements.filter((el) => !ids.includes(el.id));
+      const removed = new Set(ids);
+      const els = sweepDanglingBindings(
+        s.elements.filter((el) => !removed.has(el.id)),
+        removed,
+      );
       return {
         ...pushHistory(s, els),
-        selectedElementIds: s.selectedElementIds.filter((id) => !ids.includes(id)),
+        selectedElementIds: s.selectedElementIds.filter((id) => !removed.has(id)),
       };
     });
   },
@@ -1122,34 +1349,45 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   clearElements: () => set((s) => ({ ...pushHistory(s, []), selectedElementIds: [] })),
 
   bringForward: (id) => set((s) => {
-    const i = s.elements.findIndex((el) => el.id === id);
-    if (i < 0 || i >= s.elements.length - 1) return s;
-    const e = [...s.elements];
-    [e[i], e[i + 1]] = [e[i + 1], e[i]];
+    const ids = new Set(clusterMemberIds(s.elements, id));
+    const indices = s.elements
+      .map((el, i) => (ids.has(el.id) ? i : -1))
+      .filter((i) => i >= 0);
+    const last = indices[indices.length - 1];
+    if (last >= s.elements.length - 1) return s;
+    const after = s.elements[last + 1];
+    const cluster = s.elements.filter((el) => ids.has(el.id));
+    const rest = s.elements.filter((el) => !ids.has(el.id));
+    const at = rest.findIndex((el) => el.id === after.id);
+    const e = [...rest];
+    e.splice(at + 1, 0, ...cluster);
     return pushHistory(s, e);
   }),
   sendBackward: (id) => set((s) => {
-    const i = s.elements.findIndex((el) => el.id === id);
-    if (i <= 0) return s;
-    const e = [...s.elements];
-    [e[i], e[i - 1]] = [e[i - 1], e[i]];
+    const ids = new Set(clusterMemberIds(s.elements, id));
+    const first = s.elements.findIndex((el) => ids.has(el.id));
+    if (first <= 0) return s;
+    const before = s.elements[first - 1];
+    const cluster = s.elements.filter((el) => ids.has(el.id));
+    const rest = s.elements.filter((el) => !ids.has(el.id));
+    const at = rest.findIndex((el) => el.id === before.id);
+    const e = [...rest];
+    e.splice(at, 0, ...cluster);
     return pushHistory(s, e);
   }),
   bringToFront: (id) => set((s) => {
-    const i = s.elements.findIndex((el) => el.id === id);
-    if (i < 0) return s;
-    const e = [...s.elements];
-    const [el] = e.splice(i, 1);
-    e.push(el);
-    return pushHistory(s, e);
+    const ids = new Set(clusterMemberIds(s.elements, id));
+    const cluster = s.elements.filter((el) => ids.has(el.id));
+    if (!cluster.length) return s;
+    const rest = s.elements.filter((el) => !ids.has(el.id));
+    return pushHistory(s, [...rest, ...cluster]);
   }),
   sendToBack: (id) => set((s) => {
-    const i = s.elements.findIndex((el) => el.id === id);
-    if (i < 0) return s;
-    const e = [...s.elements];
-    const [el] = e.splice(i, 1);
-    e.unshift(el);
-    return pushHistory(s, e);
+    const ids = new Set(clusterMemberIds(s.elements, id));
+    const cluster = s.elements.filter((el) => ids.has(el.id));
+    if (!cluster.length) return s;
+    const rest = s.elements.filter((el) => !ids.has(el.id));
+    return pushHistory(s, [...cluster, ...rest]);
   }),
 
   undo: () => {
@@ -1188,6 +1426,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const q = normalizeExportQuality(quality);
     set({ exportQuality: q });
     savePersisted({ ...get(), exportQuality: q });
+  },
+  setExportScale: (scale) => {
+    const v = Math.min(4, Math.max(1, Math.round(scale) || 1));
+    set({ exportScale: v });
+    savePersisted({ ...get(), exportScale: v });
+  },
+  setExportSelectionOnly: (v) => {
+    set({ exportSelectionOnly: v });
+    savePersisted({ ...get(), exportSelectionOnly: v });
   },
   setShowExportDialog: (show) => set({ showExportDialog: show }),
   setShowHelpDialog: (show) => set({ showHelpDialog: show }),

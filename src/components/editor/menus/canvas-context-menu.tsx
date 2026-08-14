@@ -10,7 +10,7 @@ import {
   getClipboardStyle,
 } from '@/lib/editor/clipboard-style';
 import { toastSuccess, toastInfo, toastError } from '@/lib/app-toast';
-import { copyToClipboard } from '@/components/editor/export-dialog';
+import { copyToClipboard, copySvgToClipboard } from '@/components/editor/export-dialog';
 import { loadImageFileIntoEditor } from '@/lib/image-load';
 
 const itemClass =
@@ -23,6 +23,8 @@ export default function CanvasContextMenu({ children }: { children: React.ReactN
   const duplicateSelected = useEditorStore((s) => s.duplicateSelected);
   const groupSelected = useEditorStore((s) => s.groupSelected);
   const ungroupSelected = useEditorStore((s) => s.ungroupSelected);
+  const alignSelected = useEditorStore((s) => s.alignSelected);
+  const distributeSelected = useEditorStore((s) => s.distributeSelected);
   const bringForward = useEditorStore((s) => s.bringForward);
   const sendBackward = useEditorStore((s) => s.sendBackward);
   const lockSelected = useEditorStore((s) => s.lockSelected);
@@ -62,6 +64,13 @@ export default function CanvasContextMenu({ children }: { children: React.ReactN
           >
             Copy
           </ContextMenu.Item>
+          <ContextMenu.Item
+            className={itemClass}
+            disabled={!hasImage}
+            onSelect={() => void copySvgToClipboard().then(() => toastSuccess('Copied SVG', 'Vector annotations with embedded image'))}
+          >
+            Copy as SVG
+          </ContextMenu.Item>
           <ContextMenu.Item className={itemClass} onSelect={() => void pasteImage()}>
             Paste
           </ContextMenu.Item>
@@ -89,6 +98,48 @@ export default function CanvasContextMenu({ children }: { children: React.ReactN
           <ContextMenu.Item className={itemClass} disabled={!hasSelection} onSelect={ungroupSelected}>
             Ungroup
           </ContextMenu.Item>
+          <ContextMenu.Separator className="h-px my-1 bg-border" />
+          <ContextMenu.Sub>
+            <ContextMenu.SubTrigger className={itemClass} disabled={hasSelection && selectedElementIds.length < 2}>
+              Align
+            </ContextMenu.SubTrigger>
+            <ContextMenu.Portal>
+              <ContextMenu.SubContent className="z-[300] min-w-[10rem] rounded-xl border border-border bg-surface/95 backdrop-blur-md p-1 shadow-xl">
+                {[
+                  { label: 'Align left', action: () => alignSelected('left') },
+                  { label: 'Align center (horizontal)', action: () => alignSelected('centerX') },
+                  { label: 'Align right', action: () => alignSelected('right') },
+                  { label: 'Align top', action: () => alignSelected('top') },
+                  { label: 'Align middle (vertical)', action: () => alignSelected('centerY') },
+                  { label: 'Align bottom', action: () => alignSelected('bottom') },
+                ].map(({ label, action }) => (
+                  <ContextMenu.Item
+                    key={label}
+                    className={itemClass}
+                    disabled={selectedElementIds.length < 2}
+                    onSelect={action}
+                  >
+                    {label}
+                  </ContextMenu.Item>
+                ))}
+                <ContextMenu.Separator className="h-px my-1 bg-border" />
+                <ContextMenu.Item
+                  className={itemClass}
+                  disabled={selectedElementIds.length < 3}
+                  onSelect={() => distributeSelected('horizontal')}
+                >
+                  Distribute horizontally
+                </ContextMenu.Item>
+                <ContextMenu.Item
+                  className={itemClass}
+                  disabled={selectedElementIds.length < 3}
+                  onSelect={() => distributeSelected('vertical')}
+                >
+                  Distribute vertically
+                </ContextMenu.Item>
+              </ContextMenu.SubContent>
+            </ContextMenu.Portal>
+          </ContextMenu.Sub>
           <ContextMenu.Separator className="h-px my-1 bg-border" />
           <ContextMenu.Item
             className={itemClass}
