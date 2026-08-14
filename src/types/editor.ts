@@ -143,10 +143,19 @@ export interface TextElement extends BaseElement {
   stroke?: string;
   strokeWidth?: number;
   width?: number;
+  /** Inner-box height when the text is an attached container label. */
+  height?: number;
   padding?: number;
   /** Must match the edit overlay's line-height or multi-line text reflows on commit. */
   lineHeight?: number;
   align?: 'left' | 'center' | 'right';
+  /** Vertical placement inside a container shape. Defaults to 'middle'. */
+  verticalAlign?: 'top' | 'middle' | 'bottom';
+  /**
+   * Position of a label attached to a line/arrow as a fraction (0..1) along
+   * the path; 0.5 = midpoint. Lets the label slide along the arrow.
+   */
+  labelOffset?: number;
 }
 
 export interface StepElement extends BaseElement {

@@ -9,6 +9,7 @@ export function getSelectionTheme() {
       surface: '#ffffff',
       border: 'rgba(0,0,0,0.12)',
       shadow: 'rgba(0,0,0,0.18)',
+      accentSoft: 'rgba(217,119,6,0.45)',
     };
   }
   const root = document.documentElement;
@@ -23,6 +24,9 @@ export function getSelectionTheme() {
     surface,
     border,
     shadow: 'rgba(0,0,0,0.22)',
+    // Very light version of the accent for the selection dots/handles - a
+    // translucent tint so the handles read as quiet instead of loud.
+    accentSoft: `color-mix(in srgb, ${accent} 40%, white)`,
   };
 }
 
@@ -39,7 +43,7 @@ export function styleSelectionAnchor(anchor: Konva.Rect) {
   anchor.offsetY(size / 2);
   anchor.cornerRadius(size / 2);
   anchor.fill(theme.surface);
-  anchor.stroke(theme.accent);
+  anchor.stroke(theme.accentSoft);
   anchor.strokeWidth(isRotate ? 2 : 1.75);
   anchor.shadowColor(theme.shadow);
   anchor.shadowBlur(6);
@@ -57,7 +61,7 @@ export function selectionHandleProps(variant: 'endpoint' | 'bend' | 'rotate' = '
   return {
     radius: r,
     fill: theme.surface,
-    stroke: theme.accent,
+    stroke: theme.accentSoft,
     strokeWidth: variant === 'bend' ? 2 : 1.75,
     shadowColor: theme.shadow,
     shadowBlur: 8,
@@ -95,7 +99,7 @@ export function midHandleProps() {
   return {
     radius: 6,
     fill: theme.surface,
-    stroke: theme.accent,
+    stroke: theme.accentSoft,
     strokeWidth: 1.5,
     shadowColor: theme.shadow,
     shadowBlur: 6,

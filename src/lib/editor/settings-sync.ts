@@ -26,6 +26,7 @@ export type ToolSettingsState = {
   fontFamily: string;
   fontStyle: string;
   textAlign: 'left' | 'center' | 'right';
+  textVerticalAlign: 'top' | 'middle' | 'bottom';
   opacity: number;
   cornerRadius: number;
   blurRadius: number;
@@ -89,6 +90,8 @@ export function applySettingToElement(
       return { fontStyle: String(value) };
     case 'textAlign':
       return { align: String(value) as 'left' | 'center' | 'right' };
+    case 'textVerticalAlign':
+      return { verticalAlign: String(value) as 'top' | 'middle' | 'bottom' };
     case 'opacity': {
       const v = num(value);
       return v === null ? null : { opacity: Math.max(0, Math.min(1, v)) };
@@ -183,6 +186,9 @@ export function hydrateSettingsFromElement(
   }
   if (has('textAlign')) {
     out.textAlign = (e.align as 'left' | 'center' | 'right') || 'left';
+  }
+  if (has('textVerticalAlign')) {
+    out.textVerticalAlign = (e.verticalAlign as 'top' | 'middle' | 'bottom') || 'middle';
   }
   if (has('cornerRadius')) {
     const v = num(e.cornerRadius);

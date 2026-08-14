@@ -24,6 +24,7 @@ export type SettingKey =
   | 'fontFamily'
   | 'fontStyle'
   | 'textAlign'
+  | 'textVerticalAlign'
   | 'arrowheads'
   | 'magnification'
   | 'blurRadius'
@@ -64,6 +65,7 @@ export const SETTING_SPECS: Record<SettingKey, SettingSpec> = {
   fontFamily: { kind: 'preset', key: 'fontFamily', label: 'Font style', railLabel: 'Style' },
   fontStyle: { kind: 'preset', key: 'fontStyle', label: 'Bold / Italic', railLabel: 'Bold' },
   textAlign: { kind: 'preset', key: 'textAlign', label: 'Alignment', railLabel: 'Align' },
+  textVerticalAlign: { kind: 'preset', key: 'textVerticalAlign', label: 'Vertical', railLabel: 'VAlign' },
   fontSize: {
     kind: 'slider', key: 'fontSize', label: 'Font size', railLabel: 'Size',
     min: 12, max: 72, step: 1, scaled: true,
@@ -118,7 +120,7 @@ export const TOOL_SETTINGS: Record<ToolType, SettingKey[]> = {
   // Draws with highlighterWidth, never strokeWidth.
   highlighter: ['strokeColor', 'highlighterWidth', 'opacity'],
 
-  text: ['strokeColor', 'fontFamily', 'fontStyle', 'textAlign', 'fontSize', 'opacity'],
+  text: ['strokeColor', 'fontFamily', 'fontStyle', 'textAlign', 'textVerticalAlign', 'fontSize', 'opacity'],
   step: ['strokeColor', 'stepRadius', 'stepNumbering', 'opacity'],
 
   magnifier: ['strokeColor', 'strokeWidth', 'strokeStyle', 'roughness', 'magnification', 'opacity'],

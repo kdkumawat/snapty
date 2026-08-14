@@ -170,6 +170,8 @@ export function settingValueLabel(
         : s.fontStyle.includes('italic') ? 'Italic' : 'Normal';
     case 'textAlign':
       return s.textAlign[0].toUpperCase() + s.textAlign.slice(1);
+    case 'textVerticalAlign':
+      return s.textVerticalAlign[0].toUpperCase() + s.textVerticalAlign.slice(1);
     case 'stepNumbering':
       return String(s.stepCounter);
     default: {
@@ -436,6 +438,36 @@ export function SettingControl({ spec }: { spec: SettingSpec }) {
                   x1={a === 'left' ? 1 : a === 'center' ? 3 : 10} y1="9" x2="15" y2="9"
                   stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
                 />
+              </svg>
+            </IconToggle>
+          ))}
+        </div>
+      );
+
+    case 'textVerticalAlign':
+      return (
+        <div className="flex gap-0.5">
+          {(['top', 'middle', 'bottom'] as const).map((a) => (
+            <IconToggle
+              key={a}
+              active={s.textVerticalAlign === a}
+              label={a[0].toUpperCase() + a.slice(1)}
+              onClick={() => s.setTextVerticalAlign(a)}
+            >
+              <svg width="16" height="12" viewBox="0 0 16 12" aria-hidden>
+                {(['top', 'middle', 'bottom'] as const).map((row, i) => {
+                  const y = 2 + i * 4;
+                  const active = a === row;
+                  const x1 = active ? 2 : row === 'top' ? 5 : row === 'middle' ? 4 : 3;
+                  return (
+                    <line
+                      key={row}
+                      x1={x1} y1={y} x2="14" y2={y}
+                      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+                      opacity={active ? 1 : 0.4}
+                    />
+                  );
+                })}
               </svg>
             </IconToggle>
           ))}
