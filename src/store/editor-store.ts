@@ -1,11 +1,12 @@
 import { create } from 'zustand';
 import type {
   EditorElement, ToolType, ExportFormat, CanvasStyle,
-  StrokeStyle, FillStyle, Arrowhead,
+  StrokeStyle, FillStyle, Arrowhead, TextElement,
 } from '@/types/editor';
 import { HANDWRITTEN_FONT } from '@/types/editor';
 import { trackPageView } from '@/lib/analytics';
 import { getElementBounds, unionBounds } from '@/lib/editor/selection';
+import { labelAnchorForElement } from '@/lib/editor/text-labels';
 import { applySettingToElement } from '@/lib/editor/settings-sync';
 import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
 import type { SettingKey } from '@/lib/editor/tool-settings';
@@ -16,7 +17,7 @@ const PERSIST_KEYS = [
   'opacity', 'cornerRadius', 'exportFormat', 'stepStartNumber', 'stepRadius',
   'exportQuality', 'gridEnabled', 'blurRadius', 'pixelSize', 'highlighterWidth',
   'strokeStyle', 'fillStyle', 'roughness', 'magnification', 'endArrowhead', 'startArrowhead',
-  'fontStyle', 'textAlign',
+  'fontStyle', 'textAlign', 'textVerticalAlign',
   'transparentExport', 'keepOriginal',
   // panelCollapsed is responsive/session - not persisted across reloads
 ] as const;
@@ -83,8 +84,11 @@ interface EditorState {
   fontStyle: string;
   /** Text alignment for new/selected text annotations. */
   textAlign: 'left' | 'center' | 'right';
+  /** Vertical placement for text inside a container shape. */
+  textVerticalAlign: 'top' | 'middle' | 'bottom';
   setFontStyle: (style: string) => void;
   setTextAlign: (align: 'left' | 'center' | 'right') => void;
+  setTextVerticalAlign: (align: 'top' | 'middle' | 'bottom') => void;
   opacity: number;
   cornerRadius: number;
   blurRadius: number;
@@ -226,6 +230,7 @@ const defaults: Record<string, any> = {
   fontFamily: HANDWRITTEN_FONT,
   fontStyle: 'normal',
   textAlign: 'left' as 'left' | 'center' | 'right',
+  textVerticalAlign: 'middle' as 'top' | 'middle' | 'bottom',
   opacity: 1,
   cornerRadius: 8,
   exportFormat: 'png' as ExportFormat,
@@ -419,6 +424,42 @@ function emptyHistory(
 let settingsGestureActive = false;
 let settingsGestureDirty = false;
 
+/**
+ * Reposition a shape's attached text label after the shape's geometry
+ * changed (resize, rotate, arrow point edits). Returns the elements array
+ * with the label moved; callers fold it into the same undo step as the
+ * shape update so resize+reflow is one undo. Rotation is propagated to the
+ * label too (Excalidraw rotates container text with its container).
+ */
+function reflowAttachedLabel(
+  elements: EditorElement[],
+  shapeId: string,
+  imageSize: { width: number; height: number },
+): EditorElement[] {
+  const shape = elements.find((el) => el.id === shapeId);
+  if (!shape || shape.type === 'text' || !shape.groupId) return elements;
+  const label = elements.find(
+    (el) => el.type === 'text' && el.groupId === shape.groupId,
+  ) as TextElement | undefined;
+  if (!label) return elements;
+  const scale = getImageToolScale(imageSize.width, imageSize.height);
+  const anchor = labelAnchorForElement(shape, imageSize, label.fontSize ?? 24, scale, label);
+  const rotation = (shape as { rotation?: number }).rotation ?? 0;
+  return elements.map((el) =>
+    el.id === label.id
+      ? {
+          ...el,
+          x: anchor.x,
+          y: anchor.y,
+          width: anchor.width,
+          ...(anchor.height ? { height: anchor.height } : {}),
+          // Container text rotates with its shape.
+          rotation,
+        } as EditorElement
+      : el,
+  );
+}
+
 function applyToSelection(
   s: EditorState,
   key: SettingKey,
@@ -557,6 +598,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   fontFamily: persisted.fontFamily ?? defaults.fontFamily,
   fontStyle: persisted.fontStyle ?? defaults.fontStyle,
   textAlign: persisted.textAlign ?? defaults.textAlign,
+  textVerticalAlign: persisted.textVerticalAlign ?? defaults.textVerticalAlign,
   opacity: persisted.opacity ?? defaults.opacity,
   cornerRadius: persisted.cornerRadius ?? defaults.cornerRadius,
   blurRadius: persisted.blurRadius ?? defaults.blurRadius,
@@ -909,7 +951,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const els = s.elements.map((el) =>
         el.id === id ? { ...el, ...updates } as EditorElement : el
       );
-      return pushHistory(s, els);
+      return pushHistory(s, reflowAttachedLabel(els, id, s.imageSize));
     });
   },
   setStrokeColor: (color) => {
@@ -939,6 +981,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setTextAlign: (align) => {
     set((s) => ({ textAlign: align, ...applyToSelection(s, 'textAlign', align) }));
     savePersisted({ ...get(), textAlign: align });
+  },
+  setTextVerticalAlign: (align) => {
+    set((s) => ({ textVerticalAlign: align, ...applyToSelection(s, 'textVerticalAlign', align) }));
+    savePersisted({ ...get(), textVerticalAlign: align });
   },
   setOpacity: (opacity) => {
     const o = Math.max(0, Math.min(1, opacity));
@@ -1029,7 +1075,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   updateElement: (id, updates) => {
     set((s) => {
       const els = s.elements.map((el) => el.id === id ? { ...el, ...updates } as EditorElement : el);
-      return pushHistory(s, els);
+      return pushHistory(s, reflowAttachedLabel(els, id, s.imageSize));
     });
   },
   updateSelectedElements: (updates) => {

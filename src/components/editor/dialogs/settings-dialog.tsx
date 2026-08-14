@@ -43,7 +43,7 @@ function CompactToggle({
   info?: string;
 }) {
   const row = (
-    <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-secondary/25 px-3 py-2">
+    <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-secondary/25 px-3 py-2 cursor-pointer">
       <span className="text-[13px] font-medium flex items-center gap-1.5 min-w-0">
         <span className="truncate">{label}</span>
         {info && (

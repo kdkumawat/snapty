@@ -12,9 +12,12 @@ import type {
   ExportFormat, CanvasStyle, EditorElement, ShapeElement, ArrowElement,
   LineElement, PencilElement, CircleElement, TextElement, StepElement,
 } from '@/types/editor';
+import { TEXT_LINE_HEIGHT, TEXT_PADDING } from '@/types/editor';
 import { cn } from '@/lib/utils';
 import { magnifierBounds } from '@/lib/editor/magnifier-geometry';
+import { freehandOutline } from '@/lib/editor/freehand';
 import { quadBounds, quadPathD, polylinePathD, tangentAtStart, tangentAtEnd } from '@/lib/editor/curve';
+import { clipPolylineAgainstRect, pointAlongPath, estimateLabelHeight } from '@/lib/editor/text-labels';
 import { arrowHeadPoints, generateRoughDrawable } from '@/lib/rough-renderer';
 import type { RoughDrawInput } from '@/lib/rough-renderer';
 import { RoughSVG } from 'roughjs/bin/svg';
@@ -506,13 +509,53 @@ async function buildSvgExport(): Promise<string> {
           continue;
         }
       }
-      // Emit the same path the canvas draws: a quadratic for the legacy
-      // 2-point + bend form, a straight polyline for multi-point arrows/lines.
-      parts.push(
-        isMulti
-          ? `<path d="${polylinePathD(el.x, el.y, pts)}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" stroke-linecap="round"${dashAttr}/>`
-          : `<path d="${quadPathD(el.x, el.y, pts[0], pts[1], pts[2], pts[3], bend)}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" stroke-linecap="round"${dashAttr}/>`,
-      );
+      // An attached label erases the stroke behind it (matches the canvas):
+      // clip the polyline against the label box and emit one path per piece.
+      const attachedLabel = elements.find(
+        (x) => x.type === 'text' && !!x.groupId && x.groupId === el.groupId,
+      ) as TextElement | undefined;
+      const labelBoxH = attachedLabel
+        ? Math.max(
+            (attachedLabel.fontSize ?? 24) * TEXT_LINE_HEIGHT + (attachedLabel.padding ?? TEXT_PADDING) * 2,
+            estimateLabelHeight(attachedLabel, attachedLabel.fontSize ?? 24),
+          )
+        : 0;
+      const labelRect = attachedLabel
+        ? {
+            x: attachedLabel.x - el.x,
+            y: attachedLabel.y - (labelBoxH - ((attachedLabel.fontSize ?? 24) * TEXT_LINE_HEIGHT + (attachedLabel.padding ?? TEXT_PADDING) * 2)) / 2,
+            w: Math.max(1, attachedLabel.width ?? 0),
+            h: Math.max(1, labelBoxH),
+          }
+        : null;
+      const clipSource =
+        labelRect && !isMulti && bend !== 0
+          ? (() => {
+              const sampled: number[] = [];
+              const N = 28;
+              for (let i = 0; i <= N; i++) {
+                const p = pointAlongPath(el, i / N);
+                sampled.push(p.x, p.y);
+              }
+              return sampled;
+            })()
+          : pts;
+      const segments = labelRect ? clipPolylineAgainstRect(clipSource, labelRect) : null;
+      if (segments) {
+        // Clipped shaft: each outside piece becomes its own path; heads are
+        // appended below so they stay at the true endpoints.
+        for (const seg of segments) {
+          parts.push(`<path d="${polylinePathD(el.x, el.y, seg)}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" stroke-linecap="round"${dashAttr}/>`);
+        }
+      } else {
+        // Emit the same path the canvas draws: a quadratic for the legacy
+        // 2-point + bend form, a straight polyline for multi-point arrows/lines.
+        parts.push(
+          isMulti
+            ? `<path d="${polylinePathD(el.x, el.y, pts)}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" stroke-linecap="round"${dashAttr}/>`
+            : `<path d="${quadPathD(el.x, el.y, pts[0], pts[1], pts[2], pts[3], bend)}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" stroke-linecap="round"${dashAttr}/>`,
+        );
+      }
       // Arrowheads were missing from SVG output altogether.
       const headSize = el.type === 'arrow'
         ? ((el as ArrowElement).pointerLength ?? Math.max(10, sw * 4))
@@ -565,10 +608,20 @@ async function buildSvgExport(): Promise<string> {
         } catch { /* tainted canvas: skip rather than fail the whole export */ }
       }
     } else if (el.type === 'pencil' || el.type === 'highlighter') {
-      const pts = el.points;
-      if (pts.length >= 4) {
-        let d = `M ${pts[0]} ${pts[1]}`;
-        for (let i = 2; i < pts.length; i += 2) d += ` L ${pts[i]} ${pts[i + 1]}`;
+      // The canvas renders freehand as a smooth filled outline
+      // (perfect-freehand); the exported SVG must match, or the same stroke
+      // looks jagged in the file but smooth on screen.
+      const outline = freehandOutline(el.points, el.type, sw);
+      if (outline.length >= 6) {
+        let d = `M ${outline[0]} ${outline[1]}`;
+        for (let i = 2; i < outline.length; i += 2) d += ` L ${outline[i]} ${outline[i + 1]}`;
+        d += ' Z';
+        parts.push(`<path d="${d}" fill="${stroke}" opacity="${el.type === 'highlighter' ? 0.4 : opacity}" stroke="none"/>`);
+      } else if (el.points.length >= 4) {
+        // Fallback for stub strokes too short for a contour: draw the raw
+        // polyline so nothing vanishes from the export.
+        let d = `M ${el.points[0]} ${el.points[1]}`;
+        for (let i = 2; i < el.points.length; i += 2) d += ` L ${el.points[i]} ${el.points[i + 1]}`;
         parts.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${el.type === 'highlighter' ? 0.4 : opacity}" stroke-linecap="round" stroke-linejoin="round"/>`);
       }
     } else if (el.type === 'text') {
