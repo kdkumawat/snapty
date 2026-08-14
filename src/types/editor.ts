@@ -30,6 +30,33 @@ export type FillStyle = 'hachure' | 'cross-hatch' | 'solid' | 'none';
 
 export type Arrowhead = 'none' | 'arrow' | 'bar' | 'dot' | 'triangle';
 
+/**
+ * Where one end of an arrow/line is anchored to a bindable element
+ * (rectangle, circle, diamond, text, step, magnifier). Mirrors Excalidraw's
+ * `FixedPointBinding` so endpoints stay glued to a shape as it moves,
+ * resizes, or rotates (see excalidraw-parity-spec.md §5.1 / §6.2).
+ */
+export interface FixedPointBinding {
+  elementId: string;
+  /** Normalized (0..1) position of the endpoint within the target element. */
+  fixedPoint: [number, number];
+  /**
+   * 'inside' — the endpoint is placed on the shape's outline, along the ray
+   * from the shape center through the fixedPoint (arrowhead points at the
+   * edge). 'orbit' — held just OUTSIDE the outline so the arrowhead hugs the
+   * edge. 'skip' — reserved for multi-point intermediates that must not pin
+   * the arrowhead (not produced by Snapty's current gestures).
+   */
+  mode: 'inside' | 'orbit' | 'skip';
+}
+
+/**
+ * Reserved `elementId` for a binding to the screenshot itself (an image
+ * region) instead of an annotation shape. Supported by the data model and
+ * crop remapping; not yet created by drawing gestures.
+ */
+export const IMAGE_BINDING_ID = '__image__';
+
 export type RoughnessPreset = 'architect' | 'artist' | 'cartoonist';
 
 export interface StyleProps {
@@ -101,6 +128,10 @@ export interface ArrowElement extends BaseElement {
   pointerWidth?: number;
   startArrowhead?: Arrowhead;
   endArrowhead?: Arrowhead;
+  /** Anchor of the start point to a bindable element (null = free). */
+  startBinding?: FixedPointBinding | null;
+  /** Anchor of the end point to a bindable element (null = free). */
+  endBinding?: FixedPointBinding | null;
 }
 
 export interface LineElement extends BaseElement {
@@ -112,11 +143,26 @@ export interface LineElement extends BaseElement {
   strokeWidth?: number;
   startArrowhead?: Arrowhead;
   endArrowhead?: Arrowhead;
+  /** Anchor of the start point to a bindable element (null = free). */
+  startBinding?: FixedPointBinding | null;
+  /** Anchor of the end point to a bindable element (null = free). */
+  endBinding?: FixedPointBinding | null;
 }
 
 export interface PencilElement extends BaseElement {
   type: 'pencil' | 'highlighter';
   points: number[];
+  /**
+   * Per-sample pressure, parallel to `points` (one entry per point pair).
+   * Present when the stroke was captured with a real pressure source
+   * (stylus/pen); otherwise omitted and pressure is simulated.
+   */
+  pressures?: number[];
+  /**
+   * True when the stroke had no real pressure source (mouse/touch), so
+   * perfect-freehand simulates pressure from pointer velocity.
+   */
+  simulatePressure?: boolean;
   stroke?: string;
   strokeWidth?: number;
   lineCap?: 'butt' | 'round' | 'square';

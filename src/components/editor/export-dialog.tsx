@@ -164,18 +164,48 @@ function getContentBounds(): { x: number; y: number; width: number; height: numb
   };
 }
 
+/** Union bounds of the current selection (content space), or null when empty. */
+function getSelectionRegion(): { x: number; y: number; width: number; height: number } | null {
+  const { selectedElementIds, elements } = useEditorStore.getState();
+  if (!selectedElementIds.length) return null;
+  const sel = new Set(selectedElementIds);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const el of elements) {
+    if (!sel.has(el.id)) continue;
+    const b = getElementBounds(el);
+    if (!Number.isFinite(b.w) || !Number.isFinite(b.h)) continue;
+    minX = Math.min(minX, b.x);
+    minY = Math.min(minY, b.y);
+    maxX = Math.max(maxX, b.x + b.w);
+    maxY = Math.max(maxY, b.y + b.h);
+  }
+  if (!Number.isFinite(minX)) return null;
+  const margin = 8;
+  const x = Math.floor(minX - margin);
+  const y = Math.floor(minY - margin);
+  return {
+    x,
+    y,
+    width: Math.max(1, Math.ceil(maxX + margin) - x),
+    height: Math.max(1, Math.ceil(maxY + margin) - y),
+  };
+}
+
 /**
- * Capture stage content at image-native resolution WITHOUT resizing/moving the
- * live stage (that caused a visible flicker on copy/export).
+ * Capture stage content at (region x scale) resolution WITHOUT resizing/moving
+ * the live stage (that caused a visible flicker on copy/export).
  * Only selection transformers are briefly hidden.
  */
-async function captureStagePng(): Promise<{ dataURL: string; width: number; height: number }> {
+async function captureStagePng(
+  scale = 1,
+  region?: { x: number; y: number; width: number; height: number },
+): Promise<{ dataURL: string; width: number; height: number }> {
   const stage = (window as any).__snapty_stage;
   if (!stage) throw new Error('No stage configuration available');
   const { imageSize } = useEditorStore.getState();
   if (!imageSize.width || !imageSize.height) throw new Error('No image loaded');
 
-  const bounds = getContentBounds();
+  const bounds = region ?? getContentBounds();
   const hidden: { node: any; visible: boolean }[] = [];
   try {
     const transformers = stage.find?.('Transformer') || [];
@@ -192,8 +222,9 @@ async function captureStagePng(): Promise<{ dataURL: string; width: number; heig
     const y = stage.y() + bounds.y * scaleY;
     const width = Math.max(1, bounds.width * scaleX);
     const height = Math.max(1, bounds.height * scaleY);
-    // pixelRatio so output is ~bounds in image pixels regardless of zoom
-    const pixelRatio = scaleX > 0 ? 1 / scaleX : 1;
+    // pixelRatio so output is ~bounds in image pixels regardless of zoom,
+    // multiplied by the requested hi-res scale (1x / 2x / 3x).
+    const pixelRatio = scaleX > 0 ? (1 / scaleX) * scale : scale;
 
     const dataURL = stage.toDataURL({
       x,
@@ -203,7 +234,7 @@ async function captureStagePng(): Promise<{ dataURL: string; width: number; heig
       pixelRatio,
       mimeType: 'image/png',
     });
-    return { dataURL, width: bounds.width, height: bounds.height };
+    return { dataURL, width: bounds.width * scale, height: bounds.height * scale };
   } finally {
     for (const { node, visible } of hidden) {
       try { node.visible(visible); } catch { /* gone */ }
@@ -330,9 +361,12 @@ async function waitForStage(maxAttempts = 8): Promise<void> {
  * Every format then encodes directly from this canvas - one rasterization,
  * one encode, no intermediate PNG round-trip.
  */
-async function buildExportCanvas(): Promise<{ canvas: HTMLCanvasElement; width: number; height: number }> {
+async function buildExportCanvas(
+  scale = 1,
+  region?: { x: number; y: number; width: number; height: number },
+): Promise<{ canvas: HTMLCanvasElement; width: number; height: number }> {
   await waitForStage();
-  const captured = await captureStagePng();
+  const captured = await captureStagePng(scale, region);
   const canvasStyle = useEditorStore.getState().canvasStyle;
   const hasStyle =
     canvasStyle.padding > 0
@@ -354,15 +388,20 @@ async function buildExportCanvas(): Promise<{ canvas: HTMLCanvasElement; width: 
   return { canvas, width: captured.width, height: captured.height };
 }
 
-async function exportImage(format: ExportFormat, quality: number): Promise<Blob | null> {
+async function exportImage(
+  format: ExportFormat,
+  quality: number,
+  scale = 1,
+  region?: { x: number; y: number; width: number; height: number },
+): Promise<Blob | null> {
   const fmt = formats.find((f) => f.id === format);
   if (!fmt) return null;
   try {
     if (format === 'svg') {
-      const svg = await buildSvgExport();
+      const svg = await buildSvgExport(region);
       return new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
     }
-    const { canvas } = await buildExportCanvas();
+    const { canvas } = await buildExportCanvas(scale, region);
     if (format === 'png') return canvasToBlob(canvas, 'image/png');
     return canvasToBlob(canvas, fmt.mime, quality);
   } catch (error) {
@@ -375,16 +414,23 @@ async function exportCanvasBlob(format: ExportFormat = 'png', quality = 0.92): P
   return exportImage(format, quality);
 }
 
-async function buildSvgExport(): Promise<string> {
+async function buildSvgExport(region?: { x: number; y: number; width: number; height: number }): Promise<string> {
   const store = useEditorStore.getState();
   const { imageSize, imageDataURL, elements, canvasStyle } = store;
   const w = imageSize.width || 800;
   const h = imageSize.height || 600;
   const transparent = canvasStyle.transparentExport;
+  // Selection export: crop the canvas by translating the whole document and
+  // setting viewBox to the region - element coordinates stay absolute.
+  const bw = region?.width ?? w;
+  const bh = region?.height ?? h;
+  const bx = region?.x ?? 0;
+  const by = region?.y ?? 0;
   const parts: string[] = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
-    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${bw}" height="${bh}" viewBox="${bx} ${by} ${bw} ${bh}">`,
   ];
+  if (region) parts.push(`<g transform="translate(${-bx} ${-by})">`);
   if (!transparent) {
     parts.push(`<rect width="100%" height="100%" fill="#ffffff"/>`);
   }
@@ -611,7 +657,10 @@ async function buildSvgExport(): Promise<string> {
       // The canvas renders freehand as a smooth filled outline
       // (perfect-freehand); the exported SVG must match, or the same stroke
       // looks jagged in the file but smooth on screen.
-      const outline = freehandOutline(el.points, el.type, sw);
+      const outline = freehandOutline(el.points, el.type, sw, {
+        pressures: el.pressures,
+        simulatePressure: el.simulatePressure,
+      });
       if (outline.length >= 6) {
         let d = `M ${outline[0]} ${outline[1]}`;
         for (let i = 2; i < outline.length; i += 2) d += ` L ${outline[i]} ${outline[i + 1]}`;
@@ -643,6 +692,7 @@ async function buildSvgExport(): Promise<string> {
       parts.push(`<text x="${el.x}" y="${el.y + r * 0.35}" text-anchor="middle" font-size="${el.fontSize || r * 0.8}" fill="#fff" font-weight="700" font-family="sans-serif">${el.stepNumber}</text>`);
     }
   }
+  if (region) parts.push('</g>');
   parts.push('</svg>');
   return parts.join('\n');
 }
@@ -651,9 +701,12 @@ function escapeXml(s: string) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-async function copyToClipboard() {
+async function copyToClipboard(
+  scale = 1,
+  region?: { x: number; y: number; width: number; height: number },
+) {
   try {
-    const { canvas } = await buildExportCanvas();
+    const { canvas } = await buildExportCanvas(scale, region);
     const blob = await canvasToBlob(canvas, 'image/png');
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
   } catch (error) {
@@ -662,14 +715,35 @@ async function copyToClipboard() {
   }
 }
 
-async function shareImage(format: ExportFormat, quality: number) {
-  const blob = await exportImage(format, quality);
+/**
+ * Copy the export as vector SVG with the raster screenshot embedded under the
+ * annotation paths — pastes into Figma/Slides/Notion as editable vector marks
+ * (see excalidraw-parity-spec.md §6.3.4). Falls back to raw SVG text when the
+ * browser rejects the image/svg+xml clipboard type.
+ */
+async function copySvgToClipboard() {
+  const svg = await buildSvgExport();
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ 'image/svg+xml': blob })]);
+  } catch {
+    await navigator.clipboard.writeText(svg);
+  }
+}
+
+async function shareImage(
+  format: ExportFormat,
+  quality: number,
+  scale = 1,
+  region?: { x: number; y: number; width: number; height: number },
+) {
+  const blob = await exportImage(format, quality, scale, region);
   if (!blob) throw new Error('Could not prepare image');
   const ext = formats.find((f) => f.id === format)?.ext || '.png';
   const mime = formats.find((f) => f.id === format)?.mime || 'image/png';
   const file = new File([blob], `snapty-export${ext}`, { type: mime });
   if (typeof navigator.share !== 'function') {
-    await copyToClipboard();
+    await copyToClipboard(scale, region);
     return 'copied' as const;
   }
   try {
@@ -678,7 +752,7 @@ async function shareImage(format: ExportFormat, quality: number) {
   } catch (error) {
     // User cancellation is not an error; other share failures get a useful fallback.
     if ((error as DOMException)?.name === 'AbortError') return 'cancelled' as const;
-    await copyToClipboard();
+    await copyToClipboard(scale, region);
     return 'copied' as const;
   }
 }
@@ -697,6 +771,11 @@ const ExportDialog: React.FC = () => {
   const setExportFormat = useEditorStore((s) => s.setExportFormat);
   const exportQuality = useEditorStore((s) => s.exportQuality);
   const setExportQuality = useEditorStore((s) => s.setExportQuality);
+  const exportScale = useEditorStore((s) => s.exportScale);
+  const setExportScale = useEditorStore((s) => s.setExportScale);
+  const exportSelectionOnly = useEditorStore((s) => s.exportSelectionOnly);
+  const setExportSelectionOnly = useEditorStore((s) => s.setExportSelectionOnly);
+  const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
   const imageSize = useEditorStore((s) => s.imageSize);
   const canvasStyle = useEditorStore((s) => s.canvasStyle);
   const setCanvasStyle = useEditorStore((s) => s.setCanvasStyle);
@@ -708,8 +787,16 @@ const ExportDialog: React.FC = () => {
   const [estimatedBytes, setEstimatedBytes] = useState<number | null>(null);
 
   const hasPadding = canvasStyle.padding > 0;
-  const exportW = imageSize.width + canvasStyle.padding * 2;
-  const exportH = imageSize.height + canvasStyle.padding * 2;
+  // Selection-only export crops the canvas to the selected elements' bounds;
+  // SVG is vector so the raster scale multiplier doesn't apply to it.
+  const region = exportSelectionOnly ? getSelectionRegion() : null;
+  const rasterScale = exportFormat === 'svg' ? 1 : exportScale;
+  const baseW = region?.width ?? imageSize.width;
+  const baseH = region?.height ?? imageSize.height;
+  const exportW = baseW + canvasStyle.padding * 2;
+  const exportH = baseH + canvasStyle.padding * 2;
+  const dimW = Math.round(exportW * rasterScale);
+  const dimH = Math.round(exportH * rasterScale);
 
   // Debounced real size estimate when dialog is open (uses same pipeline as download)
   useEffect(() => {
@@ -722,7 +809,8 @@ const ExportDialog: React.FC = () => {
     const timer = window.setTimeout(async () => {
       try {
         const q = exportFormat === 'png' ? 1 : exportQuality / 100;
-        const blob = await exportImage(exportFormat, q);
+        const region = exportSelectionOnly ? getSelectionRegion() : null;
+        const blob = await exportImage(exportFormat, q, exportScale, region ?? undefined);
         if (!cancelled && blob) setEstimatedBytes(blob.size);
       } catch {
         if (!cancelled) setEstimatedBytes(null);
@@ -734,15 +822,16 @@ const ExportDialog: React.FC = () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [showExportDialog, exportFormat, exportQuality, imageSize.width, imageSize.height, canvasStyle, elements]);
+  }, [showExportDialog, exportFormat, exportQuality, exportScale, exportSelectionOnly, selectedElementIds, imageSize.width, imageSize.height, canvasStyle, elements]);
 
   const handleDownload = async () => {
     setExporting(true);
     setProgress(30);
     try {
       const q = exportFormat === 'png' ? 1 : exportQuality / 100;
+      const region = exportSelectionOnly ? getSelectionRegion() : null;
       setProgress(60);
-      const blob = await exportImage(exportFormat, q);
+      const blob = await exportImage(exportFormat, q, exportScale, region ?? undefined);
       if (!blob) {
         toastError('Download failed', 'Couldn’t prepare the image');
         return;
@@ -773,8 +862,9 @@ const ExportDialog: React.FC = () => {
     setCopied(false);
     setProgress(30);
     try {
+      const region = exportSelectionOnly ? getSelectionRegion() : null;
       setProgress(60);
-      await copyToClipboard();
+      await copyToClipboard(exportScale, region ?? undefined);
       setProgress(100);
       setCopied(true);
       toastSuccess('Copied', 'Image on clipboard - ready to paste');
@@ -792,7 +882,13 @@ const ExportDialog: React.FC = () => {
   const handleShare = async () => {
     setExporting(true);
     try {
-      const result = await shareImage(exportFormat, exportFormat === 'png' ? 1 : exportQuality / 100);
+      const region = exportSelectionOnly ? getSelectionRegion() : null;
+      const result = await shareImage(
+        exportFormat,
+        exportFormat === 'png' ? 1 : exportQuality / 100,
+        exportScale,
+        region ?? undefined,
+      );
       if (result === 'shared') toastSuccess('Shared', 'Screenshot sent to the app you chose');
       if (result === 'copied') toastSuccess('Copied', 'Sharing is unavailable, so the image is on your clipboard');
     } catch {
@@ -825,10 +921,20 @@ const ExportDialog: React.FC = () => {
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">Dimensions</span>
               <span className="font-medium tabular-nums text-foreground">
-                {imageSize.width} x {imageSize.height}px
+                {dimW} x {dimH}px
                 {hasPadding && (
                   <span className="text-muted-foreground font-normal">
-                    {' '}(+pad {exportW} x {exportH})
+                    {' '}(+pad {Math.round(exportW)} x {Math.round(exportH)})
+                  </span>
+                )}
+                {exportScale > 1 && exportFormat !== 'svg' && (
+                  <span className="text-muted-foreground font-normal">
+                    {' '}@{exportScale}x
+                  </span>
+                )}
+                {region && (
+                  <span className="text-muted-foreground font-normal">
+                    {' '}(selection)
                   </span>
                 )}
               </span>
@@ -892,6 +998,47 @@ const ExportDialog: React.FC = () => {
             </div>
           )}
 
+          {exportFormat !== 'svg' && (
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">Resolution</Label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[1, 2, 3].map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    className={cn(
+                      'px-2 py-2.5 rounded-xl text-sm font-semibold transition-all text-center cursor-pointer border',
+                      exportScale === s
+                        ? 'bg-accent/15 text-accent border-accent/40'
+                        : 'bg-secondary/40 text-muted-foreground border-border hover:border-muted-foreground/40 hover:text-foreground',
+                    )}
+                    onClick={() => setExportScale(s)}
+                  >
+                    {s}x
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {exportScale === 1
+                  ? 'Original size. 2x / 3x re-raster at higher resolution - great for print or retina.'
+                  : `Re-rastered at ${exportScale}x the original resolution.`}
+              </p>
+            </div>
+          )}
+
+          {selectedElementIds.length > 0 && (
+            <label className="flex items-center justify-between gap-3 rounded-2xl border border-border px-3.5 py-3 cursor-pointer hover:bg-secondary/30 transition-colors">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">Export selection only</p>
+                <p className="text-[11px] text-muted-foreground">Crop to the {selectedElementIds.length} selected {selectedElementIds.length === 1 ? 'element' : 'elements'}</p>
+              </div>
+              <Switch
+                checked={exportSelectionOnly}
+                onCheckedChange={setExportSelectionOnly}
+              />
+            </label>
+          )}
+
           <label className="flex items-center justify-between gap-3 rounded-2xl border border-border px-3.5 py-3 cursor-pointer hover:bg-secondary/30 transition-colors">
             <div className="min-w-0">
               <p className="text-sm font-medium">Transparent background</p>
@@ -948,5 +1095,5 @@ const ExportDialog: React.FC = () => {
   );
 };
 
-export { exportImage, copyToClipboard, shareImage, exportCanvasBlob };
+export { exportImage, copyToClipboard, copySvgToClipboard, shareImage, exportCanvasBlob };
 export default ExportDialog;

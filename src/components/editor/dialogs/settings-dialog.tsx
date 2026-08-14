@@ -82,6 +82,8 @@ export default function SettingsDialog() {
   const annotationsLocked = useEditorStore((s) => s.annotationsLocked);
   const setImageLocked = useEditorStore((s) => s.setImageLocked);
   const setAnnotationsLocked = useEditorStore((s) => s.setAnnotationsLocked);
+  const bindingEnabled = useEditorStore((s) => s.isBindingEnabled);
+  const setBindingEnabled = useEditorStore((s) => s.setBindingEnabled);
   const keepOriginal = useEditorStore((s) => s.keepOriginal);
   const setKeepOriginal = useEditorStore((s) => s.setKeepOriginal);
   const setInfoDialog = useEditorStore((s) => s.setInfoDialog);
@@ -241,6 +243,12 @@ export default function SettingsDialog() {
                   checked={annotationsLocked}
                   onChange={setAnnotationsLocked}
                   info="Freeze move, resize, and draw edits"
+                />
+                <CompactToggle
+                  label="Bind arrows"
+                  checked={bindingEnabled}
+                  onChange={setBindingEnabled}
+                  info="Arrow and line endpoints snap to shapes and follow them as they move, resize, or rotate. Turn off for free-floating arrows."
                 />
                 <CompactToggle
                   label="Keep resolution"
