@@ -24,6 +24,8 @@ import {
   paintDrawable,
 } from '../rough-renderer';
 import type { GuideLine } from './snap-guides';
+import type { BindingPreview } from './binding-preview';
+import { getSelectionTheme } from '@/lib/selection-theme';
 
 export type DraftBoxKind =
   | 'rectangle'
@@ -120,12 +122,18 @@ function roughSceneFunc(
 export class DraftLayer {
   private layer: Konva.Layer | null = null;
   private nodes: Konva.Shape[] = [];
+  /** Overlay chrome (marquee / eraser rect / guides / binding preview /
+   *  hover outline). Kept separate from `nodes` (the active draft) so a
+   *  chrome update during a drawing gesture never destroys the draft. */
+  private chrome: Konva.Shape[] = [];
   private rafId: number | null = null;
   private dirty = false;
   private draft: DraftState | null = null;
   private guides: GuideLine[] | null = null;
   private marquee: { x: number; y: number; w: number; h: number; accent?: string; fill?: string } | null = null;
   private eraser: { x1: number; y1: number; x2: number; y2: number } | null = null;
+  private bindingPreview: { preview: BindingPreview; accent: string; zoom: number } | null = null;
+  private hoverOutline: { x: number; y: number; w: number; h: number } | null = null;
 
   attach(layer: Konva.Layer) {
     this.layer = layer;
@@ -161,10 +169,14 @@ export class DraftLayer {
     this.cancelRaf();
     for (const n of this.nodes) n.destroy();
     this.nodes = [];
+    for (const n of this.chrome) n.destroy();
+    this.chrome = [];
     this.draft = null;
     this.guides = null;
     this.marquee = null;
     this.eraser = null;
+    this.bindingPreview = null;
+    this.hoverOutline = null;
     if (this.layer) {
       // batchDraw now so the overlay never shows a stale frame.
       this.layer.batchDraw();
@@ -178,9 +190,10 @@ export class DraftLayer {
     if (this.layer) this.layer.add(node);
   }
 
-  private addNodes(nodes: Konva.Shape[]) {
-    for (const n of this.nodes) n.destroy();
-    this.nodes = nodes;
+  /** Replace the overlay chrome nodes (never touches the active draft). */
+  private setChrome(nodes: Konva.Shape[]) {
+    for (const n of this.chrome) n.destroy();
+    this.chrome = nodes;
     if (this.layer) {
       for (const n of nodes) this.layer.add(n);
     }
@@ -501,7 +514,7 @@ export class DraftLayer {
       fill, stroke: accent, strokeWidth: 1, dash: [6, 4],
       listening: false,
     });
-    this.addNodes([node]);
+    this.setChrome([node]);
     this.draw();
   }
 
@@ -523,7 +536,7 @@ export class DraftLayer {
       dash: [6, 4],
       listening: false,
     });
-    this.addNodes([node]);
+    this.setChrome([node]);
     this.draw();
   }
 
@@ -545,12 +558,42 @@ export class DraftLayer {
         listening: false,
       }),
     );
-    this.addNodes(nodes);
+    this.setChrome(nodes);
     this.draw();
   }
 
   clearGuides() {
     this.guides = null;
+    this.rebuildChrome();
+  }
+
+  // ------------------------------------------------------- binding preview
+
+  /**
+   * Show the live arrow-binding preview (Excalidraw's suggestedBinding): a
+   * subtle accent outline around the candidate target + a dot on the exact
+   * attachment point. Rebuilt on every endpoint move; zoom keeps the stroke
+   * and dot at a constant screen size.
+   */
+  showBindingPreview(preview: BindingPreview, accent: string, zoom: number) {
+    this.bindingPreview = { preview, accent, zoom };
+    this.rebuildChrome();
+  }
+
+  clearBindingPreview() {
+    this.bindingPreview = null;
+    this.rebuildChrome();
+  }
+
+  /** Subtle hover feedback: a thin outline around the element under the
+   *  pointer (Excalidraw's hover state). Rendered imperatively — no React. */
+  showHoverOutline(bounds: { x: number; y: number; w: number; h: number }) {
+    this.hoverOutline = bounds;
+    this.rebuildChrome();
+  }
+
+  clearHoverOutline() {
+    this.hoverOutline = null;
     this.rebuildChrome();
   }
 
@@ -586,7 +629,47 @@ export class DraftLayer {
         }));
       }
     }
-    this.addNodes(nodes);
+    if (this.bindingPreview) {
+      const { preview, accent, zoom } = this.bindingPreview;
+      const z = zoom > 0 ? zoom : 1;
+      const b = preview.bounds;
+      nodes.push(new Konva.Rect({
+        x: b.x,
+        y: b.y,
+        width: Math.max(1, b.w),
+        height: Math.max(1, b.h),
+        stroke: accent,
+        strokeWidth: 1.5 / z,
+        dash: [6 / z, 4 / z],
+        listening: false,
+      }));
+      nodes.push(new Konva.Circle({
+        x: preview.anchor.x,
+        y: preview.anchor.y,
+        radius: 3.5 / z,
+        fill: accent,
+        stroke: '#ffffff',
+        strokeWidth: 1 / z,
+        listening: false,
+      }));
+    }
+    // While a binding preview is up, the target highlight carries the hover
+    // signal; a second outline on the same shape would just look noisy.
+    if (this.hoverOutline && !this.bindingPreview) {
+      const h = this.hoverOutline;
+      const theme = getSelectionTheme();
+      nodes.push(new Konva.Rect({
+        x: h.x,
+        y: h.y,
+        width: Math.max(1, h.w),
+        height: Math.max(1, h.h),
+        stroke: theme.accentSoft,
+        strokeWidth: 1.5,
+        cornerRadius: 2,
+        listening: false,
+      }));
+    }
+    this.setChrome(nodes);
     this.draw();
   }
 }

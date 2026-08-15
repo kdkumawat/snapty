@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useState, useMemo, useCallback } from 'react';
 import {
   Stage, Layer, Rect, Ellipse, Line, Arrow, Text, Group,
   Image as KonvaImage, Circle, Transformer, Shape,
@@ -23,6 +23,7 @@ import {
   isBindableElement,
   resolveEndpointBinding,
 } from '@/lib/editor/binding';
+import { snapEndpointForBinding } from '@/lib/editor/binding-preview';
 import {
   labelAnchorForElement,
   createAttachedLabel,
@@ -32,7 +33,7 @@ import {
   estimateLabelHeight,
 } from '@/lib/editor/text-labels';
 import TextEditOverlay from '@/components/editor/canvas/text-edit-overlay';
-import { getSelectionTheme, styleSelectionAnchor, selectionHandleProps, handleHoverEvents } from '@/lib/selection-theme';
+import { getSelectionTheme, styleSelectionAnchor, selectionHandleProps, handleHoverEvents, midHandleProps } from '@/lib/selection-theme';
 import RoughKonvaShape from '@/components/editor/canvas/rough-konva-shape';
 import CachedKonvaImage from '@/components/editor/canvas/cached-konva-image';
 import MagnifierKonva from '@/components/editor/canvas/magnifier-konva';
@@ -623,6 +624,9 @@ const EditorCanvas: React.FC = () => {
   const cornerRadius = useEditorStore((s) => s.cornerRadius);
   const elements = useEditorStore((s) => s.elements);
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
+  /** Multi-point polyline vertex-insertion gesture (midpoint ghost handles).
+   *  Holds the working points array for the current drag; committed on end. */
+  const midVertexRef = useRef<{ id: string; idx: number; points: number[] } | null>(null);
   const canvasStyle = useEditorStore((s) => s.canvasStyle);
   const gridEnabled = useEditorStore((s) => s.canvasStyle.gridEnabled);
   const stepCounter = useEditorStore((s) => s.stepCounter);
@@ -1179,6 +1183,9 @@ const EditorCanvas: React.FC = () => {
     // Read ALL values from the store to avoid stale closure issues with React Konva
     const s = useEditorStore.getState();
     const st = stageRef.current;
+    // A pressed pointer is no longer hovering: drop the hover outline so it
+    // never lingers once a drag/select gesture starts.
+    draftLayerRef.current?.clearHoverOutline();
 
     // Robust double-click detection. The Transformer that appears after the
     // first click can swallow the second click, and a few pixels of drag drift
@@ -1722,6 +1729,35 @@ const EditorCanvas: React.FC = () => {
       } else {
         geo.ex = geo.sx + dx;
         geo.ey = geo.sy + dy;
+      }
+      // Live binding preview (Excalidraw's suggestedBinding): while the
+      // endpoint nears a bindable shape, highlight the target + attachment
+      // point and let the endpoint magnetically follow the outline. The
+      // persistent binding is still derived on commit from the same geometry,
+      // so preview and release always agree.
+      if (draftSegmentStyleRef.current) {
+        const st = useEditorStore.getState();
+        const kind = draftSegmentStyleRef.current.kind;
+        const pseudo = {
+          id: '__draft__',
+          type: kind,
+          x: geo.sx,
+          y: geo.sy,
+          points: [0, 0, geo.ex - geo.sx, geo.ey - geo.sy],
+          strokeWidth: draftSegmentStyleRef.current.style.strokeWidth,
+        } as ArrowElement;
+        const bsnap = snapEndpointForBinding(
+          pseudo, 'end',
+          [0, 0, geo.ex - geo.sx, geo.ey - geo.sy],
+          st.elements, st.imageSize, st.zoom, st.isBindingEnabled,
+        );
+        if (bsnap.preview) {
+          draftLayerRef.current?.showBindingPreview(bsnap.preview, getSelectionTheme().accent, st.zoom);
+          geo.ex = geo.sx + bsnap.points[2];
+          geo.ey = geo.sy + bsnap.points[3];
+        } else {
+          draftLayerRef.current?.clearBindingPreview();
+        }
       }
       draftLayerRef.current?.updateSegment(geo);
       perfProbeRef.current?.tick(performance.now() - moveStart, 'segment-draw');
@@ -2631,11 +2667,83 @@ const EditorCanvas: React.FC = () => {
       onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
       onDragMove: (e: Konva.KonvaEventObject<DragEvent>) => handleDragMove(el.id, e),
       onTransformEnd: () => handleElementTransformEnd(el.id),
+      // Subtle hover feedback: a thin accent outline drawn imperatively on the
+      // interaction layer (Excalidraw's hover state). No React, no store.
+      onMouseEnter: (e: Konva.KonvaEventObject<MouseEvent>) => {
+        // While the button is held (drag / press) hover feedback is noise:
+        // dragging element A should not outline element B underneath.
+        if ((e.evt as MouseEvent).buttons) return;
+        const st = useEditorStore.getState();
+        if (
+          st.activeTool === 'hand' || st.activeTool === 'eraser' || st.activeTool === 'crop'
+          || marqueeOriginRef.current || isErasingRef.current
+          || st.selectedElementIds.includes(el.id) || el.locked
+        ) return;
+        draftLayerRef.current?.showHoverOutline(getElementBounds(el, st.imageSize));
+      },
+      onMouseLeave: () => {
+        draftLayerRef.current?.clearHoverOutline();
+      },
       // Double-click a line/arrow body to insert a vertex (polyline editing).
       // Only wired for line-like types; text overrides it with its own handler.
       ...((el.type === 'arrow' || el.type === 'line')
         ? { onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => handleLineVertexInsert(el as ArrowElement | LineElement, e) }
         : {}),
+    };
+
+    /**
+     * Excalidraw-style midpoint ghost handles for multi-point polylines: a
+     * quiet dashed handle on every segment midpoint. Dragging one inserts a
+     * vertex there and follows the pointer; release commits one history entry.
+     * Hand-drawn (jittered) polylines skip the ghosts — their drawn vertices
+     * are offset from the raw points, so a ghost would float off the stroke.
+     */
+    const renderMidGhosts = (el: ArrowElement | LineElement, pts: number[], handDrawnStyle: boolean) => {
+      if (handDrawnStyle || pts.length <= 4) return null;
+      const ghostProps = midHandleProps();
+      const ghostHover = handleHoverEvents();
+      const ghosts: { x: number; y: number; seg: number }[] = [];
+      for (let i = 0; i < pts.length - 2; i += 2) {
+        ghosts.push({
+          x: (pts[i] + pts[i + 2]) / 2,
+          y: (pts[i + 1] + pts[i + 3]) / 2,
+          seg: i / 2,
+        });
+      }
+      return ghosts.map((m, k) => (
+        <Circle
+          key={`mid-${k}`}
+          x={el.x + m.x}
+          y={el.y + m.y}
+          {...ghostProps}
+          draggable
+          onMouseDown={(e) => handleHandleMouseDown(el.id, e)}
+          onDragStart={(e) => {
+            e.cancelBubble = true;
+            const idx = m.seg * 2 + 2;
+            midVertexRef.current = { id: el.id, idx, points: [...pts] };
+            const mv = midVertexRef.current;
+            mv.points.splice(idx, 0, m.x, m.y);
+            applyArrowLineLive(el.id, mv.points, 0, el.strokeWidth ?? 2, false, el.strokeStyle);
+          }}
+          onDragMove={(e) => {
+            e.cancelBubble = true;
+            const mv = midVertexRef.current;
+            if (!mv || mv.id !== el.id) return;
+            mv.points[mv.idx] = e.target.x() - el.x;
+            mv.points[mv.idx + 1] = e.target.y() - el.y;
+            applyArrowLineLive(el.id, mv.points, 0, el.strokeWidth ?? 2, false, el.strokeStyle);
+          }}
+          onDragEnd={(e) => {
+            e.cancelBubble = true;
+            const mv = midVertexRef.current;
+            if (!mv || mv.id !== el.id) return;
+            midVertexRef.current = null;
+            commitElementUpdate(el.id, { points: mv.points as [number, number, number, number] });
+          }}
+          {...ghostHover}
+        />
+      ));
     };
 
     switch (el.type) {
@@ -2997,9 +3105,21 @@ const EditorCanvas: React.FC = () => {
             };
             if (which === 'start') updates.startBinding = binding;
             else updates.endBinding = binding;
+            draftLayerRef.current?.clearBindingPreview();
             commitElementUpdate(arrow.id, updates);
           } else {
-            applyArrowLineLive(arrow.id, newPoints, arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
+            const st = useEditorStore.getState();
+            const bsnap = snapEndpointForBinding(
+              { ...arrow, points: newPoints as [number, number, number, number] } as ArrowElement,
+              which, newPoints, st.elements, st.imageSize, st.zoom, st.isBindingEnabled,
+            );
+            if (bsnap.preview) {
+              draftLayerRef.current?.showBindingPreview(bsnap.preview, getSelectionTheme().accent, st.zoom);
+              applyArrowLineLive(arrow.id, bsnap.points, arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
+            } else {
+              draftLayerRef.current?.clearBindingPreview();
+              applyArrowLineLive(arrow.id, newPoints, arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
+            }
           }
         };
 
@@ -3285,16 +3405,20 @@ const EditorCanvas: React.FC = () => {
                   {...hoverHandles}
                 />
                 {isMulti ? (
-                  // Multi-point polylines keep just the middle vertex handle;
-                  // everything else is the classic 3-dot model.
-                  <Circle x={arrow.x + drawPoints[midVertexIdx]}
-                    y={arrow.y + drawPoints[midVertexIdx + 1]}
-                    {...bendHandleProps} draggable
-                    onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
-                    onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
-                    onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
-                    {...hoverHandles}
-                  />
+                  // Multi-point polylines keep the middle vertex handle plus
+                  // Excalidraw-style midpoint ghost handles: drag one to
+                  // insert a new vertex and bend the polyline there.
+                  <>
+                    <Circle x={arrow.x + drawPoints[midVertexIdx]}
+                      y={arrow.y + drawPoints[midVertexIdx + 1]}
+                      {...bendHandleProps} draggable
+                      onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
+                      onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
+                      onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
+                      {...hoverHandles}
+                    />
+                    {renderMidGhosts(arrow, multiPoints, handDrawn)}
+                  </>
                 ) : (
                   <Circle x={arrow.x + (drawPoints.length > 4 ? drawPoints[2] : control.x)}
                     y={arrow.y + (drawPoints.length > 4 ? drawPoints[3] : control.y)}
@@ -3387,9 +3511,21 @@ const EditorCanvas: React.FC = () => {
             };
             if (which === 'start') updates.startBinding = binding;
             else updates.endBinding = binding;
+            draftLayerRef.current?.clearBindingPreview();
             commitElementUpdate(line.id, updates);
           } else {
-            applyArrowLineLive(line.id, newPoints, line.bend ?? 0, line.strokeWidth ?? 2, handDrawn, line.strokeStyle);
+            const st = useEditorStore.getState();
+            const bsnap = snapEndpointForBinding(
+              { ...line, points: newPoints as [number, number, number, number] } as LineElement,
+              which, newPoints, st.elements, st.imageSize, st.zoom, st.isBindingEnabled,
+            );
+            if (bsnap.preview) {
+              draftLayerRef.current?.showBindingPreview(bsnap.preview, getSelectionTheme().accent, st.zoom);
+              applyArrowLineLive(line.id, bsnap.points, line.bend ?? 0, line.strokeWidth ?? 2, handDrawn, line.strokeStyle);
+            } else {
+              draftLayerRef.current?.clearBindingPreview();
+              applyArrowLineLive(line.id, newPoints, line.bend ?? 0, line.strokeWidth ?? 2, handDrawn, line.strokeStyle);
+            }
           }
         };
         const updateBendFromHandle = (node: Konva.Node, commit = false) => {
@@ -3497,14 +3633,17 @@ const EditorCanvas: React.FC = () => {
                   {...hoverHandles}
                 />
                 {isMulti ? (
-                  <Circle x={line.x + drawPoints[midVertexIdx]}
-                    y={line.y + drawPoints[midVertexIdx + 1]}
-                    {...bendHandleProps} draggable
-                    onMouseDown={(e) => handleHandleMouseDown(line.id, e)}
-                    onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
-                    onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
-                    {...hoverHandles}
-                  />
+                  <>
+                    <Circle x={line.x + drawPoints[midVertexIdx]}
+                      y={line.y + drawPoints[midVertexIdx + 1]}
+                      {...bendHandleProps} draggable
+                      onMouseDown={(e) => handleHandleMouseDown(line.id, e)}
+                      onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
+                      onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
+                      {...hoverHandles}
+                    />
+                    {renderMidGhosts(line, multiPoints, handDrawn)}
+                  </>
                 ) : (
                   bendHandle
                 )}
@@ -3822,6 +3961,34 @@ const EditorCanvas: React.FC = () => {
    * interactions do not reconcile (or redraw) any committed annotation.
    * Selection/tool changes still rebuild — they alter draggable/listening.
    */
+  /**
+   * Keep every interaction handle screen-sized regardless of zoom (Excalidraw's
+   * zoom-invariant grab points): `.edit-handle` nodes (line/arrow endpoint +
+   * bend + midpoint ghost handles, magnifier handles) are counter-scaled by
+   * 1/zoom, and the Transformer is pushed through an update so its zoom-aware
+   * anchorStyleFunc re-runs. Runs via useLayoutEffect so newly-attached
+   * handles are corrected before the browser paints the frame. Konva Circle
+   * geometry is centered on the node origin, so scaling a handle keeps it
+   * glued to its endpoint while the visual radius and hit area stay
+   * screen-constant.
+   */
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const z = zoom > 0 ? zoom : 1;
+    let changed = false;
+    stage.find('.edit-handle').forEach((node) => {
+      const base = (node.getAttr('handleBaseScale') as number | undefined) ?? 1;
+      if (base !== 1 / z) {
+        node.setAttr('handleBaseScale', 1 / z);
+        node.scale({ x: 1 / z, y: 1 / z });
+        changed = true;
+      }
+    });
+    transformerRef.current?.update();
+    if (changed) stage.batchDraw();
+  }, [zoom, selectedElementIds]);
+
   const annotationNodes = useMemo(
     () => elements.map((el) => renderElement(el, false, null)),
     [
