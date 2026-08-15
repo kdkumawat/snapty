@@ -314,6 +314,25 @@ Phase A core + Phase B binding implemented and verified (`tsc --noEmit` clean, `
 | Selection-only export | `export-dialog.tsx` | `getSelectionRegion()` (union of selected bounds + 8px margin); raster crops via existing stage region capture; SVG crops via `viewBox` + translate group; `exportSelectionOnly` toggle (persisted, shown only with a selection) |
 | Threaded through all paths | `export-dialog.tsx` | `exportImage` / `buildExportCanvas` / `captureStagePng` / `copyToClipboard` / `shareImage` / estimate effect all take `(scale, region)` with defaults preserving the context-menu & shortcut callers |
 
+## 12. Excalidraw-class interaction model (2026-08-15) ✅ implemented
+
+Post-spec passes (commits `fdd20c5`, `57e83d5` + working tree) rebuilt the interaction layer so pointer → visible drawing never routes through React, and gave every object type a purpose-built selection model:
+
+| Item | Files | Notes |
+|------|-------|-------|
+| Imperative drawing overlay | `src/lib/editor/draft-layer.ts`, `editor-canvas.tsx` | live drafts, marquee, eraser rect, snapping guides, hover outline all painted on a dedicated interaction layer via rAF-coalesced `batchDraw`; React never renders during a gesture |
+| Render isolation | `editor-canvas.tsx` | `annotationNodes` memoized; store writes only at gesture commit |
+| Linear-element editor | `editor-canvas.tsx`, `src/lib/selection-theme.ts` | arrows/lines get endpoint + bend + midpoint-ghost handles (no Transformer); double-click body inserts a vertex; Shift constrains endpoint drags to 45° steps |
+| Live binding | `src/lib/editor/binding.ts` (`computeBoundArrowUpdates`/`liveElementFromNode`), `editor-canvas.tsx` | bound arrows re-point every frame during target drag/resize/rotate (imperative node attrs), commit once at gesture end |
+| Snap parity | `src/lib/editor/snap-guides.ts` | equal-spacing guides (beyond-end + between) on drag, on top of edge/center alignment |
+| Freehand selection | `editor-canvas.tsx` | path-aware dashed outline hugging the perfect-freehand geometry; no bounding box, no resize |
+| Selection visual language | `src/lib/selection-theme.ts` | handles ≈7px screen (grey, white core), subtle dotted outlines, hover/active states; `.edit-handle` nodes counter-scale by 1/zoom |
+| Rotation + resize snapping | `editor-canvas.tsx` | Shift = 15° rotation steps; Shift = keep-aspect resize |
+| Custom shape selection | `src/components/editor/canvas/shape-selection-overlay.tsx` (new) | single rectangle/rounded-rect/circle/diamond/step selections replace the Konva Transformer with a dashed outline + 8 zoom-invariant handles + rotate handle; scale/position math keeps the fixed reference glued (rotation-aware), uniform types keep aspect, one undo step per gesture |
+| Pointer capture | `editor-canvas.tsx` | canvas-owned gestures (draw/marquee/eraser/crop) capture the pointer so strokes to the canvas edge don't freeze |
+
+**Kept by design:** text keeps the Transformer re-wrap UX (side handles re-wrap, corners scale type); multi-selection keeps the combined Transformer box (Excalidraw also uses a combined box for multi-select) — both restyled to the same quiet dotted-border/small-handle language. Visual bind-target highlight while an endpoint hovers a shape during a bind drag remains deferred (§6.2.2).
+
 ### Deferred ⏳ (planned in this spec, not yet built)
 
 - **6.1.3 live rAF canvas layer** — the dedicated direct-canvas stroke layer (Phase A step 2; current rAF-coalesced `queueDrawingUpdate` + outline cache already remove most per-frame cost; this needs visual/perf verification).

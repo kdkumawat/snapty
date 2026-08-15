@@ -84,8 +84,20 @@ export function snapBounds(
 
   const snappedX = bestX <= threshold ? moving.x + dx : moving.x;
   const snappedY = bestY <= threshold ? moving.y + dy : moving.y;
-  const snapped: Bounds = { ...moving, x: snappedX, y: snappedY };
+  let snapped: Bounds = { ...moving, x: snappedX, y: snappedY };
   const sc = centers(snapped);
+
+  // Equal-spacing guides (Excalidraw's snap-to-equal-gaps): when the moving
+  // element is aligned with two others on an axis and would land at a
+  // distance matching their gap — beyond either end, or exactly between them
+  // — snap to the precise equal-spaced position and draw guides at each gap
+  // midpoint. Subtle: only the closest candidate pair wins, and it only
+  // engages within the same small threshold as alignment snapping.
+  const spacingX = spacingSnap('x', moving, snapped, others, threshold);
+  const spacingY = spacingSnap('y', moving, snapped, others, threshold);
+  if (spacingX.delta !== 0 || spacingY.delta !== 0) {
+    snapped = { ...snapped, x: snapped.x + spacingX.delta, y: snapped.y + spacingY.delta };
+  }
 
   if (bestX <= threshold) {
     for (const o of others) {
@@ -127,5 +139,70 @@ export function snapBounds(
     }
   }
 
-  return { x: snappedX, y: snappedY, guides };
+  guides.push(...spacingX.guides, ...spacingY.guides);
+  return { x: snapped.x, y: snapped.y, guides };
+}
+
+/**
+ * Equal-spacing snap on one axis. Returns the delta to apply (0 when no
+ * equal-spaced candidate is within `threshold`) plus the gap-midpoint guides.
+ */
+function spacingSnap(
+  axis: 'x' | 'y',
+  moving: Bounds,
+  snapped: Bounds,
+  others: Bounds[],
+  threshold: number,
+): { delta: number; guides: GuideLine[] } {
+  const coord = (b: Bounds) => (axis === 'x' ? b.x + b.w / 2 : b.y + b.h / 2);
+  const perp = (b: Bounds) => (axis === 'x' ? b.y + b.h / 2 : b.x + b.w / 2);
+  const mc = coord(snapped);
+
+  let bestD = threshold + 1;
+  let bestDelta = 0;
+  let bestRefs: Bounds[] = [];
+
+  for (let i = 0; i < others.length; i++) {
+    for (let j = i + 1; j < others.length; j++) {
+      const a = others[i];
+      const b = others[j];
+      // The moving element and both references must be aligned on the
+      // perpendicular axis, or the spacing relationship is meaningless.
+      if (Math.abs(perp(a) - perp(b)) > threshold || Math.abs(perp(a) - perp(moving)) > threshold) continue;
+      const gap = Math.abs(coord(a) - coord(b));
+      if (gap < 1) continue;
+      const lo = Math.min(coord(a), coord(b));
+      const hi = Math.max(coord(a), coord(b));
+      // Candidates: one gap beyond each end, or the midpoint between them.
+      const candidates = [lo - gap, hi + gap];
+      if (mc > lo - threshold && mc < hi + threshold) candidates.push((lo + hi) / 2);
+      for (const c of candidates) {
+        const d = Math.abs(c - mc);
+        if (d < bestD) {
+          bestD = d;
+          bestDelta = c - mc;
+          bestRefs = [a, b];
+        }
+      }
+    }
+  }
+
+  if (bestD > threshold || bestRefs.length !== 2) return { delta: 0, guides: [] };
+
+  const guides: GuideLine[] = [];
+  const xs = [coord(bestRefs[0]), coord(bestRefs[1]), mc + bestDelta].sort((p, q) => p - q);
+  const involved = [moving, ...bestRefs];
+  const p0 = (axis === 'x'
+    ? Math.min(...involved.map((b) => b.y)) - 14
+    : Math.min(...involved.map((b) => b.x)) - 14);
+  const p1 = (axis === 'x'
+    ? Math.max(...involved.map((b) => b.y + b.h)) + 14
+    : Math.max(...involved.map((b) => b.x + b.w)) + 14);
+  for (let k = 0; k < xs.length - 1; k++) {
+    const mid = (xs[k] + xs[k + 1]) / 2;
+    guides.push(axis === 'x'
+      ? { orientation: 'vertical', position: mid, start: p0, end: p1 }
+      : { orientation: 'horizontal', position: mid, start: p0, end: p1 });
+  }
+  return { delta: bestDelta, guides };
 }

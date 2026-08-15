@@ -1,8 +1,10 @@
+import type Konva from 'konva';
 import type {
   ArrowElement,
   EditorElement,
   FixedPointBinding,
   LineElement,
+  StepElement,
   TextElement,
 } from '@/types/editor';
 import { getElementBounds } from '@/lib/editor/selection';
@@ -237,6 +239,67 @@ export function recomputeBindings(
     }
     return next;
   });
+}
+
+/**
+ * Live binding — imperative counterpart of `recomputeBindings`.
+ *
+ * Returns new points for every arrow/line bound to `targetId`, computed
+ * against the target's LIVE geometry (the Konva node's current position,
+ * scale and rotation during a drag / resize / rotate gesture) instead of the
+ * committed store element. Callers patch the arrow nodes directly so bound
+ * arrows track the target on every frame; the store is only touched at
+ * gesture commit. Arrows being moved together with the target (multi-select)
+ * are skipped via `skipArrowIds` so movement is never double-applied.
+ */
+export function computeBoundArrowUpdates(
+  elements: EditorElement[],
+  targetId: string,
+  liveTarget: EditorElement,
+  imageSize: { width: number; height: number },
+  skipArrowIds?: ReadonlySet<string>,
+): Array<{ arrow: ArrowElement | LineElement; points: number[] }> {
+  const out: Array<{ arrow: ArrowElement | LineElement; points: number[] }> = [];
+  for (const el of elements) {
+    if (!isLineLike(el) || skipArrowIds?.has(el.id)) continue;
+    const pts = [...el.points];
+    let changed = false;
+    if (el.startBinding?.elementId === targetId) {
+      const anchor = anchorForBinding(liveTarget, el.startBinding.fixedPoint, el.startBinding.mode, imageSize);
+      pts[0] = anchor.x - el.x;
+      pts[1] = anchor.y - el.y;
+      changed = true;
+    }
+    if (el.endBinding?.elementId === targetId) {
+      const anchor = anchorForBinding(liveTarget, el.endBinding.fixedPoint, el.endBinding.mode, imageSize);
+      pts[pts.length - 2] = anchor.x - el.x;
+      pts[pts.length - 1] = anchor.y - el.y;
+      changed = true;
+    }
+    if (changed) out.push({ arrow: el, points: pts });
+  }
+  return out;
+}
+
+/**
+ * Rebuild a store element from its Konva node's LIVE attrs so binding anchors
+ * follow what is actually on screen mid-gesture (drag position, Transformer
+ * scale, rotation). The node's scale is baked into the element's logical box
+ * because `boundsOf`/`anchorForBinding` consume width/height.
+ */
+export function liveElementFromNode(el: EditorElement, node: Konva.Node): EditorElement {
+  const scaleX = node.scaleX?.() ?? 1;
+  const scaleY = node.scaleY?.() ?? 1;
+  const rotation = node.rotation?.() ?? ((el as { rotation?: number }).rotation ?? 0);
+  let out: EditorElement = { ...el, x: node.x(), y: node.y(), rotation, scaleX: 1, scaleY: 1 };
+  if (out.type === 'step') {
+    const step = out as StepElement;
+    out = { ...step, radius: Math.max(8, (step.radius ?? 16) * Math.max(scaleX, scaleY)) } as EditorElement;
+  } else if ('width' in out && 'height' in out && (scaleX !== 1 || scaleY !== 1)) {
+    const shape = out as { width?: number; height?: number };
+    out = { ...out, width: (shape.width ?? 0) * scaleX, height: (shape.height ?? 0) * scaleY } as EditorElement;
+  }
+  return out;
 }
 
 /**
