@@ -15,7 +15,9 @@ import {
   handDrawnEllipsePoints,
   wobbleFreehandPoint,
 } from '@/lib/hand-drawn';
-import { appendFreehandSample, freehandOutline } from '@/lib/editor/freehand';
+import { appendFreehandSampleInPlace, freehandOutline } from '@/lib/editor/freehand';
+import { DraftLayer, type DraftBoxGeo, type DraftBoxStyle, type DraftSegmentGeo, type DraftSegmentStyle } from '@/lib/editor/draft-layer';
+import { PerfProbe } from '@/lib/editor/perf';
 import {
   anchorForBinding,
   isBindableElement,
@@ -39,7 +41,7 @@ import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
 import { arrowHeadPoints, generateArrowHead, paintDrawable } from '@/lib/rough-renderer';
 import type { Drawable } from 'roughjs/bin/core';
 import type { RoughDrawInput } from '@/lib/rough-renderer';
-import { snapBounds, type GuideLine } from '@/lib/editor/snap-guides';
+import { snapBounds } from '@/lib/editor/snap-guides';
 import { getElementBounds, boundsIntersect } from '@/lib/editor/selection';
 import { hydrateSettingsFromSelection } from '@/lib/editor/settings-sync';
 import { magnifierSourceCenter } from '@/lib/editor/magnifier-geometry';
@@ -386,13 +388,44 @@ const EditorCanvas: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [isDrawing, setIsDrawing] = useState(false);
-  const [drawingElement, setDrawingElement] = useState<EditorElement | null>(null);
   const drawOriginRef = useRef<{ x: number; y: number } | null>(null);
   /**
-   * Live draw preview is coalesced to one React update per animation frame.
-   * Without this, every mousemove re-renders the whole canvas subtree
-   * (background image + all annotations), which is the visible draw lag.
+   * Transient drawing state lives in refs + imperative Konva nodes on the
+   * interaction layer, never in React state — pointermove does not re-render
+   * the editor or rebuild the annotation scene.
    */
+  // Freehand sample buffers: mutated in place during the gesture, snapshotted
+  // (slice) at commit so the committed element stays immutable (the outline
+  // WeakMap cache depends on that).
+  const freehandDraftRef = useRef<{
+    id: string;
+    tool: 'pencil' | 'highlighter';
+    strokeWidth: number;
+    color: string;
+    opacity: number;
+    simulatePressure: boolean;
+    base: Partial<EditorElement>;
+  } | null>(null);
+  const freehandPointsRef = useRef<number[] | null>(null);
+  const freehandPressuresRef = useRef<number[] | null>(null);
+  // Geometry of the in-progress box / segment draft (image coordinates).
+  const draftBoxGeoRef = useRef<DraftBoxGeo | null>(null);
+  const draftBoxStyleRef = useRef<{
+    id: string;
+    type: EditorElement['type'];
+    style: DraftBoxStyle;
+    extra: Record<string, unknown>;
+  } | null>(null);
+  const draftSegmentGeoRef = useRef<DraftSegmentGeo | null>(null);
+  const draftSegmentStyleRef = useRef<{
+    id: string;
+    kind: 'arrow' | 'line';
+    style: DraftSegmentStyle;
+    extra: Record<string, unknown>;
+  } | null>(null);
+  // The magnifier is the one tool whose live draft is a real component (live
+  // zoom bubble + crosshair) — it alone keeps the React draft path.
+  const [drawingElement, setDrawingElement] = useState<EditorElement | null>(null);
   const pendingDrawRef = useRef<EditorElement | null>(null);
   const drawRafRef = useRef<number | null>(null);
   const queueDrawingUpdate = (el: EditorElement) => {
@@ -414,7 +447,24 @@ const EditorCanvas: React.FC = () => {
     }
     setDrawingElement(null);
   };
-  const [guides, setGuides] = useState<GuideLine[]>([]);
+  // Imperative overlay: everything transient (drafts, marquee, eraser rect,
+  // snapping guides) is drawn here with raw Konva nodes.
+  const interactionLayerRef = useRef<Konva.Layer>(null);
+  const draftLayerRef = useRef<DraftLayer | null>(null);
+  const perfProbeRef = useRef<PerfProbe | null>(null);
+  useEffect(() => {
+    const layer = interactionLayerRef.current;
+    if (!layer) return;
+    const dl = new DraftLayer();
+    dl.attach(layer);
+    draftLayerRef.current = dl;
+    perfProbeRef.current = new PerfProbe();
+    return () => {
+      dl.detach();
+      draftLayerRef.current = null;
+      perfProbeRef.current = null;
+    };
+  }, []);
   const middlePanRef = useRef<{ lastX: number; lastY: number } | null>(null);
   const altDuplicateRef = useRef<string | null>(null);
   /** Last annotation mousedown, for time+position double-click detection. */
@@ -448,22 +498,71 @@ const EditorCanvas: React.FC = () => {
   }, []);
   const handDrawn = useEditorStore((s) => s.handDrawn);
   const [isHandDragging, setIsHandDragging] = useState(false);
-  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  // Marquee + eraser geometry lives in refs; the overlay renders them via the
+  // draft layer, so a moving pointer never re-renders React.
+  const marqueeRectRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const marqueeOriginRef = useRef<{ x: number; y: number } | null>(null);
   const marqueeAdditiveRef = useRef(false);
+  const isErasingRef = useRef(false);
+  // Kept as state only for cursor styling; the hot path reads the ref.
   const [isErasing, setIsErasing] = useState(false);
-  const [eraserStart, setEraserStart] = useState<{ x: number; y: number } | null>(null);
-  const [eraserEnd, setEraserEnd] = useState<{ x: number; y: number } | null>(null);
+  const eraserStartRef = useRef<{ x: number; y: number } | null>(null);
+  const eraserEndRef = useRef<{ x: number; y: number } | null>(null);
+  /**
+   * Imperatively fade/restore annotation nodes under the eraser stroke (30%
+   * opacity preview, Excalidraw's pending-erasure fade) without a React
+   * render — the store's elements are the source of each node's base opacity.
+   */
+  const applyEraserFade = useCallback((ids: Set<string> | null) => {
+    const layer = stageRef.current?.findOne('.annotation-layer') as Konva.Layer | undefined;
+    if (!layer) return;
+    const s = useEditorStore.getState();
+    const byId = new Map(s.elements.map((el) => [el.id, el]));
+    for (const node of layer.getChildren()) {
+      const id = node.id();
+      if (!id || !byId.has(id)) continue;
+      const base = byId.get(id)?.opacity ?? 1;
+      node.opacity(ids?.has(id) ? base * 0.3 : base);
+    }
+    layer.batchDraw();
+  }, []);
   const [spotlightOverlayImage, setSpotlightOverlayImage] = useState<HTMLImageElement | null>(null);
+
+  // --- Imperative viewport (zoom/pan) ---
+  // Wheel/pan/pinch update the Stage node immediately and only sync the store
+  // once per animation frame, so React never runs on the input hot path. The
+  // visible viewport always tracks the pointer; the store (and anything
+  // subscribed, e.g. the text overlay) lags by at most one frame.
+  const pendingViewportRef = useRef<{ zoom: number; x: number; y: number } | null>(null);
+  const viewportSyncRafRef = useRef<number | null>(null);
+  const syncViewportToStore = () => {
+    if (viewportSyncRafRef.current !== null) return;
+    viewportSyncRafRef.current = requestAnimationFrame(() => {
+      viewportSyncRafRef.current = null;
+      const vp = pendingViewportRef.current;
+      if (!vp) return;
+      pendingViewportRef.current = null;
+      const s = useEditorStore.getState();
+      if (vp.zoom !== s.zoom || vp.x !== s.stagePosition.x || vp.y !== s.stagePosition.y) {
+        s.setZoom(vp.zoom);
+        s.setStagePosition({ x: vp.x, y: vp.y });
+      }
+    });
+  };
+  useEffect(() => () => {
+    if (viewportSyncRafRef.current !== null) {
+      cancelAnimationFrame(viewportSyncRafRef.current);
+      viewportSyncRafRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (!middlePanRef.current) return;
-      const s = useEditorStore.getState();
       const dx = e.clientX - middlePanRef.current.lastX;
       const dy = e.clientY - middlePanRef.current.lastY;
       middlePanRef.current = { lastX: e.clientX, lastY: e.clientY };
-      s.setStagePosition({ x: s.stagePosition.x + dx, y: s.stagePosition.y + dy });
+      panStageBy(dx, dy);
     };
     const onUp = () => { middlePanRef.current = null; };
     window.addEventListener('mousemove', onMove);
@@ -473,6 +572,24 @@ const EditorCanvas: React.FC = () => {
       window.removeEventListener('mouseup', onUp);
     };
   }, []);
+
+  /**
+   * Imperatively pan the stage by a pointer delta and sync the store once per
+   * animation frame. Hoisted function declaration so the middle-pan effect
+   * (and any other event source) can share one implementation.
+   */
+  function panStageBy(dx: number, dy: number) {
+    const s = useEditorStore.getState();
+    const vp = pendingViewportRef.current ?? { zoom: s.zoom, x: s.stagePosition.x, y: s.stagePosition.y };
+    const next = { zoom: vp.zoom, x: vp.x + dx, y: vp.y + dy };
+    pendingViewportRef.current = next;
+    const st = stageRef.current;
+    if (st) {
+      st.position({ x: next.x, y: next.y });
+      st.batchDraw();
+    }
+    syncViewportToStore();
+  }
 
   /*
     OCR is triggered by a window event so the palette and context menu can reach
@@ -669,64 +786,79 @@ const EditorCanvas: React.FC = () => {
   // Calculate if there are any spotlights
   const hasSpotlights = elements.some(el => el.type === 'spotlight');
 
+  /**
+   * Spotlight overlay: a full-res darkened image with the lit regions cut
+   * back in. Rebuilt only when the spotlight regions themselves change
+   * (geometry or bitmap) and debounced, so adding/moving/editing *other*
+   * annotations never re-encodes the screenshot. Decoded spotlight PNGs are
+   * cached by data URL, so a move/resize re-draws instead of re-decoding.
+   */
+  const spotlightSigRef = useRef('');
+  const spotlightTimerRef = useRef<number | null>(null);
+  const spotlightImgCacheRef = useRef(new Map<string, HTMLImageElement>());
   useEffect(() => {
-    if (!backgroundImage || !hasSpotlights) {
-      const empty = document.createElement('canvas');
-      empty.width = backgroundImage?.width ?? 1;
-      empty.height = backgroundImage?.height ?? 1;
-      const emptyCtx = empty.getContext('2d');
-      if (emptyCtx && backgroundImage) {
-        emptyCtx.drawImage(backgroundImage, 0, 0);
+    if (!backgroundImage) return;
+    const spotlights = elements.filter((el): el is ShapeElement & { imageDataURL?: string } =>
+      el.type === 'spotlight' && Boolean((el as ShapeElement & { imageDataURL?: string }).imageDataURL),
+    );
+    const sig = spotlights
+      .map((el) => `${el.id}:${Math.round(el.x)},${Math.round(el.y)},${Math.round(el.width)},${Math.round(el.height)}:${(el.imageDataURL ?? '').length}`)
+      .join('|');
+    if (sig === spotlightSigRef.current) return;
+    spotlightSigRef.current = sig;
+    if (!spotlights.length) {
+      if (spotlightTimerRef.current !== null) {
+        window.clearTimeout(spotlightTimerRef.current);
+        spotlightTimerRef.current = null;
       }
-      const overlay = new window.Image();
-      overlay.src = empty.toDataURL('image/png');
-      overlay.onload = () => {
-        setSpotlightOverlayImage(overlay);
-      };
+      setSpotlightOverlayImage(null);
       return;
     }
-
-    const canvas = document.createElement('canvas');
-    canvas.width = backgroundImage.width;
-    canvas.height = backgroundImage.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.drawImage(backgroundImage, 0, 0);
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    const spotlightElements = elements.filter((el): el is ShapeElement & { imageDataURL?: string } => {
-      return el.type === 'spotlight' && Boolean((el as ShapeElement & { imageDataURL?: string }).imageDataURL);
-    });
-
-    const loadImages = spotlightElements.map((el) => {
-      return new Promise<HTMLImageElement>((resolve, reject) => {
-        const img = new window.Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = (el as ShapeElement & { imageDataURL?: string }).imageDataURL!;
-      });
-    });
-
-    if (!loadImages.length) {
-      const overlay = new window.Image();
-      overlay.onload = () => setSpotlightOverlayImage(overlay);
-      overlay.src = canvas.toDataURL('image/png');
-      return;
-    }
-
-    Promise.all(loadImages)
-      .then((images) => {
-        images.forEach((img) => {
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        });
-        const overlay = new window.Image();
-        overlay.onload = () => setSpotlightOverlayImage(overlay);
-        overlay.src = canvas.toDataURL('image/png');
-      })
-      .catch(() => setSpotlightOverlayImage(null));
-  }, [backgroundImage, elements, hasSpotlights]);
+    if (spotlightTimerRef.current !== null) window.clearTimeout(spotlightTimerRef.current);
+    spotlightTimerRef.current = window.setTimeout(() => {
+      spotlightTimerRef.current = null;
+      const cur = spotlightSigRef.current;
+      void (async () => {
+        if (!backgroundImage) return;
+        const canvas = document.createElement('canvas');
+        canvas.width = backgroundImage.width;
+        canvas.height = backgroundImage.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(backgroundImage, 0, 0);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        try {
+          for (const el of spotlights) {
+            let img = spotlightImgCacheRef.current.get(el.imageDataURL!);
+            if (!img) {
+              img = await new Promise<HTMLImageElement>((resolve, reject) => {
+                const i = new window.Image();
+                i.onload = () => resolve(i);
+                i.onerror = () => reject(new Error('spotlight decode failed'));
+                i.src = el.imageDataURL!;
+              });
+              spotlightImgCacheRef.current.set(el.imageDataURL!, img);
+            }
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          }
+          const overlay = new window.Image();
+          overlay.onload = () => {
+            if (spotlightSigRef.current === cur) setSpotlightOverlayImage(overlay);
+          };
+          overlay.src = canvas.toDataURL('image/png');
+        } catch {
+          if (spotlightSigRef.current === cur) setSpotlightOverlayImage(null);
+        }
+      })();
+    }, 80);
+    return () => {
+      if (spotlightTimerRef.current !== null) {
+        window.clearTimeout(spotlightTimerRef.current);
+        spotlightTimerRef.current = null;
+      }
+    };
+  }, [backgroundImage, elements]);
 
   // Register stage globally for export
   useEffect(() => {
@@ -1229,7 +1361,8 @@ const EditorCanvas: React.FC = () => {
         if (pos) {
           marqueeOriginRef.current = pos;
           marqueeAdditiveRef.current = e.evt.shiftKey;
-          setMarquee({ x: pos.x, y: pos.y, w: 0, h: 0 });
+          marqueeRectRef.current = { x: pos.x, y: pos.y, w: 0, h: 0 };
+          draftLayerRef.current?.showMarquee(pos.x, pos.y, 0, 0, getSelectionTheme().accent, 'rgba(234,88,12,0.08)');
           if (!e.evt.shiftKey) s.setSelectedElementIds([]);
         }
         const previous = hoverPreviousToolRef.current;
@@ -1247,30 +1380,28 @@ const EditorCanvas: React.FC = () => {
     if (s.activeTool === 'eraser') {
       const pos = getCanvasPoint();
       if (!pos) return;
+      isErasingRef.current = true;
       setIsErasing(true);
-      setEraserStart(pos);
-      setEraserEnd(pos);
+      eraserStartRef.current = pos;
+      eraserEndRef.current = pos;
+      draftLayerRef.current?.showEraser(pos.x, pos.y, pos.x, pos.y);
       return;
     }
 
-    // Crop tool: drag a region to crop the image
+    // Crop tool: drag a region to crop the image (imperative overlay marquee —
+    // never committed as an annotation).
     if (s.activeTool === 'crop') {
       const pos = getCanvasPoint();
       if (!pos) return;
       setIsDrawing(true);
-      // Temporary rect used only as a crop marquee (never committed as an annotation)
-      setDrawingElement({
-        id: '__crop_marquee__',
-        type: 'rectangle',
-        x: pos.x,
-        y: pos.y,
-        width: 0,
-        height: 0,
+      const geo: DraftBoxGeo = { kind: 'crop', ox: pos.x, oy: pos.y, w: 0, h: 0 };
+      draftBoxGeoRef.current = geo;
+      draftLayerRef.current?.beginBox(geo, {
         stroke: '#3b82f6',
         fill: 'rgba(59,130,246,0.15)',
         strokeWidth: Math.max(1, Math.round(2 * getImageToolScale(s.imageSize.width, s.imageSize.height))),
         opacity: 1,
-      } as ShapeElement);
+      }, '__crop_marquee__', false);
       return;
     }
 
@@ -1328,84 +1459,129 @@ const EditorCanvas: React.FC = () => {
     if (s.activeTool === 'pencil' || s.activeTool === 'highlighter') {
       // First sample: record pen pressure when a stylus is the source, else
       // a neutral 0.5 that perfect-freehand ignores (simulated pressure).
+      // The stroke lives in mutable refs + the imperative overlay; nothing
+      // touches React state until pointerup commits it.
       const evt = e.evt as PointerEvent;
       const downIsPen = evt.pointerType === 'pen' && evt.pressure > 0;
-      setDrawingElement({
-        ...base,
-        type: s.activeTool,
-        x: 0, y: 0,
-        points: [pos.x, pos.y],
-        pressures: [downIsPen ? Math.round(Math.min(1, Math.max(0, evt.pressure)) * 100) / 100 : 0.5],
+      const strokeWidth = s.activeTool === 'highlighter' ? hw : sw;
+      const opacity = s.activeTool === 'highlighter' ? 0.4 : (base.opacity ?? 1);
+      const points = [pos.x, pos.y];
+      const pressures = [downIsPen ? Math.round(Math.min(1, Math.max(0, evt.pressure)) * 100) / 100 : 0.5];
+      freehandDraftRef.current = {
+        id: base.id as string,
+        tool: s.activeTool,
+        strokeWidth,
+        color: s.strokeColor,
+        opacity,
         simulatePressure: !downIsPen,
-        stroke: s.strokeColor,
-        strokeWidth: s.activeTool === 'highlighter' ? hw : sw,
-        lineCap: 'round',
-        lineJoin: 'round',
-        tension: 0.5,
-        ...(s.activeTool === 'highlighter' ? { opacity: 0.4 } : {}),
-      } as PencilElement);
-    } else if (s.activeTool === 'arrow') {
-      setDrawingElement({
-        ...base,
-        type: 'arrow',
-        x: pos.x, y: pos.y,
-        points: [0, 0, 0, 0],
-        stroke: s.strokeColor,
-        strokeWidth: sw,
-        fill: s.strokeColor,
-        pointerLength: pointerSize,
-        pointerWidth: pointerSize,
-        endArrowhead: s.endArrowhead,
-        startArrowhead: s.startArrowhead,
-      } as ArrowElement);
-    } else if (s.activeTool === 'line') {
-      setDrawingElement({
-        ...base,
-        type: 'line',
-        x: pos.x, y: pos.y,
-        points: [0, 0, 0, 0],
-        stroke: s.strokeColor,
-        strokeWidth: sw,
-        endArrowhead: s.endArrowhead,
-        startArrowhead: s.startArrowhead,
-      } as LineElement);
+        base,
+      };
+      freehandPointsRef.current = points;
+      freehandPressuresRef.current = pressures;
+      draftLayerRef.current?.beginFreehand(s.activeTool, strokeWidth, s.strokeColor, opacity, !downIsPen);
+      draftLayerRef.current?.updateFreehand(points, pressures, !downIsPen);
+    } else if (s.activeTool === 'arrow' || s.activeTool === 'line') {
+      const geo: DraftSegmentGeo = { kind: s.activeTool, sx: pos.x, sy: pos.y, ex: pos.x, ey: pos.y };
+      const headSize = (s.endArrowhead ?? 'arrow') !== 'none' ? pointerSize : 0;
+      draftSegmentGeoRef.current = geo;
+      draftSegmentStyleRef.current = {
+        id: base.id as string,
+        kind: s.activeTool,
+        style: {
+          stroke: s.strokeColor,
+          strokeWidth: sw,
+          fill: s.strokeColor,
+          headSize,
+          pointerWidth: pointerSize,
+          showStartHead: (s.startArrowhead ?? 'none') !== 'none',
+          strokeStyle: s.strokeStyle,
+          roughness: s.roughness,
+          opacity: s.opacity,
+        },
+        extra: {
+          endArrowhead: s.endArrowhead,
+          startArrowhead: s.startArrowhead,
+        },
+      };
+      draftLayerRef.current?.beginSegment(s.activeTool, geo, draftSegmentStyleRef.current.style, base.id as string, handDrawn);
     } else if (s.activeTool === 'circle' || s.activeTool === 'magnifier') {
-      setDrawingElement({
-        ...base,
-        type: s.activeTool === 'magnifier' ? 'magnifier' : 'circle',
-        x: pos.x, y: pos.y,
-        width: 0, height: 0,
-        stroke: s.strokeColor,
-        fill: s.activeTool === 'magnifier' ? 'transparent' : (s.fillColor === 'transparent' ? 'transparent' : s.fillColor),
-        strokeWidth: sw,
-        ...(s.activeTool === 'magnifier' ? { magnification: s.magnification, roughness: s.roughness } : {}),
-      } as CircleElement | MagnifierElement);
+      if (s.activeTool === 'magnifier') {
+        // The magnifier keeps its React draft (live zoom bubble component).
+        setDrawingElement({
+          ...base,
+          type: s.activeTool === 'magnifier' ? 'magnifier' : 'circle',
+          x: pos.x, y: pos.y,
+          width: 0, height: 0,
+          stroke: s.strokeColor,
+          fill: 'transparent',
+          strokeWidth: sw,
+          ...(s.activeTool === 'magnifier' ? { magnification: s.magnification, roughness: s.roughness } : {}),
+        } as CircleElement | MagnifierElement);
+        return;
+      }
+      const geo: DraftBoxGeo = { kind: 'ellipse', ox: pos.x, oy: pos.y, w: 0, h: 0 };
+      draftBoxGeoRef.current = geo;
+      draftBoxStyleRef.current = {
+        id: base.id as string,
+        type: 'circle',
+        style: {
+          stroke: s.strokeColor,
+          fill: s.fillColor === 'transparent' ? 'transparent' : s.fillColor,
+          strokeWidth: sw,
+          strokeStyle: s.strokeStyle,
+          fillStyle: s.fillStyle,
+          roughness: s.roughness,
+          opacity: s.opacity,
+        },
+        extra: {},
+      };
+      draftLayerRef.current?.beginBox(geo, draftBoxStyleRef.current.style, base.id as string, handDrawn);
     } else if (s.activeTool === 'diamond') {
-      setDrawingElement({
-        ...base,
+      const geo: DraftBoxGeo = { kind: 'diamond', ox: pos.x, oy: pos.y, w: 0, h: 0 };
+      draftBoxGeoRef.current = geo;
+      draftBoxStyleRef.current = {
+        id: base.id as string,
         type: 'diamond',
-        x: pos.x, y: pos.y,
-        width: 0, height: 0,
-        stroke: s.strokeColor,
-        fill: s.fillColor === 'transparent' ? 'transparent' : s.fillColor,
-        strokeWidth: sw,
-      } as DiamondElement);
+        style: {
+          stroke: s.strokeColor,
+          fill: s.fillColor === 'transparent' ? 'transparent' : s.fillColor,
+          strokeWidth: sw,
+          strokeStyle: s.strokeStyle,
+          fillStyle: s.fillStyle,
+          roughness: s.roughness,
+          opacity: s.opacity,
+        },
+        extra: {},
+      };
+      draftLayerRef.current?.beginBox(geo, draftBoxStyleRef.current.style, base.id as string, handDrawn);
     } else {
       // rectangle, rounded-rect, blur, pixelate, spotlight
-      setDrawingElement({
-        ...base,
+      const isEffect = ['blur', 'pixelate', 'spotlight'].includes(s.activeTool);
+      const geo: DraftBoxGeo = { kind: s.activeTool as DraftBoxGeo['kind'], ox: pos.x, oy: pos.y, w: 0, h: 0 };
+      const effectStyle: DraftBoxStyle =
+        s.activeTool === 'blur' || s.activeTool === 'pixelate'
+          ? { stroke: '#3b82f6', fill: 'rgba(59,130,246,0.1)', strokeWidth: 1.5, opacity: s.opacity }
+          : { stroke: '#facc15', fill: 'rgba(250,204,21,0.08)', strokeWidth: 1.5, opacity: s.opacity };
+      draftBoxGeoRef.current = geo;
+      draftBoxStyleRef.current = {
+        id: base.id as string,
         type: s.activeTool as ShapeElement['type'],
-        x: pos.x, y: pos.y,
-        width: 0, height: 0,
-        stroke: ['blur', 'pixelate', 'spotlight'].includes(s.activeTool) ? undefined : s.strokeColor,
-        fill: (s.activeTool === 'blur' || s.activeTool === 'pixelate')
-          ? undefined
-          : (s.activeTool === 'spotlight' ? undefined : s.fillColor),
-        strokeWidth: ['blur', 'pixelate', 'spotlight'].includes(s.activeTool) ? 0 : sw,
-        cornerRadius: s.activeTool === 'rounded-rect' ? s.cornerRadius * scale : 0,
-        blurRadius: s.activeTool === 'blur' ? s.blurRadius : undefined,
-        pixelSize: s.activeTool === 'pixelate' ? s.pixelSize : undefined,
-      } as ShapeElement);
+        style: isEffect ? effectStyle : {
+          stroke: s.strokeColor,
+          fill: s.fillColor,
+          strokeWidth: sw,
+          strokeStyle: s.strokeStyle,
+          fillStyle: s.fillStyle,
+          roughness: s.roughness,
+          cornerRadius: s.activeTool === 'rounded-rect' ? s.cornerRadius * scale : 0,
+          opacity: s.opacity,
+        },
+        extra: {
+          blurRadius: s.activeTool === 'blur' ? s.blurRadius : undefined,
+          pixelSize: s.activeTool === 'pixelate' ? s.pixelSize : undefined,
+        },
+      };
+      draftLayerRef.current?.beginBox(geo, draftBoxStyleRef.current.style, base.id as string, handDrawn);
     }
   }
 
@@ -1432,87 +1608,54 @@ const EditorCanvas: React.FC = () => {
       }
     }
 
-    // Marquee multi-select
+    // Marquee multi-select (drawn imperatively on the interaction layer)
     if (marqueeOriginRef.current) {
       const pos = getCanvasPoint();
       if (pos) {
         const o = marqueeOriginRef.current;
-        setMarquee({
+        marqueeRectRef.current = {
           x: Math.min(o.x, pos.x),
           y: Math.min(o.y, pos.y),
           w: Math.abs(pos.x - o.x),
           h: Math.abs(pos.y - o.y),
-        });
+        };
+        const m = marqueeRectRef.current;
+        draftLayerRef.current?.showMarquee(m.x, m.y, m.w, m.h, getSelectionTheme().accent, 'rgba(234,88,12,0.08)');
       }
       return;
     }
 
-    // Eraser: update selection rectangle
-    if (isErasing) {
+    // Eraser: update the selection rect + pending-erasure fade imperatively
+    if (isErasingRef.current) {
       const pos = getCanvasPoint();
-      if (pos) setEraserEnd(pos);
+      if (pos) {
+        eraserEndRef.current = pos;
+        const s0 = eraserStartRef.current;
+        const e0 = eraserEndRef.current;
+        if (s0) {
+          const x1 = Math.min(s0.x, e0.x);
+          const y1 = Math.min(s0.y, e0.y);
+          const x2 = Math.max(s0.x, e0.x);
+          const y2 = Math.max(s0.y, e0.y);
+          draftLayerRef.current?.showEraser(x1, y1, x2, y2);
+          applyEraserFade(new Set(computeEraserHitIds(useEditorStore.getState().elements, x1, y1, x2, y2)));
+        }
+      }
       return;
     }
 
-    if (!isDrawing || !drawingElement) return;
+    if (!isDrawing) return;
+    // Perf probe: pointermove → draft update cost (dev only, see perf.ts).
+    const moveStart = performance.now();
     const pos = getCanvasPoint();
     if (!pos) return;
 
-    if (drawingElement.type === 'pencil' || drawingElement.type === 'highlighter') {
-      const pencil = drawingElement as PencilElement;
-      const pts = pencil.points;
-      const ptCount = pts.length / 2;
-      let nx = pos.x;
-      let ny = pos.y;
-      if (handDrawn && ptCount > 0) {
-        [nx, ny] = wobbleFreehandPoint(pos.x, pos.y, ptCount, pencil.strokeWidth ?? 3);
-      }
-      const evt = e?.evt as PointerEvent | undefined;
-      const isPen = evt?.pointerType === 'pen' && (evt?.pressure ?? 0) > 0;
-      const next = appendFreehandSample(
-        pts,
-        pencil.pressures ?? [],
-        nx,
-        ny,
-        isPen ? (evt?.pressure ?? 0.5) : 0.5,
-      );
-      queueDrawingUpdate({
-        ...drawingElement,
-        points: next.points,
-        pressures: next.pressures,
-        simulatePressure: !isPen,
-      });
-    } else if (drawingElement.type === 'arrow' || drawingElement.type === 'line') {
-      let dx = pos.x - drawingElement.x;
-      let dy = pos.y - drawingElement.y;
-      if (e?.evt?.shiftKey) {
-        const angle = Math.atan2(dy, dx);
-        const snap = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
-        const len = Math.hypot(dx, dy);
-        dx = Math.cos(snap) * len;
-        dy = Math.sin(snap) * len;
-      }
-      if (e?.evt?.altKey && drawOriginRef.current) {
-        const ox = drawOriginRef.current.x;
-        const oy = drawOriginRef.current.y;
-        queueDrawingUpdate({
-          ...drawingElement,
-          x: ox - dx,
-          y: oy - dy,
-          points: [0, 0, dx * 2, dy * 2],
-        } as ArrowElement | LineElement);
-      } else {
-        queueDrawingUpdate({
-          ...drawingElement,
-          points: [0, 0, dx, dy],
-        } as ArrowElement | LineElement);
-      }
-    } else {
+    // The magnifier keeps its React draft (live zoom bubble component). Its
+    // updates are rAF-coalesced so this is at most one render per frame.
+    if (drawingElement?.type === 'magnifier') {
       const origin = drawOriginRef.current || { x: drawingElement.x, y: drawingElement.y };
       let w = pos.x - origin.x;
       let h = pos.y - origin.y;
-      // Magnifiers draw elliptically like every other shape; Shift constrains
-      // to a circle rather than the tool being permanently square-locked.
       if (e?.evt?.shiftKey) {
         const size = Math.max(Math.abs(w), Math.abs(h));
         w = Math.sign(w || 1) * size;
@@ -1525,7 +1668,7 @@ const EditorCanvas: React.FC = () => {
           y: origin.y - h,
           width: w * 2,
           height: h * 2,
-        } as ShapeElement | CircleElement | DiamondElement | MagnifierElement);
+        } as MagnifierElement);
       } else {
         queueDrawingUpdate({
           ...drawingElement,
@@ -1533,8 +1676,76 @@ const EditorCanvas: React.FC = () => {
           y: origin.y,
           width: w,
           height: h,
-        } as ShapeElement | CircleElement | DiamondElement | MagnifierElement);
+        } as MagnifierElement);
       }
+      perfProbeRef.current?.tick(performance.now() - moveStart, 'magnifier-draw');
+      return;
+    }
+
+    // Freehand: append samples in place, repaint only the active stroke.
+    if (freehandDraftRef.current && freehandPointsRef.current) {
+      const pts = freehandPointsRef.current;
+      const prs = freehandPressuresRef.current ?? (freehandPressuresRef.current = []);
+      const ptCount = pts.length / 2;
+      let nx = pos.x;
+      let ny = pos.y;
+      if (handDrawn && ptCount > 0) {
+        [nx, ny] = wobbleFreehandPoint(pos.x, pos.y, ptCount, freehandDraftRef.current.strokeWidth);
+      }
+      const evt = e?.evt as PointerEvent | undefined;
+      const isPen = evt?.pointerType === 'pen' && (evt?.pressure ?? 0) > 0;
+      appendFreehandSampleInPlace(pts, prs, nx, ny, isPen ? (evt?.pressure ?? 0.5) : 0.5);
+      draftLayerRef.current?.updateFreehand(pts, prs, !isPen);
+      perfProbeRef.current?.tick(performance.now() - moveStart, 'freehand-draw');
+      return;
+    }
+
+    // Arrow / line: the endpoint follows the pointer 1:1 (Shift constrains to
+    // 45°, Alt draws from the start point out both ways).
+    if (draftSegmentGeoRef.current) {
+      const geo = draftSegmentGeoRef.current;
+      let dx = pos.x - geo.sx;
+      let dy = pos.y - geo.sy;
+      if (e?.evt?.shiftKey) {
+        const angle = Math.atan2(dy, dx);
+        const snap = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+        const len = Math.hypot(dx, dy);
+        dx = Math.cos(snap) * len;
+        dy = Math.sin(snap) * len;
+      }
+      if (e?.evt?.altKey && drawOriginRef.current) {
+        const o = drawOriginRef.current;
+        geo.sx = o.x - dx;
+        geo.sy = o.y - dy;
+        geo.ex = o.x + dx;
+        geo.ey = o.y + dy;
+      } else {
+        geo.ex = geo.sx + dx;
+        geo.ey = geo.sy + dy;
+      }
+      draftLayerRef.current?.updateSegment(geo);
+      perfProbeRef.current?.tick(performance.now() - moveStart, 'segment-draw');
+      return;
+    }
+
+    // Box shapes (rect / rounded / ellipse / diamond / blur / pixelate /
+    // spotlight / crop): drag from the origin; Shift constrains aspect;
+    // Alt draws from the center.
+    if (draftBoxGeoRef.current) {
+      const geo = draftBoxGeoRef.current;
+      const origin = drawOriginRef.current || { x: geo.ox, y: geo.oy };
+      let w = pos.x - origin.x;
+      let h = pos.y - origin.y;
+      if (e?.evt?.shiftKey) {
+        const size = Math.max(Math.abs(w), Math.abs(h));
+        w = Math.sign(w || 1) * size;
+        h = Math.sign(h || 1) * size;
+      }
+      geo.w = w;
+      geo.h = h;
+      geo.centered = !!e?.evt?.altKey;
+      draftLayerRef.current?.updateBox(geo);
+      perfProbeRef.current?.tick(performance.now() - moveStart, 'box-draw');
     }
   }
 
@@ -1548,13 +1759,14 @@ const EditorCanvas: React.FC = () => {
 
   async function handleMouseUp() {
     // Marquee multi-select commit
-    if (marqueeOriginRef.current && marquee) {
+    if (marqueeOriginRef.current && marqueeRectRef.current) {
       const s = useEditorStore.getState();
+      const m = marqueeRectRef.current;
       const box = {
-        x: marquee.x,
-        y: marquee.y,
-        w: Math.max(marquee.w, 1),
-        h: Math.max(marquee.h, 1),
+        x: m.x,
+        y: m.y,
+        w: Math.max(m.w, 1),
+        h: Math.max(m.h, 1),
       };
       const hit = s.elements
         .filter((el) => !el.locked && boundsIntersect(box, getElementBounds(el, s.imageSize)))
@@ -1568,67 +1780,165 @@ const EditorCanvas: React.FC = () => {
       }
       marqueeOriginRef.current = null;
       marqueeAdditiveRef.current = false;
-      setMarquee(null);
+      marqueeRectRef.current = null;
+      draftLayerRef.current?.clearMarquee();
       return;
     }
 
     // Eraser: commit - remove all elements that INTERSECT the selection rect
     // (same hit test as the live fade preview).
-    if (isErasing && eraserStart && eraserEnd) {
+    if (isErasingRef.current && eraserStartRef.current && eraserEndRef.current) {
       const s = useEditorStore.getState();
-      const x1 = Math.min(eraserStart.x, eraserEnd.x);
-      const y1 = Math.min(eraserStart.y, eraserEnd.y);
-      const x2 = Math.max(eraserStart.x, eraserEnd.x);
-      const y2 = Math.max(eraserStart.y, eraserEnd.y);
+      const x1 = Math.min(eraserStartRef.current.x, eraserEndRef.current.x);
+      const y1 = Math.min(eraserStartRef.current.y, eraserEndRef.current.y);
+      const x2 = Math.max(eraserStartRef.current.x, eraserEndRef.current.x);
+      const y2 = Math.max(eraserStartRef.current.y, eraserEndRef.current.y);
       const toRemove = computeEraserHitIds(s.elements, x1, y1, x2, y2);
       if (toRemove.length) s.removeElements(toRemove);
+      isErasingRef.current = false;
       setIsErasing(false);
-      setEraserStart(null);
-      setEraserEnd(null);
+      eraserStartRef.current = null;
+      eraserEndRef.current = null;
+      applyEraserFade(null);
+      draftLayerRef.current?.clearEraser();
       return;
     }
 
     if (!isDrawing) return;
     setIsDrawing(false);
-    // The draft state can be a frame behind the latest pointer (its updates
-    // are rAF-coalesced) - commit the coalesced final frame instead.
-    const finalDraft = pendingDrawRef.current ?? drawingElement;
+    // The magnifier is the only React-path draft; its updates are
+    // rAF-coalesced, so commit the coalesced final frame. Everything else was
+    // drawn imperatively and is committed from the refs below.
+    const finalDraft = drawingElement?.type === 'magnifier'
+      ? (pendingDrawRef.current ?? drawingElement)
+      : null;
     pendingDrawRef.current = null;
     if (drawRafRef.current !== null) {
       cancelAnimationFrame(drawRafRef.current);
       drawRafRef.current = null;
     }
-    if (!finalDraft) return;
-    const draft = finalDraft;
     const MIN_SIZE = 3;
     let valid = false;
+    let draft: EditorElement | null = null;
 
-    // Crop commit (marquee only - never saved as an annotation)
-    if (draft.id === '__crop_marquee__' && draft.type === 'rectangle') {
-      const shape = draft as ShapeElement;
-      const x = Math.min(shape.x, shape.x + shape.width);
-      const y = Math.min(shape.y, shape.y + shape.height);
-      const w = Math.abs(shape.width);
-      const h = Math.abs(shape.height);
-      setDrawingElement(null);
+    // Crop commit (imperative overlay marquee - never saved as an annotation)
+    if (draftBoxGeoRef.current?.kind === 'crop') {
+      const geo = draftBoxGeoRef.current;
+      const w0 = geo.centered ? geo.w * 2 : geo.w;
+      const h0 = geo.centered ? geo.h * 2 : geo.h;
+      const x = Math.min(geo.ox, geo.ox + w0);
+      const y = Math.min(geo.oy, geo.oy + h0);
+      const w = Math.abs(w0);
+      const h = Math.abs(h0);
+      draftBoxGeoRef.current = null;
+      draftBoxStyleRef.current = null;
+      draftLayerRef.current?.clear();
       if (w > MIN_SIZE && h > MIN_SIZE) {
         useEditorStore.getState().cropToRegion({ x, y, width: w, height: h });
       }
       return;
     }
 
-    if (draft.type === 'pencil' || draft.type === 'highlighter') {
-      valid = (draft as PencilElement).points.length > 4;
-    } else if (draft.type === 'arrow' || draft.type === 'line') {
-      const pts = (draft as ArrowElement | LineElement).points;
-      valid = Math.abs(pts[2]) > MIN_SIZE || Math.abs(pts[3]) > MIN_SIZE;
-    } else {
-      const w = Math.abs((draft as ShapeElement | CircleElement).width);
-      const h = Math.abs((draft as ShapeElement | CircleElement).height);
-      valid = w > MIN_SIZE || h > MIN_SIZE;
+    // Freehand: snapshot the mutable buffers into an immutable element.
+    if (freehandDraftRef.current && freehandPointsRef.current) {
+      const fd = freehandDraftRef.current;
+      const pts = freehandPointsRef.current;
+      const prs = freehandPressuresRef.current ?? [];
+      valid = pts.length > 4;
+      if (valid) {
+        draft = {
+          ...fd.base,
+          type: fd.tool,
+          x: 0, y: 0,
+          points: pts.slice(),
+          pressures: prs.slice(),
+          simulatePressure: fd.simulatePressure,
+          stroke: fd.color,
+          strokeWidth: fd.strokeWidth,
+          lineCap: 'round',
+          lineJoin: 'round',
+          tension: 0.5,
+          opacity: fd.opacity,
+        } as PencilElement;
+      }
+      freehandDraftRef.current = null;
+      freehandPointsRef.current = null;
+      freehandPressuresRef.current = null;
+    } else if (draftSegmentGeoRef.current && draftSegmentStyleRef.current) {
+      const geo = draftSegmentGeoRef.current;
+      const seg = draftSegmentStyleRef.current;
+      valid = Math.abs(geo.ex - geo.sx) > MIN_SIZE || Math.abs(geo.ey - geo.sy) > MIN_SIZE;
+      if (valid) {
+        draft = {
+          ...seg.extra,
+          id: seg.id,
+          type: seg.kind,
+          x: geo.sx,
+          y: geo.sy,
+          points: [0, 0, geo.ex - geo.sx, geo.ey - geo.sy],
+          stroke: seg.style.stroke,
+          strokeWidth: seg.style.strokeWidth,
+          fill: seg.style.fill,
+          // Arrowhead geometry only exists on arrows (matches the pre-audit
+          // draft: line drafts carried no pointerLength/pointerWidth).
+          ...(seg.kind === 'arrow'
+            ? {
+                pointerLength: seg.style.headSize ?? 0,
+                pointerWidth: seg.style.pointerWidth ?? (seg.style.headSize ?? 0),
+              }
+            : {}),
+          opacity: seg.style.opacity,
+          strokeStyle: seg.style.strokeStyle,
+          roughness: seg.style.roughness,
+        } as ArrowElement | LineElement;
+      }
+      draftSegmentGeoRef.current = null;
+      draftSegmentStyleRef.current = null;
+    } else if (draftBoxGeoRef.current && draftBoxStyleRef.current) {
+      const geo = draftBoxGeoRef.current;
+      const box = draftBoxStyleRef.current;
+      const w0 = geo.centered ? geo.w * 2 : geo.w;
+      const h0 = geo.centered ? geo.h * 2 : geo.h;
+      valid = Math.abs(w0) > MIN_SIZE || Math.abs(h0) > MIN_SIZE;
+      if (valid) {
+        const isEffect = ['blur', 'pixelate', 'spotlight'].includes(box.type);
+        draft = {
+          ...box.extra,
+          id: box.id,
+          type: box.type,
+          x: geo.centered ? geo.ox - geo.w : geo.ox,
+          y: geo.centered ? geo.oy - geo.h : geo.oy,
+          width: w0,
+          height: h0,
+          opacity: box.style.opacity,
+          strokeStyle: box.style.strokeStyle,
+          fillStyle: box.style.fillStyle,
+          roughness: box.style.roughness,
+          stroke: isEffect ? undefined : box.style.stroke,
+          fill: isEffect ? undefined : box.style.fill,
+          strokeWidth: isEffect ? 0 : box.style.strokeWidth,
+          cornerRadius: box.style.cornerRadius,
+        } as ShapeElement;
+      }
+      draftBoxGeoRef.current = null;
+      draftBoxStyleRef.current = null;
+    } else if (finalDraft) {
+      draft = finalDraft;
+      valid = (() => {
+        if (draft!.type === 'pencil' || draft!.type === 'highlighter') {
+          return (draft as PencilElement).points.length > 4;
+        }
+        if (draft!.type === 'arrow' || draft!.type === 'line') {
+          const pts = (draft as ArrowElement | LineElement).points;
+          return Math.abs(pts[2]) > MIN_SIZE || Math.abs(pts[3]) > MIN_SIZE;
+        }
+        const w = Math.abs((draft as ShapeElement | CircleElement).width);
+        const h = Math.abs((draft as ShapeElement | CircleElement).height);
+        return w > MIN_SIZE || h > MIN_SIZE;
+      })();
     }
 
-    if (valid) {
+    if (draft && valid) {
       if (draft.type === 'blur' || draft.type === 'pixelate') {
         const shape = draft as ShapeElement;
         const x = Math.min(shape.x, shape.x + shape.width);
@@ -1714,6 +2024,7 @@ const EditorCanvas: React.FC = () => {
         addElement(el);
       }
     }
+    draftLayerRef.current?.clear();
     setDrawingElement(null);
     drawOriginRef.current = null;
     // Keep the active drawing tool so consecutive annotations stay fast
@@ -1728,19 +2039,29 @@ const EditorCanvas: React.FC = () => {
     const rect = root.getBoundingClientRect();
     const pointer = { x: clientX - rect.left, y: clientY - rect.top };
     const s = useEditorStore.getState();
-    const oldZoom = s.zoom;
-    const oldPos = s.stagePosition;
+    // Chain off the pending viewport so back-to-back events compound before
+    // the once-per-frame store sync lands.
+    const vp = pendingViewportRef.current ?? { zoom: s.zoom, x: s.stagePosition.x, y: s.stagePosition.y };
+    const oldZoom = vp.zoom;
+    const oldPos = { x: vp.x, y: vp.y };
     const clamped = Math.max(0.1, Math.min(5, newZoom));
     const mousePointTo = {
       x: (pointer.x - oldPos.x) / oldZoom,
       y: (pointer.y - oldPos.y) / oldZoom,
     };
-    s.setZoom(clamped);
-    s.setStagePosition({
+    const next = {
+      zoom: clamped,
       x: pointer.x - mousePointTo.x * clamped,
       y: pointer.y - mousePointTo.y * clamped,
-    });
+    };
+    // Move the Stage node immediately; React only hears about it at the next
+    // animation frame (syncViewportToStore), so the canvas never lags behind
+    // the pointer and React never runs per wheel event.
+    pendingViewportRef.current = next;
+    st.scale({ x: clamped, y: clamped });
+    st.position({ x: next.x, y: next.y });
     st.batchDraw();
+    syncViewportToStore();
   }
 
   function handleWheel(e: Konva.KonvaEventObject<WheelEvent>) {
@@ -1792,9 +2113,12 @@ const EditorCanvas: React.FC = () => {
         // Cancel any in-progress draw so pinch doesn't create a stroke
         setIsDrawing(false);
         clearDrawingDraft();
+        isErasingRef.current = false;
         setIsErasing(false);
-        setEraserStart(null);
-        setEraserEnd(null);
+        eraserStartRef.current = null;
+        eraserEndRef.current = null;
+        applyEraserFade(null);
+        draftLayerRef.current?.clear();
       }
     };
     const onTouchMove = (e: TouchEvent) => {
@@ -1810,8 +2134,7 @@ const EditorCanvas: React.FC = () => {
       const dx = center.x - pinchRef.current.cx;
       const dy = center.y - pinchRef.current.cy;
       if (dx || dy) {
-        const s = useEditorStore.getState();
-        s.setStagePosition({ x: s.stagePosition.x + dx, y: s.stagePosition.y + dy });
+        panStageBy(dx, dy);
         pinchRef.current.cx = center.x;
         pinchRef.current.cy = center.y;
       }
@@ -2129,7 +2452,7 @@ const EditorCanvas: React.FC = () => {
   // --- Drag end ---
 
   function handleDragEnd(id: string, e: Konva.KonvaEventObject<DragEvent>) {
-    setGuides([]);
+    draftLayerRef.current?.clearGuides();
     let x = e.target.x();
     let y = e.target.y();
     const s = useEditorStore.getState();
@@ -2204,7 +2527,7 @@ const EditorCanvas: React.FC = () => {
     const s = useEditorStore.getState();
     const el = s.elements.find((item) => item.id === id);
     if (!el || !('width' in el)) {
-      setGuides([]);
+      draftLayerRef.current?.clearGuides();
       return;
     }
     const moving = {
@@ -2217,7 +2540,7 @@ const EditorCanvas: React.FC = () => {
       .filter((item) => item.id !== id)
       .map((item) => getElementBounds(item, s.imageSize));
     const snapped = snapBounds(moving, others);
-    setGuides(snapped.guides);
+    draftLayerRef.current?.showGuides(snapped.guides);
     e.target.position({ x: snapped.x, y: snapped.y });
   }
 
@@ -3266,8 +3589,11 @@ const EditorCanvas: React.FC = () => {
           const s = useEditorStore.getState();
           const pad = s.canvasStyle.padding || 0;
           const ins = DEVICE_FRAME_INSETS[s.canvasStyle.deviceFrame];
-          const imgX = (pos.x - stagePosition.x) / zoom - (pad + ins.left);
-          const imgY = (pos.y - stagePosition.y) / zoom - (pad + ins.top);
+          // Live store values (not captured): the annotation render is
+          // memoized across zoom/pan, so the bound function must not close
+          // over a stale viewport.
+          const imgX = (pos.x - s.stagePosition.x) / s.zoom - (pad + ins.left);
+          const imgY = (pos.y - s.stagePosition.y) / s.zoom - (pad + ins.top);
           const parent = parentEl as ArrowElement | LineElement;
           const t = projectPointToPath(parent, imgX - parent.x, imgY - parent.y);
           const scale = getImageToolScale(imageSize.width, imageSize.height);
@@ -3454,58 +3780,6 @@ const EditorCanvas: React.FC = () => {
     }
   }
 
-  // Render eraser draft: red dotted box while dragging + red tint on every
-  // element that would be deleted, so the eraser is a preview instead of a
-  // surprise. Both use the same hit test as the commit, so what you see is
-  // exactly what gets removed on mouse-up.
-  function renderEraserDraft() {
-    if (!isErasing || !eraserStart || !eraserEnd) return null;
-    const x1 = Math.min(eraserStart.x, eraserEnd.x);
-    const y1 = Math.min(eraserStart.y, eraserEnd.y);
-    const x2 = Math.max(eraserStart.x, eraserEnd.x);
-    const y2 = Math.max(eraserStart.y, eraserEnd.y);
-    const w = x2 - x1;
-    const h = y2 - y1;
-    // The elements themselves already fade to 30% (see eraserFadeIds); this
-    // dashed marquee is the only extra chrome the eraser draws.
-    return (
-      <Rect
-        x={x1}
-        y={y1}
-        width={w}
-        height={h}
-        fill="rgba(239,68,68,0.06)"
-        stroke="#ef4444"
-        strokeWidth={1.5}
-        dash={[6, 4]}
-        listening={false}
-      />
-    );
-  }
-
-  // Render spotlight draft (dotted box while dragging)
-  function renderSpotlightDraft() {
-    if (!drawingElement || drawingElement.type !== 'spotlight') return null;
-    const shape = drawingElement as ShapeElement;
-    const x = Math.min(shape.x, shape.x + shape.width);
-    const y = Math.min(shape.y, shape.y + shape.height);
-    const w = Math.abs(shape.width);
-    const h = Math.abs(shape.height);
-    return (
-      <Rect
-        x={x}
-        y={y}
-        width={w}
-        height={h}
-        fill="rgba(250,204,21,0.08)"
-        stroke="#facc15"
-        strokeWidth={1.5}
-        dash={[6, 4]}
-        listening={false}
-      />
-    );
-  }
-
   // Premium selection chrome follows theme tokens
   const selectionTheme = useMemo(() => getSelectionTheme(), [activeTool, selectedElementIds]);
 
@@ -3536,20 +3810,25 @@ const EditorCanvas: React.FC = () => {
   const showFrame = !!backgroundImage && (contentPad > 0 || canvasStyle.bgStyle !== 'none' || canvasStyle.shadowEnabled || canvasStyle.borderRadius > 0 || canvasStyle.deviceFrame !== 'none');
   const frameInner = { x: contentOffsetX, y: contentOffsetY, w: imageSize.width || 0, h: imageSize.height || 0 };
 
-  // Elements the active eraser stroke would delete — rendered at ~30% opacity
-  // (Excalidraw's pending-erasure fade) until the stroke commits.
-  const eraserFadeIds = (() => {
-    if (!isErasing || !eraserStart || !eraserEnd) return null;
-    const x1 = Math.min(eraserStart.x, eraserEnd.x);
-    const y1 = Math.min(eraserStart.y, eraserEnd.y);
-    const x2 = Math.max(eraserStart.x, eraserEnd.x);
-    const y2 = Math.max(eraserStart.y, eraserEnd.y);
-    return new Set(computeEraserHitIds(elements, x1, y1, x2, y2));
-  })();
-
   // Get current zoom/position for textarea positioning using fresh values
   const currentZoom = useEditorStore((s) => s.zoom);
   const currentStagePos = useEditorStore((s) => s.stagePosition);
+
+  /**
+   * Committed annotations are memoized as a unit: element objects are
+   * immutable (Zustand replaces only the changed one), so this list is only
+   * rebuilt when something the render actually reads changes. Zoom/pan,
+   * drawing, dragging, marquee and eraser never touch these deps, so those
+   * interactions do not reconcile (or redraw) any committed annotation.
+   * Selection/tool changes still rebuild — they alter draggable/listening.
+   */
+  const annotationNodes = useMemo(
+    () => elements.map((el) => renderElement(el, false, null)),
+    [
+      elements, handDrawn, annotationsLocked, textInput, imageSize,
+      backgroundImage, selectedElementIds, activeTool, hoverSelectMode,
+    ],
+  );
 
   return (
     <div
@@ -3601,12 +3880,20 @@ const EditorCanvas: React.FC = () => {
         }}
         onDragMove={(e) => {
           if (useEditorStore.getState().activeTool === 'hand') {
-            setStagePosition({ x: e.target.x(), y: e.target.y() });
+            // Konva owns the drag; the store is synced once per frame so a
+            // dragmove stream never re-renders React per event.
+            const s = useEditorStore.getState();
+            const vp = pendingViewportRef.current ?? { zoom: s.zoom, x: s.stagePosition.x, y: s.stagePosition.y };
+            pendingViewportRef.current = { zoom: vp.zoom, x: e.target.x(), y: e.target.y() };
+            syncViewportToStore();
           }
         }}
         onDragEnd={(e) => {
           if (useEditorStore.getState().activeTool === 'hand') {
-            setStagePosition({ x: e.target.x(), y: e.target.y() });
+            const s = useEditorStore.getState();
+            const vp = pendingViewportRef.current ?? { zoom: s.zoom, x: s.stagePosition.x, y: s.stagePosition.y };
+            pendingViewportRef.current = { zoom: vp.zoom, x: e.target.x(), y: e.target.y() };
+            syncViewportToStore();
             setIsHandDragging(false);
           }
         }}
@@ -3688,44 +3975,8 @@ const EditorCanvas: React.FC = () => {
 
         {/* Annotation layer (same offset as the framed image) */}
         <Layer name="annotation-layer" x={contentOffsetX} y={contentOffsetY}>
-          {elements.map((el) => renderElement(el, false, eraserFadeIds))}
+          {annotationNodes}
           {drawingElement && renderElement(drawingElement, true)}
-          {renderSpotlightDraft()}
-          {renderEraserDraft()}
-          {guides.map((g, i) => (
-            g.orientation === 'vertical' ? (
-              <Line
-                key={`guide-v-${i}`}
-                points={[g.position, g.start, g.position, g.end]}
-                stroke="#F97316"
-                strokeWidth={1}
-                dash={[4, 4]}
-                listening={false}
-              />
-            ) : (
-              <Line
-                key={`guide-h-${i}`}
-                points={[g.start, g.position, g.end, g.position]}
-                stroke="#F97316"
-                strokeWidth={1}
-                dash={[4, 4]}
-                listening={false}
-              />
-            )
-          ))}
-          {marquee && (
-            <Rect
-              x={marquee.x}
-              y={marquee.y}
-              width={marquee.w}
-              height={marquee.h}
-              fill="rgba(234,88,12,0.08)"
-              stroke={selectionTheme.accent}
-              strokeWidth={1}
-              dash={[6, 4]}
-              listening={false}
-            />
-          )}
           <Transformer
             ref={transformerRef}
             shouldOverdrawWholeArea
@@ -3775,6 +4026,11 @@ const EditorCanvas: React.FC = () => {
             })()}
           />
         </Layer>
+
+        {/* Transient interaction layer: drawing drafts, marquee, eraser rect
+            and snapping guides. Driven imperatively by DraftLayer from pointer
+            events — React never renders here during a gesture. */}
+        <Layer name="interaction-layer" x={contentOffsetX} y={contentOffsetY} listening={false} ref={interactionLayerRef} />
       </Stage>
 
       {/* Text input overlay: the single in-place editor for every text entry
@@ -3808,3 +4064,4 @@ const EditorCanvas: React.FC = () => {
 };
 
 export default EditorCanvas;
+
