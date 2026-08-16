@@ -38,6 +38,7 @@ import {
   projectPointToPath,
   tangentAlongPath,
   estimateLabelHeight,
+  isLabelPairGroup,
 } from '@/lib/editor/text-labels';
 import TextEditOverlay from '@/components/editor/canvas/text-edit-overlay';
 import { getSelectionTheme, styleSelectionAnchor, selectionHandleProps, handleHoverEvents, midHandleProps } from '@/lib/selection-theme';
@@ -917,6 +918,9 @@ const EditorCanvas: React.FC = () => {
       const nodes = selectedElementIds
         .filter((id) => {
           const el = elements.find((e) => e.id === id);
+          // Attached labels (groupId) get their own subtle dashed box below,
+          // never the generic Transformer wrapping the text.
+          if (el?.type === 'text' && el.groupId) return false;
           return el && !skipTypes.has(el.type) && !el.locked;
         })
         .map((id) => findAnnotationNode(st, id))
@@ -1408,7 +1412,12 @@ const EditorCanvas: React.FC = () => {
             ? currentIds.filter((i) => i !== clickedId)
             : [...currentIds, clickedId];
         } else if (clicked?.groupId) {
-          nextIds = s.elements.filter((el) => el.groupId === clicked.groupId).map((el) => el.id);
+          // Shape↔label pairs select individually (Excalidraw: a bound label is
+          // a separate element — click the arrow, you get the arrow). User
+          // groups with other members still select as a unit.
+          nextIds = isLabelPairGroup(clicked.groupId, s.elements)
+            ? [clickedId]
+            : s.elements.filter((el) => el.groupId === clicked.groupId).map((el) => el.id);
         } else {
           nextIds = [clickedId];
         }
@@ -1740,8 +1749,23 @@ const EditorCanvas: React.FC = () => {
               || pos.y < b.y - threshold || pos.y > b.y + b.h + threshold
             ) continue;
             const linear = el as ArrowElement | LineElement;
-            const t = projectPointToPath(linear, pos.x - el.x, pos.y - el.y);
-            const pt = pointAlongPath(linear, t);
+            // A linear element that already has a label edits that label on
+            // click, so the preview anchors at the label's own position
+            // instead of the pointer-projected spot (preview == action).
+            const existingLabel = linear.groupId
+              ? s.elements.find(
+                  (x) => x.type === 'text' && x.groupId === linear.groupId,
+                ) as TextElement | undefined
+              : undefined;
+            let t: number;
+            let pt: { x: number; y: number };
+            if (existingLabel) {
+              t = existingLabel.labelOffset ?? 0.5;
+              pt = pointAlongPath(linear, t);
+            } else {
+              t = projectPointToPath(linear, pos.x - el.x, pos.y - el.y);
+              pt = pointAlongPath(linear, t);
+            }
             const d = Math.hypot(pos.x - (el.x + pt.x), pos.y - (el.y + pt.y));
             if (d < bestD) {
               bestD = d;
@@ -2697,8 +2721,14 @@ const EditorCanvas: React.FC = () => {
         moving.w = Math.abs((el as ShapeElement).width || 0);
         moving.h = Math.abs((el as ShapeElement).height || 0);
       }
+      // Snap references exclude the dragged element's own group members (its
+      // attached label shares its bounds and would fire guides permanently).
       const others = s.elements
-        .filter((item) => item.id !== id && !s.selectedElementIds.includes(item.id))
+        .filter((item) => {
+          if (item.id === id || s.selectedElementIds.includes(item.id)) return false;
+          if (el.groupId && item.groupId === el.groupId) return false;
+          return true;
+        })
         .map((item) => getElementBounds(item, s.imageSize));
       const snapped = snapBounds(moving, others);
       x = snapped.x;
@@ -2710,21 +2740,45 @@ const EditorCanvas: React.FC = () => {
       altDuplicateRef.current = null;
       const source = s.elements.find((item) => item.id === id);
       if (source) {
+        // A fresh group id so the clone never joins the original group
+        // (attached labels would drag the original shape around).
+        const newGroupId = source.groupId ? generateId() : undefined;
+        const dx = x - source.x;
+        const dy = y - source.y;
         const clone = {
           ...JSON.parse(JSON.stringify(source)),
           id: generateId(),
           x,
           y,
-          // A fresh group id so the clone never joins the original group
-          // (attached labels would drag the original shape around).
-          ...(source.groupId ? { groupId: generateId() } : {}),
+          ...(newGroupId ? { groupId: newGroupId } : {}),
         } as EditorElement;
+        const clones: EditorElement[] = [clone];
+        const cloneIds = [clone.id];
+        // Alt-drag duplicating either half of a shape↔label pair carries the
+        // partner (fresh id, same fresh group) so the copy is never stranded
+        // or joined to the original's label.
+        if (source.groupId && isLabelPairGroup(source.groupId, s.elements)) {
+          const partner = s.elements.find(
+            (el) => el.id !== source.id && el.groupId === source.groupId,
+          );
+          if (partner) {
+            const partnerClone = {
+              ...JSON.parse(JSON.stringify(partner)),
+              id: generateId(),
+              x: partner.x + dx,
+              y: partner.y + dy,
+              groupId: newGroupId,
+            } as EditorElement;
+            clones.push(partnerClone);
+            cloneIds.push(partnerClone.id);
+          }
+        }
         // Restore original position, add clone at new position
         const orig = s.elements.find((item) => item.id === id);
         if (orig) {
           e.target.position({ x: orig.x, y: orig.y });
-          s.addElement(clone);
-          s.setSelectedElementIds([clone.id]);
+          s.addElements(clones);
+          s.setSelectedElementIds(cloneIds);
           return;
         }
       }
@@ -2754,6 +2808,30 @@ const EditorCanvas: React.FC = () => {
     }
   }
 
+  /**
+   * Imperatively keep an attached label's Konva node glued to its shape while
+   * the shape's BODY is dragged. Konva moves only the dragged node; the label
+   * node is a sibling, so it must follow per frame (the store only hears
+   * about the move at dragend, then moves the whole group by the same delta).
+   */
+  const glueAttachedLabelLive = (
+    labelEl: EditorElement | undefined,
+    originX: number,
+    originY: number,
+    targetX: number,
+    targetY: number,
+  ) => {
+    if (!labelEl) return;
+    const stage = stageRef.current;
+    const node = stage ? findAnnotationNode(stage, labelEl.id) : undefined;
+    if (!node) return;
+    node.position({
+      x: labelEl.x + (targetX - originX),
+      y: labelEl.y + (targetY - originY),
+    });
+    node.getLayer()?.batchDraw();
+  };
+
   function handleDragMove(id: string, e: Konva.KonvaEventObject<DragEvent>) {
     const s = useEditorStore.getState();
     const el = s.elements.find((item) => item.id === id);
@@ -2767,26 +2845,15 @@ const EditorCanvas: React.FC = () => {
     if (isBindableElement(el)) {
       applyLiveBindingsForTarget(id, liveElementFromNode(el, e.target));
     }
+    const attachedLabel = el.groupId
+      ? s.elements.find((x) => x.type === 'text' && x.groupId === el.groupId)
+      : undefined;
     if (!('width' in el)) {
-      // Line/arrow body drag: keep an attached label glued to the stroke on
-      // every frame (imperative — the store only hears about the move at
-      // dragend, then moves the whole group by the same delta).
-      if (el.type === 'arrow' || el.type === 'line') {
-        const label = s.elements.find(
-          (x) => x.type === 'text' && x.groupId === el.groupId,
-        );
-        if (label) {
-          const stage = stageRef.current;
-          const node = stage ? findAnnotationNode(stage, label.id) : undefined;
-          if (node) {
-            node.position({
-              x: label.x + (e.target.x() - el.x),
-              y: label.y + (e.target.y() - el.y),
-            });
-            node.getLayer()?.batchDraw();
-          }
-        }
-      }
+      // Line/arrow body drag: keep an attached label glued to the shape on
+      // every frame (a shape label is fixed inside its shape, so the plain
+      // translate below is right for arrows too — the label's own
+      // `labelOffset`/`labelOffsetY` re-anchor it at commit).
+      glueAttachedLabelLive(attachedLabel, el.x, el.y, e.target.x(), e.target.y());
       draftLayerRef.current?.clearGuides();
       return;
     }
@@ -2802,6 +2869,9 @@ const EditorCanvas: React.FC = () => {
     const snapped = snapBounds(moving, others);
     draftLayerRef.current?.showGuides(snapped.guides);
     e.target.position({ x: snapped.x, y: snapped.y });
+    // Shape body drag: keep an attached label glued to the shape on every
+    // frame, using the SNAPPED position so the label never lags the guides.
+    glueAttachedLabelLive(attachedLabel, el.x, el.y, e.target.x(), e.target.y());
   }
 
   // --- Element rendering ---
@@ -2908,6 +2978,39 @@ const EditorCanvas: React.FC = () => {
     for (const { arrow, points } of updates) {
       applyArrowLineLive(arrow.id, points, arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
     }
+  };
+
+  /**
+   * Reflow an attached label's Konva node from the LIVE element geometry
+   * while its shape is being resized/rotated (the store only hears the final
+   * commit, so without this the label sits at the stale spot until release).
+   * Rotated container labels render as a Group offset by half the box, so
+   * position = anchor + offset; unrotated labels sit at the anchor directly.
+   */
+  const applyLiveLabelReflow = (liveEl: EditorElement) => {
+    const st = useEditorStore.getState();
+    // A label's position is owned by its shape; never reflow a text element
+    // against its own bounds.
+    if (!liveEl.groupId || liveEl.type === 'text') return;
+    const labelEl = st.elements.find(
+      (x) => x.type === 'text' && x.groupId === liveEl.groupId,
+    ) as TextElement | undefined;
+    if (!labelEl) return;
+    const stage = stageRef.current;
+    const node = stage ? findAnnotationNode(stage, labelEl.id) : undefined;
+    if (!node) return;
+    const scale = getImageToolScale(st.imageSize.width, st.imageSize.height);
+    const anchor = labelAnchorForElement(liveEl, st.imageSize, labelEl.fontSize ?? 24, scale, labelEl);
+    const offX = node.offsetX() || 0;
+    const offY = node.offsetY() || 0;
+    node.position({ x: anchor.x + offX, y: anchor.y + offY });
+    node.getLayer()?.batchDraw();
+  };
+
+  /** Live pass during a shape resize/rotate: bound arrows + attached label. */
+  const handleLiveShapeTransform = (liveEl: EditorElement, node: Konva.Node) => {
+    applyLiveBindingsForTarget(liveEl.id, liveElementFromNode(liveEl, node));
+    applyLiveLabelReflow(liveEl);
   };
 
   function renderElement(el: EditorElement, isDraft = false, fadeIds: Set<string> | null = null) {
@@ -4210,18 +4313,31 @@ const EditorCanvas: React.FC = () => {
         const isPathLabel =
           !!parentEl && (parentEl.type === 'arrow' || parentEl.type === 'line');
 
-        // Clicking a label selects the whole group (shape + label) - the label
-        // is part of its shape, not an independent text annotation.
+        // Clicking a label selects the label only (Excalidraw's bound text:
+        // its own small box, still attached to the shape). The shape stays
+        // visible and drags the label along; the label drags along its path.
         const selectLabel = (e: Konva.KonvaEventObject<MouseEvent>) => {
           e.cancelBubble = true;
-          if (isAttached && parentEl) {
-            const ids = [parentEl.id, textEl.id];
-            useEditorStore.getState().setSelectedElementIds(ids);
-            syncSettingsFromSelection(ids);
-          } else {
-            handleSelect(textEl.id, e);
-          }
+          handleSelect(textEl.id, e);
         };
+
+        // Subtle dashed box: shown when the label itself is selected or when
+        // its shape is selected (arrow dots + label box, never a Transformer).
+        const parentSelected = !!parentEl && selectedElementIds.includes(parentEl.id);
+        const showLabelBox = isAttached && (isSelected || parentSelected);
+        const labelBox = showLabelBox ? (
+          <Rect
+            x={0}
+            y={0}
+            width={boxW}
+            height={boxH}
+            stroke={isSelected ? getSelectionTheme().accent : getSelectionTheme().accentDim}
+            strokeWidth={1}
+            dash={[3, 2]}
+            listening={false}
+            perfectDrawEnabled={false}
+          />
+        ) : null;
 
         // Arrow/line labels drag along the stroke AND perpendicular to it:
         // dragBoundFunc projects the dragged position onto the path (fraction
@@ -4350,7 +4466,7 @@ const EditorCanvas: React.FC = () => {
           groupProps.draggable = false;
         }
         if (!hasRotation) {
-          return <Group key={textEl.id} {...groupProps}>{textNode}</Group>;
+          return <Group key={textEl.id} {...groupProps}>{labelBox}{textNode}</Group>;
         }
         // Rotated container text: Group at the box center, Text offset by half
         // the box so rotation spins around the center (same pivot as the shape).
@@ -4364,6 +4480,7 @@ const EditorCanvas: React.FC = () => {
             offsetY={boxH / 2}
             rotation={textEl.rotation ?? 0}
           >
+            {labelBox}
             {textNode}
           </Group>
         );
@@ -4734,7 +4851,7 @@ const EditorCanvas: React.FC = () => {
                 const id = st.selectedElementIds[0];
                 const el = st.elements.find((x) => x.id === id);
                 if (el && isBindableElement(el) && nodes[0]) {
-                  applyLiveBindingsForTarget(id, liveElementFromNode(el, nodes[0]));
+                  handleLiveShapeTransform(el, nodes[0]);
                 }
               }
             }}
@@ -4763,7 +4880,7 @@ const EditorCanvas: React.FC = () => {
               annotationsLocked={annotationsLocked}
               getNode={(id) => (stageRef.current ? findAnnotationNode(stageRef.current, id) : undefined)}
               toImagePoint={getCanvasPoint}
-              onLiveTransform={(liveEl, node) => applyLiveBindingsForTarget(liveEl.id, liveElementFromNode(liveEl, node))}
+              onLiveTransform={handleLiveShapeTransform}
               onCommit={handleElementTransformEnd}
             />
           )}

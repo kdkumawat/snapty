@@ -6,7 +6,7 @@ import type {
 import { HANDWRITTEN_FONT } from '@/types/editor';
 import { trackPageView } from '@/lib/analytics';
 import { getElementBounds, unionBounds } from '@/lib/editor/selection';
-import { labelAnchorForElement } from '@/lib/editor/text-labels';
+import { labelAnchorForElement, expandLabelPairs } from '@/lib/editor/text-labels';
 import { applySettingToElement } from '@/lib/editor/settings-sync';
 import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
 import type { SettingKey } from '@/lib/editor/tool-settings';
@@ -827,7 +827,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   duplicateSelected: () => {
     set((s) => {
-      const ids = new Set(s.selectedElementIds);
+      // Duplicating either half of a shape↔label pair carries the whole pair
+      // (fresh shared group id below), so a cloned arrow is never left without
+      // its label and never joins the original's label.
+      const ids = expandLabelPairs(s.elements, s.selectedElementIds);
       if (!ids.size) return s;
       // Clones of grouped members get a fresh shared group id: without this a
       // duplicated group joined the original group (and attached text labels
@@ -1342,7 +1345,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   nudgeSelected: (dx, dy) => {
     set((s) => {
       if (!s.selectedElementIds.length || (dx === 0 && dy === 0)) return s;
-      return moveElementsImpl(s, new Set(s.selectedElementIds), dx, dy);
+      // Arrow-key nudges move the whole unit (group members + attached labels)
+      // so a nudged arrow never leaves its label behind.
+      const ids = expandGroupMembers(s.elements, new Set(s.selectedElementIds));
+      return moveElementsImpl(s, ids, dx, dy);
     });
   },
   moveElementsBy: (ids, dx, dy) => {
@@ -1353,7 +1359,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
   removeElements: (ids) => {
     set((s) => {
-      const removed = new Set(ids);
+      // Removing a shape also removes its attached label (a label stranded
+      // without its arrow/box would be an orphan); removing the label alone
+      // keeps the shape. Directional via `fromShapeOnly`.
+      const removed = expandLabelPairs(s.elements, ids, true);
       const els = sweepDanglingBindings(
         s.elements.filter((el) => !removed.has(el.id)),
         removed,

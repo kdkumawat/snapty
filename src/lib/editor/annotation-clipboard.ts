@@ -1,5 +1,6 @@
 import { useEditorStore, generateId } from '@/store/editor-store';
 import type { EditorElement } from '@/types/editor';
+import { expandLabelPairs } from '@/lib/editor/text-labels';
 
 /**
  * In-app annotation clipboard (separate from the OS clipboard).
@@ -34,7 +35,10 @@ export function clearAnnotationClipboard(): void {
 export function copySelectedAnnotations(): number {
   const s = useEditorStore.getState();
   if (!s.selectedElementIds.length) return 0;
-  const ids = new Set(s.selectedElementIds);
+  // Copying either half of a shape↔label pair carries the whole pair so a
+  // pasted arrow keeps its label (and vice versa). Paste regenerates ids and
+  // re-links the shared group id, so the relationship survives round-trips.
+  const ids = expandLabelPairs(s.elements, s.selectedElementIds);
   const selected = s.elements
     .filter((el) => ids.has(el.id))
     .map((el) => JSON.parse(JSON.stringify(el)) as EditorElement);

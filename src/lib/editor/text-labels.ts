@@ -33,6 +33,50 @@ export type LabelAnchor = { x: number; y: number; width: number; height?: number
 
 const CLOSED_SHAPES = new Set(['rectangle', 'rounded-rect', 'circle', 'diamond']);
 
+/**
+ * True when `groupId` describes a shape↔label pair: exactly one text member
+ * and one non-text member sharing the group. User groups with more members
+ * (or no text) are not pairs and keep whole-group selection semantics.
+ */
+export function isLabelPairGroup(groupId: string, elements: EditorElement[]): boolean {
+  let text = 0;
+  let nonText = 0;
+  for (const el of elements) {
+    if (el.groupId !== groupId) continue;
+    if (el.type === 'text') text++;
+    else nonText++;
+  }
+  return text === 1 && nonText === 1;
+}
+
+/**
+ * Expand a set of element ids to include the partner of any shape↔label pair.
+ *
+ * - `fromShapeOnly` (delete/eraser): removing a shape also removes its label,
+ *   but removing the label alone leaves the shape intact — so only the
+ *   non-text member pulls its text partner in.
+ * - Otherwise (duplicate/copy): either member pulls the whole pair, since a
+ *   clone/paste of one half must never strand the other.
+ */
+export function expandLabelPairs(
+  elements: EditorElement[],
+  ids: Iterable<string>,
+  fromShapeOnly = false,
+): Set<string> {
+  const out = new Set(ids);
+  const byId = new Map(elements.map((el) => [el.id, el]));
+  for (const id of ids) {
+    const el = byId.get(id);
+    if (!el || !el.groupId) continue;
+    if (fromShapeOnly && el.type === 'text') continue;
+    if (!isLabelPairGroup(el.groupId, elements)) continue;
+    for (const other of elements) {
+      if (other.id !== id && other.groupId === el.groupId) out.add(other.id);
+    }
+  }
+  return out;
+}
+
 function isClosedShape(el: EditorElement): boolean {
   return CLOSED_SHAPES.has(el.type);
 }
