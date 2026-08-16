@@ -111,6 +111,17 @@ export function SettingRailPreview({ settingKey }: { settingKey: SettingKey }) {
       ? '↔' : s.endArrowhead !== 'none' ? '→' : '-';
     return <span className="text-xs font-medium leading-none">{sym}</span>;
   }
+  if (settingKey === 'arrowPath') {
+    return (
+      <svg width="20" height="10" viewBox="0 0 20 10" aria-hidden className="shrink-0">
+        {s.arrowPath === 'elbow' ? (
+          <path d="M2 2 H12 V8 H18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        ) : (
+          <line x1="2" y1="2" x2="18" y2="8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        )}
+      </svg>
+    );
+  }
   if (settingKey === 'fontFamily') {
     const family = isHandwritten(s.fontFamily) ? HANDWRITTEN_FONT : STANDARD_FONT;
     return (
@@ -162,6 +173,8 @@ export function settingValueLabel(
       if (s.startArrowhead !== 'none' && s.endArrowhead !== 'none') return 'Both';
       if (s.endArrowhead !== 'none') return 'End';
       return 'None';
+    case 'arrowPath':
+      return s.arrowPath === 'elbow' ? 'Elbow' : 'Straight';
     case 'fontFamily':
       return isHandwritten(s.fontFamily) ? 'Handwritten' : 'Standard';
     case 'fontStyle':
@@ -471,6 +484,30 @@ export function SettingControl({ spec }: { spec: SettingSpec }) {
               </svg>
             </IconToggle>
           ))}
+        </div>
+      );
+
+    case 'arrowPath':
+      return (
+        <div className="flex gap-0.5">
+          <IconToggle
+            active={s.arrowPath === 'straight'}
+            label="Straight"
+            onClick={() => s.setArrowPath('straight')}
+          >
+            <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden>
+              <line x1="2" y1="2" x2="16" y2="8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </IconToggle>
+          <IconToggle
+            active={s.arrowPath === 'elbow'}
+            label="Elbow"
+            onClick={() => s.setArrowPath('elbow')}
+          >
+            <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden>
+              <path d="M2 2 H11 V8 H16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </IconToggle>
         </div>
       );
 

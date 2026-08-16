@@ -24,7 +24,7 @@ const PERSIST_KEYS = [
   'opacity', 'cornerRadius', 'exportFormat', 'stepStartNumber', 'stepRadius',
   'exportQuality', 'gridEnabled', 'blurRadius', 'pixelSize', 'highlighterWidth',
   'strokeStyle', 'fillStyle', 'roughness', 'magnification', 'endArrowhead', 'startArrowhead',
-  'fontStyle', 'textAlign', 'textVerticalAlign',
+  'arrowPath', 'fontStyle', 'textAlign', 'textVerticalAlign',
   'transparentExport', 'keepOriginal', 'isBindingEnabled',
   'exportScale', 'exportSelectionOnly',
   // panelCollapsed is responsive/session - not persisted across reloads
@@ -137,6 +137,9 @@ interface EditorState {
   magnification: number;
   endArrowhead: Arrowhead;
   startArrowhead: Arrowhead;
+  /** Arrow tool path routing: straight (default) or Excalidraw-style elbow. */
+  arrowPath: 'straight' | 'elbow';
+  setArrowPath: (v: 'straight' | 'elbow') => void;
   imageLocked: boolean;
   annotationsLocked: boolean;
   /** Arrow/line endpoints snap to and follow shapes when enabled. */
@@ -270,6 +273,7 @@ const defaults: Record<string, any> = {
   magnification: 2.25,
   endArrowhead: 'arrow' as Arrowhead,
   startArrowhead: 'none' as Arrowhead,
+  arrowPath: 'straight' as 'straight' | 'elbow',
 };
 
 /** Quality is 10-100. Legacy values were 0-1 fractions. */
@@ -744,6 +748,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   magnification: persisted.magnification ?? defaults.magnification,
   endArrowhead: persisted.endArrowhead ?? defaults.endArrowhead,
   startArrowhead: persisted.startArrowhead ?? defaults.startArrowhead,
+  arrowPath: persisted.arrowPath ?? defaults.arrowPath,
   imageLocked: false,
   annotationsLocked: false,
   isBindingEnabled: persisted.isBindingEnabled ?? true,
@@ -790,6 +795,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ...applyToSelection(s, 'arrowheads', { startArrowhead: v }),
     }));
     savePersisted({ ...get(), startArrowhead: v });
+  },
+  setArrowPath: (v) => {
+    set((s) => ({
+      arrowPath: v,
+      ...applyToSelection(s, 'arrowPath', v),
+    }));
+    savePersisted({ ...get(), arrowPath: v });
   },
   setImageLocked: (v) => set({ imageLocked: v }),
   setAnnotationsLocked: (v) => set({ annotationsLocked: v }),
@@ -1271,6 +1283,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       magnification: defaults.magnification as number,
       endArrowhead: defaults.endArrowhead as Arrowhead,
       startArrowhead: defaults.startArrowhead as Arrowhead,
+      arrowPath: defaults.arrowPath as 'straight' | 'elbow',
       handDrawn: true,
     };
     set(next);

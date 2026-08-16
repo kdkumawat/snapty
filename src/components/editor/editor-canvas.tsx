@@ -21,10 +21,14 @@ import { PerfProbe } from '@/lib/editor/perf';
 import {
   anchorForBinding,
   computeBoundArrowUpdates,
+  fixedPointFromGlobalPoint,
+  globalFixedPointForBinding,
   isBindableElement,
   liveElementFromNode,
   resolveEndpointBinding,
 } from '@/lib/editor/binding';
+import { elbowPointsLocal, headingFromFixedPoint } from '@/lib/editor/elbow';
+import { removeVertexAt } from '@/lib/editor/linear-editor';
 import { snapEndpointForBinding } from '@/lib/editor/binding-preview';
 import {
   labelAnchorForElement,
@@ -54,7 +58,7 @@ import {
   controlPoint, renderPoints, bendFromHandle, tangentAtStart, tangentAtEnd,
 } from '@/lib/editor/curve';
 import type {
-  EditorElement, ShapeElement, ArrowElement, LineElement,
+  EditorElement, ShapeElement, ArrowElement, LineElement, FixedPointBinding,
   PencilElement, CircleElement, TextElement, StepElement, DiamondElement,
   MagnifierElement, ToolType,
 } from '@/types/editor';
@@ -1209,6 +1213,10 @@ const EditorCanvas: React.FC = () => {
     if (!isDbl) return;
     const under = s.elements.find((x) => x.id === shapeId);
     if (under && under.type !== 'text' && !under.locked) {
+      // Double-clicking an interior polyline VERTEX deletes it (Excalidraw's
+      // point deletion) — the vertex handle's own onDblClick does that, so the
+      // mousedown must not swallow it by attaching a label here.
+      if ((e.target as Konva.Node).name?.().includes('mid-vertex-handle')) return;
       attachTextToAnnotation(under);
     }
   }
@@ -1563,7 +1571,12 @@ const EditorCanvas: React.FC = () => {
       draftLayerRef.current?.beginFreehand(s.activeTool, strokeWidth, s.strokeColor, opacity, !downIsPen);
       draftLayerRef.current?.updateFreehand(points, pressures, !downIsPen);
     } else if (s.activeTool === 'arrow' || s.activeTool === 'line') {
-      const geo: DraftSegmentGeo = { kind: s.activeTool, sx: pos.x, sy: pos.y, ex: pos.x, ey: pos.y };
+      const geo: DraftSegmentGeo = {
+        kind: s.activeTool,
+        sx: pos.x, sy: pos.y, ex: pos.x, ey: pos.y,
+        // Elbow routing only exists for arrows (lines stay straight).
+        elbowed: s.activeTool === 'arrow' && s.arrowPath === 'elbow',
+      };
       const headSize = (s.endArrowhead ?? 'arrow') !== 'none' ? pointerSize : 0;
       draftSegmentGeoRef.current = geo;
       draftSegmentStyleRef.current = {
@@ -1583,6 +1596,7 @@ const EditorCanvas: React.FC = () => {
         extra: {
           endArrowhead: s.endArrowhead,
           startArrowhead: s.startArrowhead,
+          elbowed: s.activeTool === 'arrow' && s.arrowPath === 'elbow',
         },
       };
       draftLayerRef.current?.beginSegment(s.activeTool, geo, draftSegmentStyleRef.current.style, base.id as string, handDrawn);
@@ -2203,6 +2217,21 @@ const EditorCanvas: React.FC = () => {
               } as EditorElement;
             }
           }
+          // Elbow arrows route their interior at commit (binding on or off):
+          // the orthogonal corner(s) are derived from the endpoints and the
+          // side headings implied by the (possibly just attached) bindings.
+          if ((el as ArrowElement).elbowed) {
+            const a = el as ArrowElement;
+            const n = a.points.length;
+            const routed = elbowPointsLocal(
+              { x: a.x, y: a.y },
+              { x: a.x + a.points[0], y: a.y + a.points[1] },
+              { x: a.x + a.points[n - 2], y: a.y + a.points[n - 1] },
+              headingFromFixedPoint(a.startBinding?.fixedPoint),
+              headingFromFixedPoint(a.endBinding?.fixedPoint),
+            );
+            el = { ...el, points: routed as [number, number, number, number] } as EditorElement;
+          }
         }
         addElement(el);
       }
@@ -2516,10 +2545,13 @@ const EditorCanvas: React.FC = () => {
     const newPoints = [...pts];
     newPoints.splice(bestI, 0, local.x, local.y);
     // Multi-point polylines render straight; a formerly bent 2-point arrow
-    // drops its curve so the new vertex is what bends the path.
+    // drops its curve so the new vertex is what bends the path. An elbow
+    // arrow becomes a free polyline the moment the user adds a vertex —
+    // routing is router-owned, so an explicit edit opts out of it.
     st.updateElement(el.id, {
       points: newPoints as [number, number, number, number],
       ...(el.type === 'arrow' ? { bend: 0 } : {}),
+      ...(el.type === 'arrow' && (el as ArrowElement).elbowed ? { elbowed: false } : {}),
     });
   }
 
@@ -2927,6 +2959,121 @@ const EditorCanvas: React.FC = () => {
     };
 
     /**
+     * Binding focus points (Excalidraw's `arrows/focus.ts`): a bound arrow
+     * endpoint renders a dashed connector to the normalized attachment point
+     * inside its target, and that point is a small draggable circle. Dragging
+     * it moves the attachment around the shape; the endpoint follows on the
+     * same frame (imperative) and commits one undo step. The dashed line is
+     * updated imperatively during the drag so React never runs on the move
+     * hot path.
+     */
+    const dragFocusPoint = (
+      linear: ArrowElement | LineElement,
+      which: 'start' | 'end',
+      b: FixedPointBinding,
+      node: Konva.Node,
+    ) => {
+      const st = useEditorStore.getState();
+      const target = st.elements.find((x) => x.id === b.elementId);
+      if (!target || !isBindableElement(target)) return;
+      const fp = fixedPointFromGlobalPoint(target, node.x(), node.y(), st.imageSize);
+      const anchorPt = anchorForBinding(target, fp, b.mode, st.imageSize);
+      const eIdx = which === 'start' ? 0 : linear.points.length - 2;
+      const newPoints = [...linear.points];
+      newPoints[eIdx] = anchorPt.x - linear.x;
+      newPoints[eIdx + 1] = anchorPt.y - linear.y;
+      applyArrowLineLive(linear.id, focusRouted(linear, newPoints), linear.bend ?? 0, linear.strokeWidth ?? 2, handDrawn, linear.strokeStyle);
+      // Keep the dashed connector glued to the pointer on this frame.
+      const lineNode = stageRef.current?.findOne(`#focus-line-${linear.id}-${which}`) as Konva.Line | undefined;
+      lineNode?.points([newPoints[eIdx] + linear.x, newPoints[eIdx + 1] + linear.y, node.x(), node.y()]);
+      lineNode?.getLayer()?.batchDraw();
+    };
+    /** Re-route an elbowed arrow's interior after a focus-point drag. */
+    const focusRouted = (linear: ArrowElement | LineElement, pts: number[]) => {
+      if (linear.type !== 'arrow' || !linear.elbowed) return pts;
+      const n = pts.length;
+      return elbowPointsLocal(
+        { x: linear.x, y: linear.y },
+        { x: linear.x + pts[0], y: linear.y + pts[1] },
+        { x: linear.x + pts[n - 2], y: linear.y + pts[n - 1] },
+        headingFromFixedPoint(linear.startBinding?.fixedPoint),
+        headingFromFixedPoint(linear.endBinding?.fixedPoint),
+      ) as number[];
+    };
+    const commitFocusPoint = (
+      linear: ArrowElement | LineElement,
+      which: 'start' | 'end',
+      b: FixedPointBinding,
+      node: Konva.Node,
+    ) => {
+      const st = useEditorStore.getState();
+      const target = st.elements.find((x) => x.id === b.elementId);
+      if (!target || !isBindableElement(target)) return;
+      const fp = fixedPointFromGlobalPoint(target, node.x(), node.y(), st.imageSize);
+      const anchorPt = anchorForBinding(target, fp, b.mode, st.imageSize);
+      const eIdx = which === 'start' ? 0 : linear.points.length - 2;
+      const newPoints = [...linear.points];
+      newPoints[eIdx] = anchorPt.x - linear.x;
+      newPoints[eIdx + 1] = anchorPt.y - linear.y;
+      const updates: Partial<ArrowElement> = {
+        points: focusRouted(linear, newPoints) as [number, number, number, number],
+        ...(which === 'start'
+          ? { startBinding: { ...b, fixedPoint: fp } }
+          : { endBinding: { ...b, fixedPoint: fp } }),
+      };
+      commitElementUpdate(linear.id, updates);
+    };
+    const renderFocusPointUI = (
+      linear: ArrowElement | LineElement,
+      hoverEvents: ReturnType<typeof handleHoverEvents>,
+    ) => {
+      if (isDraft || !isSelected) return null;
+      const st = useEditorStore.getState();
+      const theme = getSelectionTheme();
+      const binds: Array<{ which: 'start' | 'end'; b: FixedPointBinding }> = [];
+      if (linear.startBinding) binds.push({ which: 'start', b: linear.startBinding });
+      if (linear.endBinding) binds.push({ which: 'end', b: linear.endBinding });
+      const out: React.ReactNode[] = [];
+      for (const { which, b } of binds) {
+        const target = st.elements.find((x) => x.id === b.elementId);
+        if (!target || !isBindableElement(target)) continue;
+        const focus = globalFixedPointForBinding(target, b.fixedPoint, st.imageSize);
+        const eIdx = which === 'start' ? 0 : linear.points.length - 2;
+        const ep = { x: linear.x + linear.points[eIdx], y: linear.y + linear.points[eIdx + 1] };
+        out.push(
+          <React.Fragment key={`focus-${which}`}>
+            <Line
+              id={`focus-line-${linear.id}-${which}`}
+              points={[ep.x, ep.y, focus.x, focus.y]}
+              stroke={theme.accentDim}
+              strokeWidth={1.2}
+              dash={[4, 3]}
+              listening={false}
+              perfectDrawEnabled={false}
+            />
+            <Circle
+              name="edit-handle focus-point-handle"
+              x={focus.x}
+              y={focus.y}
+              radius={4.5}
+              fill="rgba(255, 255, 255, 0.92)"
+              stroke={theme.accentSoft}
+              strokeWidth={1.2}
+              hitStrokeWidth={16}
+              cursor="grab"
+              draggable
+              onMouseDown={(e) => handleHandleMouseDown(linear.id, e)}
+              onDragMove={(e) => { e.cancelBubble = true; dragFocusPoint(linear, which, b, e.target); }}
+              onDragEnd={(e) => { e.cancelBubble = true; commitFocusPoint(linear, which, b, e.target); }}
+              {...hoverEvents}
+            />
+          </React.Fragment>,
+        );
+      }
+      return out.length ? out : null;
+    };
+
+    /**
      * Excalidraw-style midpoint ghost handles for multi-point polylines: a
      * quiet dashed handle on every segment midpoint. Dragging one inserts a
      * vertex there and follows the pointer; release commits one history entry.
@@ -2934,7 +3081,12 @@ const EditorCanvas: React.FC = () => {
      * are offset from the raw points, so a ghost would float off the stroke.
      */
     const renderMidGhosts = (el: ArrowElement | LineElement, pts: number[], handDrawnStyle: boolean) => {
-      if (handDrawnStyle || pts.length <= 4) return null;
+      // Excalidraw shows a midpoint ghost on EVERY segment of straight 2-point
+      // and multi-point elements — the primary "bend" affordance, and dragging
+      // one converts the midpoint into a real vertex. Legacy curved elements
+      // (bend !== 0) keep their quadratic bend handle instead, and hand-drawn
+      // jitter would float a ghost off the stroke.
+      if (handDrawnStyle || (pts.length <= 4 && (el.bend ?? 0) !== 0)) return null;
       const ghostProps = midHandleProps();
       const ghostHover = handleHoverEvents();
       const ghosts: { x: number; y: number; seg: number }[] = [];
@@ -2974,7 +3126,12 @@ const EditorCanvas: React.FC = () => {
             const mv = midVertexRef.current;
             if (!mv || mv.id !== el.id) return;
             midVertexRef.current = null;
-            commitElementUpdate(el.id, { points: mv.points as [number, number, number, number] });
+            commitElementUpdate(el.id, {
+              points: mv.points as [number, number, number, number],
+              // An explicit vertex edit on an elbow converts it to a free
+              // polyline — router-owned interior would otherwise overwrite it.
+              ...(el.type === 'arrow' && (el as ArrowElement).elbowed ? { elbowed: false } : {}),
+            });
           }}
           {...ghostHover}
         />
@@ -3252,6 +3409,10 @@ const EditorCanvas: React.FC = () => {
         const bendHandleProps = selectionHandleProps('bend');
         const styleDash = strokeDash(arrow.strokeStyle);
         const isMulti = arrow.points.length > 4;
+        const isElbow = arrow.elbowed === true;
+        // Elbow interior vertices are router-owned: no vertex handle (only
+        // midpoint ghosts per segment). Free polylines keep the middle handle.
+        const showMidVertexHandle = isMulti && !isElbow;
         const multiPoints = isMulti ? arrow.points : [];
         const hoverHandles = handleHoverEvents();
 
@@ -3330,6 +3491,19 @@ const EditorCanvas: React.FC = () => {
               newPoints[eIdx + 1] = newPoints[oIdx + 1] + Math.sin(snappedAngle) * len;
             }
           }
+          // Elbow arrows: the interior is router-owned, so it is re-derived
+          // from the (possibly just snapped) endpoints + side headings.
+          const routeElbowPoints = (pts: number[]) => {
+            if (!arrow.elbowed) return pts;
+            const n = pts.length;
+            return elbowPointsLocal(
+              { x: arrow.x, y: arrow.y },
+              { x: arrow.x + pts[0], y: arrow.y + pts[1] },
+              { x: arrow.x + pts[n - 2], y: arrow.y + pts[n - 1] },
+              headingFromFixedPoint(arrow.startBinding?.fixedPoint),
+              headingFromFixedPoint(arrow.endBinding?.fixedPoint),
+            ) as number[];
+          };
           if (commit) {
             // Drag-to-bind / unbind: release over a shape to bind the dragged
             // endpoint, drag it away (or disable binding) to free it. Alt
@@ -3348,8 +3522,9 @@ const EditorCanvas: React.FC = () => {
                 newPoints[eIdx + 1] = anchor.y - arrow.y;
               }
             }
+            const finalPoints = routeElbowPoints(newPoints);
             const updates: Partial<ArrowElement> = {
-              points: newPoints as [number, number, number, number],
+              points: finalPoints as [number, number, number, number],
               bend: arrow.bend ?? 0,
             };
             if (which === 'start') updates.startBinding = binding;
@@ -3364,10 +3539,10 @@ const EditorCanvas: React.FC = () => {
             );
             if (bsnap.preview) {
               draftLayerRef.current?.showBindingPreview(bsnap.preview, getSelectionTheme().accent, st.zoom);
-              applyArrowLineLive(arrow.id, bsnap.points, arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
+              applyArrowLineLive(arrow.id, routeElbowPoints(bsnap.points), arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
             } else {
               draftLayerRef.current?.clearBindingPreview();
-              applyArrowLineLive(arrow.id, newPoints, arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
+              applyArrowLineLive(arrow.id, routeElbowPoints(newPoints), arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
             }
           }
         };
@@ -3653,22 +3828,39 @@ const EditorCanvas: React.FC = () => {
                   onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey, e.evt); }}
                   {...hoverHandles}
                 />
-                {isMulti ? (
-                  // Multi-point polylines keep the middle vertex handle plus
-                  // Excalidraw-style midpoint ghost handles: drag one to
-                  // insert a new vertex and bend the polyline there.
+                {showMidVertexHandle ? (
+                  // Free multi-point polylines keep the middle vertex handle
+                  // (drag moves it, double-click DELETES it — Excalidraw's
+                  // point deletion) plus midpoint ghost handles: drag one to
+                  // insert a new vertex and bend the polyline there. Elbow
+                  // arrows skip the vertex handle entirely: their interior is
+                  // router-owned, so only per-segment midpoint ghosts show.
                   <>
                     <Circle x={arrow.x + drawPoints[midVertexIdx]}
                       y={arrow.y + drawPoints[midVertexIdx + 1]}
                       {...bendHandleProps} draggable
+                      name="edit-handle mid-vertex-handle"
                       onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
+                      onDblClick={(e) => {
+                        e.cancelBubble = true;
+                        const removed = removeVertexAt(arrow, midVertexIdx);
+                        if (removed) {
+                          commitElementUpdate(arrow.id, { points: removed as [number, number, number, number] });
+                        }
+                      }}
                       onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
                       onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
                       {...hoverHandles}
                     />
                     {renderMidGhosts(arrow, multiPoints, handDrawn)}
                   </>
-                ) : (
+                ) : isMulti ? (
+                  renderMidGhosts(arrow, multiPoints, handDrawn)
+                ) : (bend !== 0 || handDrawn) ? (
+                  // Legacy curved arrows (bend !== 0) and hand-drawn arrows
+                  // keep the quadratic bend handle; straight 2-point arrows
+                  // get the Excalidraw midpoint ghost instead (drag converts
+                  // the midpoint into a real vertex).
                   <Circle x={arrow.x + (drawPoints.length > 4 ? drawPoints[2] : control.x)}
                     y={arrow.y + (drawPoints.length > 4 ? drawPoints[3] : control.y)}
                     {...bendHandleProps} draggable
@@ -3677,6 +3869,8 @@ const EditorCanvas: React.FC = () => {
                     onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
                     {...hoverHandles}
                   />
+                ) : (
+                  renderMidGhosts(arrow, arrow.points, false)
                 )}
                 <Circle x={arrow.x + drawPoints[drawPoints.length - 2]}
                   y={arrow.y + drawPoints[drawPoints.length - 1]}
@@ -3688,6 +3882,7 @@ const EditorCanvas: React.FC = () => {
                 />
               </>
             )}
+            {showHandles && renderFocusPointUI(arrow, hoverHandles)}
           </React.Fragment>
         );
       }
@@ -3900,15 +4095,28 @@ const EditorCanvas: React.FC = () => {
                     <Circle x={line.x + drawPoints[midVertexIdx]}
                       y={line.y + drawPoints[midVertexIdx + 1]}
                       {...bendHandleProps} draggable
+                      name="edit-handle mid-vertex-handle"
                       onMouseDown={(e) => handleHandleMouseDown(line.id, e)}
+                      onDblClick={(e) => {
+                        e.cancelBubble = true;
+                        const removed = removeVertexAt(line, midVertexIdx);
+                        if (removed) {
+                          commitElementUpdate(line.id, { points: removed as [number, number, number, number] });
+                        }
+                      }}
                       onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
                       onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
                       {...hoverHandles}
                     />
                     {renderMidGhosts(line, multiPoints, handDrawn)}
                   </>
-                ) : (
+                ) : (bend !== 0 || handDrawn) ? (
+                  // Legacy curved lines and hand-drawn lines keep the quadratic
+                  // bend handle; straight 2-point lines get the Excalidraw
+                  // midpoint ghost instead (drag converts it to a vertex).
                   bendHandle
+                ) : (
+                  renderMidGhosts(line, line.points, false)
                 )}
                 <Circle x={line.x + drawPoints[drawPoints.length - 2]}
                   y={line.y + drawPoints[drawPoints.length - 1]}
@@ -3920,6 +4128,7 @@ const EditorCanvas: React.FC = () => {
                 />
               </>
             )}
+            {showHandles && renderFocusPointUI(line, hoverHandles)}
           </React.Fragment>
         );
       }

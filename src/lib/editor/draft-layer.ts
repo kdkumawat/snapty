@@ -18,6 +18,8 @@
 import Konva from 'konva';
 import type { FillStyle, StrokeStyle } from '@/types/editor';
 import { computeFreehandOutline, type FreehandTool } from './freehand';
+import { handDrawnPolyline } from '../hand-drawn';
+import { routeElbow } from './elbow';
 import {
   generateRoughDrawable,
   generateArrowHead,
@@ -81,6 +83,8 @@ export interface DraftSegmentGeo {
   sy: number;
   ex: number;
   ey: number;
+  /** Orthogonal (elbow) routing for the arrow draft preview. */
+  elbowed?: boolean;
 }
 
 type DraftState =
@@ -409,10 +413,44 @@ export class DraftLayer {
     if (!d || d.type !== 'segment') return;
     const { sx, sy, ex, ey } = d.geo;
     const s = d.style;
-    const pts = [sx, sy, ex, ey];
+    // Elbow arrows preview their routed polyline, not the raw chord: the
+    // committed element is routed too, so the preview and the result always
+    // agree (same rule the drawing-preview sync pass applied to pointer
+    // offset).
+    let pts = [sx, sy, ex, ey];
+    if (d.geo.elbowed && d.kind === 'arrow') {
+      const interior = routeElbow({ x: sx, y: sy }, { x: ex, y: ey });
+      pts = [sx, sy];
+      for (const p of interior) pts.push(p.x, p.y);
+      pts.push(ex, ey);
+    }
     const headSize = s.headSize ?? 0;
 
     if (d.handDrawn) {
+      // Multi-point (routed) drafts skip the rough drawable — the committed
+      // hand-drawn elbow renders as a jittered plain Arrow, so the preview
+      // mirrors that instead of approximating with a rough line.
+      if (pts.length > 4) {
+        const jittered = handDrawnPolyline(pts, d.seed, s.strokeWidth, 0.2);
+        const node = d.node && d.node.getClassName() === 'Arrow' ? (d.node as Konva.Arrow) : null;
+        const attrs = {
+          points: jittered,
+          stroke: s.stroke,
+          strokeWidth: s.strokeWidth,
+          fill: s.fill,
+          pointerLength: d.kind === 'arrow' ? headSize : 0,
+          pointerWidth: d.kind === 'arrow' ? (s.pointerWidth ?? headSize) : 0,
+          dash: dashOf(s.strokeStyle),
+          opacity: s.opacity,
+        };
+        if (node) node.setAttrs(attrs);
+        else {
+          const arrow = new Konva.Arrow({ ...attrs, listening: false });
+          this.replaceNode(arrow);
+        }
+        this.draw();
+        return;
+      }
       const drawable = generateRoughDrawable({
         kind: 'line',
         seed: d.seed,

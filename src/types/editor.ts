@@ -121,6 +121,24 @@ export interface ArrowElement extends BaseElement {
   points: [number, number, number, number];
   /** Curvature for Shottr-style bendable arrows. 0 is a straight arrow. */
   bend?: number;
+  /**
+   * Orthogonal "elbow" routing (Excalidraw's elbow arrows). When true, the
+   * interior `points` are routed orthogonal vertices between the two
+   * endpoints; the arrow renders as a straight-segment polyline (tension 0)
+   * and `recomputeBindings` re-routes the interior when a bound target
+   * moves/resizes/rotates.
+   */
+  elbowed?: boolean;
+  /**
+   * User-fixed segments that survive re-routing (Excalidraw compat). Kept
+   * for data-model compatibility; the current router derives all interior
+   * vertices, so this stays empty unless authored externally.
+   */
+  fixedSegments?: { start: [number, number]; end: [number, number]; index: number }[];
+  /** Binding fixed-point headings used by the elbow router (cached). */
+  startHeading?: 'n' | 's' | 'e' | 'w' | null;
+  /** Binding fixed-point headings used by the elbow router (cached). */
+  endHeading?: 'n' | 's' | 'e' | 'w' | null;
   stroke?: string;
   strokeWidth?: number;
   fill?: string;
