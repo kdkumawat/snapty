@@ -282,14 +282,30 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
 }
 
 /*
-  Selected tool: the button box fills with the theme accent color and the icon
-  flips to accent-foreground (white). The box fills, not the icon glyph itself.
+  Selected tool: the accent highlight fills the inner icon chip only. The
+  button box stays transparent, so the toolbar reads as a quiet row of tools
+  with the active glyph emphasized (the chip, not a filled pill).
 */
+.toolbar-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease;
+}
+
 .toolbar-btn-active {
-  background: var(--accent) !important;
-  color: var(--accent-foreground) !important;
+  background: transparent !important;
+  color: var(--foreground) !important;
   box-shadow: none !important;
   outline: none !important;
+}
+
+.toolbar-btn-active .toolbar-btn-icon {
+  background: var(--accent);
+  color: var(--accent-foreground) !important;
 }
 
 /* Sticky mode: a small dot under the active chip, like Excalidraw's lock hint. */
@@ -301,7 +317,9 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   width: 4px;
   height: 4px;
   border-radius: 9999px;
-  background: var(--accent-foreground);
+  /* The button box is transparent in the active state, so the dot uses the
+     accent (not accent-foreground) to stay visible on any theme. */
+  background: var(--accent);
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--duration-fast) ease;
@@ -318,10 +336,6 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   color: color-mix(in srgb, var(--muted-foreground) 75%, transparent);
   pointer-events: none;
   user-select: none;
-}
-
-.toolbar-btn-active .toolbar-btn-shortcut {
-  color: color-mix(in srgb, var(--accent-foreground) 70%, transparent);
 }
 
 .icon-btn {

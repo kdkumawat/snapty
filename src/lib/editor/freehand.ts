@@ -105,6 +105,51 @@ export function appendFreehandSample(
 }
 
 /**
+ * Append one pointer sample to a live stroke **in place** (no array copy).
+ *
+ * The transient draft keeps its points/pressures in mutable refs during a
+ * gesture; this mutates those buffers directly and returns whether a sample
+ * was actually added (a near-duplicate sample is dropped). Same payload
+ * budget as {@link appendFreehandSample} (min distance, uniform decimation
+ * past MAX_STROKE_SAMPLES) but zero allocations per pointermove, so 120 Hz
+ * pen input doesn't churn the GC while drawing.
+ *
+ * The final committed element snapshots the buffers with `slice()`, which
+ * restores the immutability the outline WeakMap cache relies on.
+ */
+export function appendFreehandSampleInPlace(
+  points: number[],
+  pressures: number[],
+  x: number,
+  y: number,
+  pressure: number,
+): boolean {
+  const p = Math.round(Math.min(1, Math.max(0, pressure)) * 100) / 100;
+  const n = points.length;
+  if (n >= 2) {
+    const lx = points[n - 2];
+    const ly = points[n - 1];
+    if (Math.hypot(x - lx, y - ly) < MIN_SAMPLE_DISTANCE) return false;
+  }
+  points.push(x, y);
+  pressures.push(p);
+  const count = pressures.length;
+  if (count > MAX_STROKE_SAMPLES) {
+    const keepEvery = Math.ceil(count / MAX_STROKE_SAMPLES);
+    let write = 0;
+    for (let read = 0; read < count; read += keepEvery) {
+      points[write * 2] = points[read * 2];
+      points[write * 2 + 1] = points[read * 2 + 1];
+      pressures[write] = pressures[read];
+      write++;
+    }
+    points.length = write * 2;
+    pressures.length = write;
+  }
+  return true;
+}
+
+/**
  * Flatten an array of [x, y] pairs into the flat `[x0,y0,x1,y1,...]` layout
  * Konva `Line.points` expects.
  */

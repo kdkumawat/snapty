@@ -1,6 +1,7 @@
 import type { EditorElement, ToolType, Arrowhead, StrokeStyle, FillStyle } from '@/types/editor';
 import { HANDWRITTEN_FONT } from '@/types/editor';
 import { toolHasSetting, type SettingKey } from '@/lib/editor/tool-settings';
+import { elbowPointsLocal, headingFromFixedPoint } from './elbow';
 
 /**
  * The one place that maps between the flat tool-settings state and element props.
@@ -39,6 +40,7 @@ export type ToolSettingsState = {
   magnification: number;
   startArrowhead: Arrowhead;
   endArrowhead: Arrowhead;
+  arrowPath: 'straight' | 'elbow';
 };
 
 type Patch = Partial<EditorElement> & Record<string, unknown>;
@@ -130,6 +132,27 @@ export function applySettingToElement(
     case 'arrowheads':
       // Written as a pair by the panel: { startArrowhead, endArrowhead }.
       return value && typeof value === 'object' ? { ...(value as object) } : null;
+    case 'arrowPath': {
+      const path = String(value);
+      if (el.type !== 'arrow' || path === 'straight') return { elbowed: false, bend: 0 };
+      const a = el as import('@/types/editor').ArrowElement;
+      // Switching an existing arrow to elbow routes its interior immediately:
+      // the endpoints stay put, the interior becomes the orthogonal corner(s).
+      const pts = a.points;
+      const n = pts.length;
+      const routed = elbowPointsLocal(
+        { x: el.x, y: el.y },
+        { x: el.x + pts[0], y: el.y + pts[1] },
+        { x: el.x + pts[n - 2], y: el.y + pts[n - 1] },
+        headingFromFixedPoint(a.startBinding?.fixedPoint),
+        headingFromFixedPoint(a.endBinding?.fixedPoint),
+      );
+      return {
+        elbowed: true,
+        bend: 0,
+        points: routed as [number, number, number, number],
+      };
+    }
     case 'stepNumbering':
       // Numbering is store-only; existing badges keep the number they were given.
       return null;
@@ -223,6 +246,9 @@ export function hydrateSettingsFromElement(
   if (has('arrowheads')) {
     if (e.startArrowhead) out.startArrowhead = e.startArrowhead as Arrowhead;
     if (e.endArrowhead) out.endArrowhead = e.endArrowhead as Arrowhead;
+  }
+  if (has('arrowPath')) {
+    out.arrowPath = e.elbowed ? 'elbow' : 'straight';
   }
   return out;
 }

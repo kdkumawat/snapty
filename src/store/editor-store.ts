@@ -6,7 +6,7 @@ import type {
 import { HANDWRITTEN_FONT } from '@/types/editor';
 import { trackPageView } from '@/lib/analytics';
 import { getElementBounds, unionBounds } from '@/lib/editor/selection';
-import { labelAnchorForElement } from '@/lib/editor/text-labels';
+import { labelAnchorForElement, expandLabelPairs } from '@/lib/editor/text-labels';
 import { applySettingToElement } from '@/lib/editor/settings-sync';
 import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
 import type { SettingKey } from '@/lib/editor/tool-settings';
@@ -24,7 +24,7 @@ const PERSIST_KEYS = [
   'opacity', 'cornerRadius', 'exportFormat', 'stepStartNumber', 'stepRadius',
   'exportQuality', 'gridEnabled', 'blurRadius', 'pixelSize', 'highlighterWidth',
   'strokeStyle', 'fillStyle', 'roughness', 'magnification', 'endArrowhead', 'startArrowhead',
-  'fontStyle', 'textAlign', 'textVerticalAlign',
+  'arrowPath', 'fontStyle', 'textAlign', 'textVerticalAlign',
   'transparentExport', 'keepOriginal', 'isBindingEnabled',
   'exportScale', 'exportSelectionOnly',
   // panelCollapsed is responsive/session - not persisted across reloads
@@ -137,6 +137,9 @@ interface EditorState {
   magnification: number;
   endArrowhead: Arrowhead;
   startArrowhead: Arrowhead;
+  /** Arrow tool path routing: straight (default) or Excalidraw-style elbow. */
+  arrowPath: 'straight' | 'elbow';
+  setArrowPath: (v: 'straight' | 'elbow') => void;
   imageLocked: boolean;
   annotationsLocked: boolean;
   /** Arrow/line endpoints snap to and follow shapes when enabled. */
@@ -270,6 +273,7 @@ const defaults: Record<string, any> = {
   magnification: 2.25,
   endArrowhead: 'arrow' as Arrowhead,
   startArrowhead: 'none' as Arrowhead,
+  arrowPath: 'straight' as 'straight' | 'elbow',
 };
 
 /** Quality is 10-100. Legacy values were 0-1 fractions. */
@@ -744,6 +748,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   magnification: persisted.magnification ?? defaults.magnification,
   endArrowhead: persisted.endArrowhead ?? defaults.endArrowhead,
   startArrowhead: persisted.startArrowhead ?? defaults.startArrowhead,
+  arrowPath: persisted.arrowPath ?? defaults.arrowPath,
   imageLocked: false,
   annotationsLocked: false,
   isBindingEnabled: persisted.isBindingEnabled ?? true,
@@ -791,6 +796,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }));
     savePersisted({ ...get(), startArrowhead: v });
   },
+  setArrowPath: (v) => {
+    set((s) => ({
+      arrowPath: v,
+      ...applyToSelection(s, 'arrowPath', v),
+    }));
+    savePersisted({ ...get(), arrowPath: v });
+  },
   setImageLocked: (v) => set({ imageLocked: v }),
   setAnnotationsLocked: (v) => set({ annotationsLocked: v }),
   setBindingEnabled: (v) => {
@@ -815,7 +827,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   duplicateSelected: () => {
     set((s) => {
-      const ids = new Set(s.selectedElementIds);
+      // Duplicating either half of a shape↔label pair carries the whole pair
+      // (fresh shared group id below), so a cloned arrow is never left without
+      // its label and never joins the original's label.
+      const ids = expandLabelPairs(s.elements, s.selectedElementIds);
       if (!ids.size) return s;
       // Clones of grouped members get a fresh shared group id: without this a
       // duplicated group joined the original group (and attached text labels
@@ -1021,6 +1036,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         imageLoading: false,
       });
     }
+    // Fit the view in the SAME synchronous pass as the image state: both sets
+    // batch into one render, so the image first paints already centered
+    // instead of flashing at the top-left corner and then jumping to the
+    // fitted position (the canvas effect's deferred re-fit still covers the
+    // not-yet-laid-out case).
+    get().resetView();
   },
 
   clearImage: () => {
@@ -1265,6 +1286,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       magnification: defaults.magnification as number,
       endArrowhead: defaults.endArrowhead as Arrowhead,
       startArrowhead: defaults.startArrowhead as Arrowhead,
+      arrowPath: defaults.arrowPath as 'straight' | 'elbow',
       handDrawn: true,
     };
     set(next);
@@ -1323,7 +1345,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   nudgeSelected: (dx, dy) => {
     set((s) => {
       if (!s.selectedElementIds.length || (dx === 0 && dy === 0)) return s;
-      return moveElementsImpl(s, new Set(s.selectedElementIds), dx, dy);
+      // Arrow-key nudges move the whole unit (group members + attached labels)
+      // so a nudged arrow never leaves its label behind.
+      const ids = expandGroupMembers(s.elements, new Set(s.selectedElementIds));
+      return moveElementsImpl(s, ids, dx, dy);
     });
   },
   moveElementsBy: (ids, dx, dy) => {
@@ -1334,7 +1359,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
   removeElements: (ids) => {
     set((s) => {
-      const removed = new Set(ids);
+      // Removing a shape also removes its attached label (a label stranded
+      // without its arrow/box would be an orphan); removing the label alone
+      // keeps the shape. Directional via `fromShapeOnly`.
+      const removed = expandLabelPairs(s.elements, ids, true);
       const els = sweepDanglingBindings(
         s.elements.filter((el) => !removed.has(el.id)),
         removed,

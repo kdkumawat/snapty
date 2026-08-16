@@ -96,7 +96,12 @@ export default function FloatingToolbar({
             aria-pressed={active}
             onClick={() => handleToolClick(tool.id)}
           >
-            {tool.icon}
+            {/* Active highlight fills the inner icon chip, not the whole
+                button: the box stays quiet so the toolbar reads as a row of
+                tools with the current one emphasized, not a filled pill. */}
+            <span className={cn('toolbar-btn-icon', active && 'toolbar-btn-icon-active')}>
+              {tool.icon}
+            </span>
             {badge && <span className="toolbar-btn-shortcut">{badge}</span>}
             <span
               className="toolbar-btn-sticky-dot"
@@ -179,7 +184,6 @@ const TOOL_TIPS: Record<string, React.ReactNode> = {
   arrow: <>Drag to draw. Drag the middle dot to bend; drag a dashed dot to add a point. <Kbd>A</Kbd> cycles stroke style.</>,
   line: <>Drag to draw. Drag the middle dot to bend; drag a dashed dot to add a point. <Kbd>L</Kbd> cycles stroke style.</>,
   rectangle: <>Drag to draw. <Kbd>R</Kbd> again cycles fill style.</>,
-  'rounded-rect': <>Drag to draw. <Kbd>Shift</Kbd> for square. <Kbd>Alt</Kbd> from center.</>,
   circle: <>Drag to draw. <Kbd>O</Kbd> again cycles fill style.</>,
   diamond: <>Drag to draw. <Kbd>D</Kbd> again cycles fill style.</>,
   text: <>Click to place text. Double-click the canvas or any annotation to add text anywhere. Double-click text to edit. <Kbd>Enter</Kbd> on a selection edits it too.</>,

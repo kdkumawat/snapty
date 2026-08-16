@@ -8,7 +8,7 @@ import {
   Minus, Pencil, Type, ListOrdered, Highlighter, Droplets, Grid3x3, Crop,
   Eraser, MonitorUp, FolderOpen, Download, Settings2, ImageOff, RotateCcw,
   Keyboard, Maximize2, ZoomIn, Undo2, Redo2, Trash2, Sun, Moon, Monitor,
-  Search, Squircle, ImagePlus, ScanText,
+  Search, ImagePlus, ScanText,
 } from 'lucide-react';
 import { useEditorStore } from '@/store/editor-store';
 import type { ToolType } from '@/types/editor';
@@ -36,7 +36,6 @@ const TOOL_ICONS: Partial<Record<ToolType, React.ReactNode>> = {
   pixelate: <Grid3x3 className="w-4 h-4" />,
   crop: <Crop className="w-4 h-4" />,
   eraser: <Eraser className="w-4 h-4" />,
-  'rounded-rect': <Squircle className="w-4 h-4" />,
   spotlight: <ScanSearch className="w-4 h-4" />,
 };
 

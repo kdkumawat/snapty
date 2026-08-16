@@ -1,11 +1,14 @@
+import type Konva from 'konva';
 import type {
   ArrowElement,
   EditorElement,
   FixedPointBinding,
   LineElement,
+  StepElement,
   TextElement,
 } from '@/types/editor';
 import { getElementBounds } from '@/lib/editor/selection';
+import { elbowPointsLocal, headingFromFixedPoint } from './elbow';
 
 /**
  * Arrow/line binding — Excalidraw's model adapted to Snapty (see
@@ -213,9 +216,33 @@ export function setEndpointToAnchor(
 }
 
 /**
+ * Re-derive the interior vertices of an elbowed arrow from its (possibly
+ * just re-anchored) endpoints. Router-owned vertices are rebuilt from the
+ * endpoint positions + the side headings implied by the bindings, so a bound
+ * elbow keeps its orthogonal shape as the target moves/resizes/rotates.
+ * Returns the element unchanged when it is not an elbowed arrow.
+ */
+function rerouteElbow(
+  el: ArrowElement | LineElement,
+): ArrowElement | LineElement {
+  if (el.type !== 'arrow' || !el.elbowed) return el;
+  const pts = el.points;
+  const n = pts.length;
+  const routed = elbowPointsLocal(
+    { x: el.x, y: el.y },
+    { x: el.x + pts[0], y: el.y + pts[1] },
+    { x: el.x + pts[n - 2], y: el.y + pts[n - 1] },
+    headingFromFixedPoint(el.startBinding?.fixedPoint),
+    headingFromFixedPoint(el.endBinding?.fixedPoint),
+  );
+  return { ...el, points: routed as [number, number, number, number] };
+}
+
+/**
  * Recompute the endpoints of every arrow/line bound to `movedId` so they
  * track the element's current geometry (move, resize, rotate). Returns a new
  * elements array; no-op when `movedId` is not bindable or nothing binds it.
+ * Elbowed arrows re-route their interior in the same pass.
  */
 export function recomputeBindings(
   elements: EditorElement[],
@@ -235,8 +262,83 @@ export function recomputeBindings(
       const anchor = anchorForBinding(target, el.endBinding.fixedPoint, el.endBinding.mode, imageSize);
       next = { ...next, points: setEndpointToAnchor(next, 'end', anchor) };
     }
+    if (next !== el) next = rerouteElbow(next);
     return next;
   });
+}
+
+/**
+ * Live binding — imperative counterpart of `recomputeBindings`.
+ *
+ * Returns new points for every arrow/line bound to `targetId`, computed
+ * against the target's LIVE geometry (the Konva node's current position,
+ * scale and rotation during a drag / resize / rotate gesture) instead of the
+ * committed store element. Callers patch the arrow nodes directly so bound
+ * arrows track the target on every frame; the store is only touched at
+ * gesture commit. Arrows being moved together with the target (multi-select)
+ * are skipped via `skipArrowIds` so movement is never double-applied.
+ */
+export function computeBoundArrowUpdates(
+  elements: EditorElement[],
+  targetId: string,
+  liveTarget: EditorElement,
+  imageSize: { width: number; height: number },
+  skipArrowIds?: ReadonlySet<string>,
+): Array<{ arrow: ArrowElement | LineElement; points: number[] }> {
+  const out: Array<{ arrow: ArrowElement | LineElement; points: number[] }> = [];
+  for (const el of elements) {
+    if (!isLineLike(el) || skipArrowIds?.has(el.id)) continue;
+    const pts = [...el.points];
+    let changed = false;
+    if (el.startBinding?.elementId === targetId) {
+      const anchor = anchorForBinding(liveTarget, el.startBinding.fixedPoint, el.startBinding.mode, imageSize);
+      pts[0] = anchor.x - el.x;
+      pts[1] = anchor.y - el.y;
+      changed = true;
+    }
+    if (el.endBinding?.elementId === targetId) {
+      const anchor = anchorForBinding(liveTarget, el.endBinding.fixedPoint, el.endBinding.mode, imageSize);
+      pts[pts.length - 2] = anchor.x - el.x;
+      pts[pts.length - 1] = anchor.y - el.y;
+      changed = true;
+    }
+    if (changed && el.type === 'arrow' && el.elbowed) {
+      // Elbow interior is router-owned: re-derive it from the re-anchored
+      // endpoints on the same frame the endpoint moved.
+      const n = pts.length;
+      const routed = elbowPointsLocal(
+        { x: el.x, y: el.y },
+        { x: el.x + pts[0], y: el.y + pts[1] },
+        { x: el.x + pts[n - 2], y: el.y + pts[n - 1] },
+        headingFromFixedPoint(el.startBinding?.fixedPoint),
+        headingFromFixedPoint(el.endBinding?.fixedPoint),
+      );
+      pts.splice(0, pts.length, ...routed);
+    }
+    if (changed) out.push({ arrow: el, points: pts });
+  }
+  return out;
+}
+
+/**
+ * Rebuild a store element from its Konva node's LIVE attrs so binding anchors
+ * follow what is actually on screen mid-gesture (drag position, Transformer
+ * scale, rotation). The node's scale is baked into the element's logical box
+ * because `boundsOf`/`anchorForBinding` consume width/height.
+ */
+export function liveElementFromNode(el: EditorElement, node: Konva.Node): EditorElement {
+  const scaleX = node.scaleX?.() ?? 1;
+  const scaleY = node.scaleY?.() ?? 1;
+  const rotation = node.rotation?.() ?? ((el as { rotation?: number }).rotation ?? 0);
+  let out: EditorElement = { ...el, x: node.x(), y: node.y(), rotation, scaleX: 1, scaleY: 1 };
+  if (out.type === 'step') {
+    const step = out as StepElement;
+    out = { ...step, radius: Math.max(8, (step.radius ?? 16) * Math.max(scaleX, scaleY)) } as EditorElement;
+  } else if ('width' in out && 'height' in out && (scaleX !== 1 || scaleY !== 1)) {
+    const shape = out as { width?: number; height?: number };
+    out = { ...out, width: (shape.width ?? 0) * scaleX, height: (shape.height ?? 0) * scaleY } as EditorElement;
+  }
+  return out;
 }
 
 /**
@@ -338,4 +440,50 @@ function distanceToBox(p: Pt, box: { x: number; y: number; w: number; h: number 
   const dx = Math.max(box.x - p.x, 0, p.x - (box.x + box.w));
   const dy = Math.max(box.y - p.y, 0, p.y - (box.y + box.h));
   return Math.hypot(dx, dy);
+}
+
+/**
+ * Global (image-coordinate) position of a binding's FOCUS POINT — the
+ * normalized point inside the target, rotated with the shape. Excalidraw
+ * renders a dashed line from the arrow endpoint to this point and lets the
+ * user drag it to move the attachment around the shape (`arrows/focus.ts`).
+ */
+export function globalFixedPointForBinding(
+  target: EditorElement,
+  fixedPoint: [number, number],
+  imageSize: { width: number; height: number },
+): Pt {
+  const box = boundsOf(target, imageSize);
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  const local = { x: (fixedPoint[0] - 0.5) * box.w, y: (fixedPoint[1] - 0.5) * box.h };
+  const radians = ((target as { rotation?: number }).rotation ?? 0) * (Math.PI / 180);
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const world = rot(local, cos, sin);
+  return { x: cx + world.x, y: cy + world.y };
+}
+
+/**
+ * Inverse of {@link globalFixedPointForBinding}: normalize an absolute image
+ * point into the target's local box (rotation undone, clamped to 0..1). Used
+ * by the focus-point drag to derive the new `fixedPoint` from the pointer.
+ */
+export function fixedPointFromGlobalPoint(
+  target: EditorElement,
+  absX: number,
+  absY: number,
+  imageSize: { width: number; height: number },
+): [number, number] {
+  const box = boundsOf(target, imageSize);
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  const radians = ((target as { rotation?: number }).rotation ?? 0) * (Math.PI / 180);
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const rel = rot({ x: absX - cx, y: absY - cy }, cos, -sin);
+  return [
+    clamp01(0.5 + rel.x / (box.w || 1)),
+    clamp01(0.5 + rel.y / (box.h || 1)),
+  ];
 }

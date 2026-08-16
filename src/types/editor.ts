@@ -121,6 +121,24 @@ export interface ArrowElement extends BaseElement {
   points: [number, number, number, number];
   /** Curvature for Shottr-style bendable arrows. 0 is a straight arrow. */
   bend?: number;
+  /**
+   * Orthogonal "elbow" routing (Excalidraw's elbow arrows). When true, the
+   * interior `points` are routed orthogonal vertices between the two
+   * endpoints; the arrow renders as a straight-segment polyline (tension 0)
+   * and `recomputeBindings` re-routes the interior when a bound target
+   * moves/resizes/rotates.
+   */
+  elbowed?: boolean;
+  /**
+   * User-fixed segments that survive re-routing (Excalidraw compat). Kept
+   * for data-model compatibility; the current router derives all interior
+   * vertices, so this stays empty unless authored externally.
+   */
+  fixedSegments?: { start: [number, number]; end: [number, number]; index: number }[];
+  /** Binding fixed-point headings used by the elbow router (cached). */
+  startHeading?: 'n' | 's' | 'e' | 'w' | null;
+  /** Binding fixed-point headings used by the elbow router (cached). */
+  endHeading?: 'n' | 's' | 'e' | 'w' | null;
   stroke?: string;
   strokeWidth?: number;
   fill?: string;
@@ -202,6 +220,13 @@ export interface TextElement extends BaseElement {
    * the path; 0.5 = midpoint. Lets the label slide along the arrow.
    */
   labelOffset?: number;
+  /**
+   * Signed perpendicular offset (image px) of a line/arrow label from the
+   * stroke; positive = right side of travel direction. Lets a label sit
+   * beside the line instead of on it. Preserved through reflow like
+   * `labelOffset`, so bends/moves keep the label off the stroke.
+   */
+  labelOffsetY?: number;
 }
 
 export interface StepElement extends BaseElement {

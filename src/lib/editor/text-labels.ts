@@ -33,6 +33,50 @@ export type LabelAnchor = { x: number; y: number; width: number; height?: number
 
 const CLOSED_SHAPES = new Set(['rectangle', 'rounded-rect', 'circle', 'diamond']);
 
+/**
+ * True when `groupId` describes a shape↔label pair: exactly one text member
+ * and one non-text member sharing the group. User groups with more members
+ * (or no text) are not pairs and keep whole-group selection semantics.
+ */
+export function isLabelPairGroup(groupId: string, elements: EditorElement[]): boolean {
+  let text = 0;
+  let nonText = 0;
+  for (const el of elements) {
+    if (el.groupId !== groupId) continue;
+    if (el.type === 'text') text++;
+    else nonText++;
+  }
+  return text === 1 && nonText === 1;
+}
+
+/**
+ * Expand a set of element ids to include the partner of any shape↔label pair.
+ *
+ * - `fromShapeOnly` (delete/eraser): removing a shape also removes its label,
+ *   but removing the label alone leaves the shape intact — so only the
+ *   non-text member pulls its text partner in.
+ * - Otherwise (duplicate/copy): either member pulls the whole pair, since a
+ *   clone/paste of one half must never strand the other.
+ */
+export function expandLabelPairs(
+  elements: EditorElement[],
+  ids: Iterable<string>,
+  fromShapeOnly = false,
+): Set<string> {
+  const out = new Set(ids);
+  const byId = new Map(elements.map((el) => [el.id, el]));
+  for (const id of ids) {
+    const el = byId.get(id);
+    if (!el || !el.groupId) continue;
+    if (fromShapeOnly && el.type === 'text') continue;
+    if (!isLabelPairGroup(el.groupId, elements)) continue;
+    for (const other of elements) {
+      if (other.id !== id && other.groupId === el.groupId) out.add(other.id);
+    }
+  }
+  return out;
+}
+
 function isClosedShape(el: EditorElement): boolean {
   return CLOSED_SHAPES.has(el.type);
 }
@@ -66,7 +110,7 @@ export function labelAnchorForElement(
   imageSize: { width: number; height: number },
   fontSize: number,
   scale: number,
-  label?: Pick<TextElement, 'labelOffset' | 'text' | 'width'>,
+  label?: { labelOffset?: number; labelOffsetY?: number; text?: string; width?: number },
 ): LabelAnchor {
   const bounds = getElementBounds(el, imageSize);
   const pad = TEXT_PADDING * scale;
@@ -84,7 +128,18 @@ export function labelAnchorForElement(
     const pt = pointAlongPath(el, t);
     // Box width is capped so a long label cannot exceed the arrow's bbox.
     const width = Math.max(48, Math.min(bounds.w, label?.width ?? 220));
-    return { x: pt.x + el.x - width / 2, y: pt.y + el.y - (fontSize * TEXT_LINE_HEIGHT) / 2, width };
+    let x = pt.x + el.x - width / 2;
+    let y = pt.y + el.y - (fontSize * TEXT_LINE_HEIGHT) / 2;
+    // Perpendicular offset (image px): the label sits beside the stroke on the
+    // side picked by the drag. The offset is applied along the path normal so
+    // bends keep the label at the same visual distance from the line.
+    const offsetY = label?.labelOffsetY ?? 0;
+    if (offsetY !== 0) {
+      const tan = tangentAlongPath(el, t);
+      x += -tan.y * offsetY;
+      y += tan.x * offsetY;
+    }
+    return { x, y, width };
   }
 
   // Freehand: center of the stroke's bounds.
@@ -138,6 +193,21 @@ export function pointAlongPath(el: ArrowElement | LineElement, t: number): { x: 
     x: u * u * sx + 2 * u * t * c.x + t * t * ex,
     y: u * u * sy + 2 * u * t * c.y + t * t * ey,
   };
+}
+
+/**
+ * Unit tangent of the path at fraction `t` (0..1), element-local coords.
+ * Computed numerically from neighboring samples so it is correct for both
+ * quadratic-bezier bends and straight-segment polylines.
+ */
+export function tangentAlongPath(el: ArrowElement | LineElement, t: number): { x: number; y: number } {
+  const dt = 0.001;
+  const a = pointAlongPath(el, clamp01(t - dt));
+  const b = pointAlongPath(el, clamp01(t + dt));
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  return { x: dx / len, y: dy / len };
 }
 
 /**
@@ -234,7 +304,9 @@ export function createAttachedLabel(
   groupId: string,
   anchor: LabelAnchor,
   style: LabelStyle,
-  existing?: Pick<TextElement, 'text' | 'width' | 'padding' | 'lineHeight' | 'verticalAlign' | 'labelOffset'>,
+  existing?: Partial<
+    Pick<TextElement, 'text' | 'width' | 'padding' | 'lineHeight' | 'verticalAlign' | 'labelOffset'>
+  >,
 ): TextElement {
   return {
     id,

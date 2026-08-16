@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useState, useMemo, useCallback } from 'react';
 import {
   Stage, Layer, Rect, Ellipse, Line, Arrow, Text, Group,
   Image as KonvaImage, Circle, Transformer, Shape,
@@ -15,31 +15,43 @@ import {
   handDrawnEllipsePoints,
   wobbleFreehandPoint,
 } from '@/lib/hand-drawn';
-import { appendFreehandSample, freehandOutline } from '@/lib/editor/freehand';
+import { appendFreehandSampleInPlace, freehandOutline } from '@/lib/editor/freehand';
+import { DraftLayer, type DraftBoxGeo, type DraftBoxStyle, type DraftSegmentGeo, type DraftSegmentStyle } from '@/lib/editor/draft-layer';
+import { PerfProbe } from '@/lib/editor/perf';
 import {
   anchorForBinding,
+  computeBoundArrowUpdates,
+  fixedPointFromGlobalPoint,
+  globalFixedPointForBinding,
   isBindableElement,
+  liveElementFromNode,
   resolveEndpointBinding,
 } from '@/lib/editor/binding';
+import { elbowPointsLocal, headingFromFixedPoint } from '@/lib/editor/elbow';
+import { removeVertexAt } from '@/lib/editor/linear-editor';
+import { snapEndpointForBinding } from '@/lib/editor/binding-preview';
 import {
   labelAnchorForElement,
   createAttachedLabel,
   clipPolylineAgainstRect,
   pointAlongPath,
   projectPointToPath,
+  tangentAlongPath,
   estimateLabelHeight,
+  isLabelPairGroup,
 } from '@/lib/editor/text-labels';
 import TextEditOverlay from '@/components/editor/canvas/text-edit-overlay';
-import { getSelectionTheme, styleSelectionAnchor, selectionHandleProps, handleHoverEvents } from '@/lib/selection-theme';
+import { getSelectionTheme, styleSelectionAnchor, selectionHandleProps, handleHoverEvents, midHandleProps } from '@/lib/selection-theme';
 import RoughKonvaShape from '@/components/editor/canvas/rough-konva-shape';
 import CachedKonvaImage from '@/components/editor/canvas/cached-konva-image';
 import MagnifierKonva from '@/components/editor/canvas/magnifier-konva';
 import DeviceFrameKonva from '@/components/editor/canvas/device-frame-konva';
+import ShapeSelectionOverlay, { isShapeOverlayType } from '@/components/editor/canvas/shape-selection-overlay';
 import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
 import { arrowHeadPoints, generateArrowHead, paintDrawable } from '@/lib/rough-renderer';
 import type { Drawable } from 'roughjs/bin/core';
 import type { RoughDrawInput } from '@/lib/rough-renderer';
-import { snapBounds, type GuideLine } from '@/lib/editor/snap-guides';
+import { snapBounds } from '@/lib/editor/snap-guides';
 import { getElementBounds, boundsIntersect } from '@/lib/editor/selection';
 import { hydrateSettingsFromSelection } from '@/lib/editor/settings-sync';
 import { magnifierSourceCenter } from '@/lib/editor/magnifier-geometry';
@@ -47,7 +59,7 @@ import {
   controlPoint, renderPoints, bendFromHandle, tangentAtStart, tangentAtEnd,
 } from '@/lib/editor/curve';
 import type {
-  EditorElement, ShapeElement, ArrowElement, LineElement,
+  EditorElement, ShapeElement, ArrowElement, LineElement, FixedPointBinding,
   PencilElement, CircleElement, TextElement, StepElement, DiamondElement,
   MagnifierElement, ToolType,
 } from '@/types/editor';
@@ -386,13 +398,44 @@ const EditorCanvas: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [isDrawing, setIsDrawing] = useState(false);
-  const [drawingElement, setDrawingElement] = useState<EditorElement | null>(null);
   const drawOriginRef = useRef<{ x: number; y: number } | null>(null);
   /**
-   * Live draw preview is coalesced to one React update per animation frame.
-   * Without this, every mousemove re-renders the whole canvas subtree
-   * (background image + all annotations), which is the visible draw lag.
+   * Transient drawing state lives in refs + imperative Konva nodes on the
+   * interaction layer, never in React state — pointermove does not re-render
+   * the editor or rebuild the annotation scene.
    */
+  // Freehand sample buffers: mutated in place during the gesture, snapshotted
+  // (slice) at commit so the committed element stays immutable (the outline
+  // WeakMap cache depends on that).
+  const freehandDraftRef = useRef<{
+    id: string;
+    tool: 'pencil' | 'highlighter';
+    strokeWidth: number;
+    color: string;
+    opacity: number;
+    simulatePressure: boolean;
+    base: Partial<EditorElement>;
+  } | null>(null);
+  const freehandPointsRef = useRef<number[] | null>(null);
+  const freehandPressuresRef = useRef<number[] | null>(null);
+  // Geometry of the in-progress box / segment draft (image coordinates).
+  const draftBoxGeoRef = useRef<DraftBoxGeo | null>(null);
+  const draftBoxStyleRef = useRef<{
+    id: string;
+    type: EditorElement['type'];
+    style: DraftBoxStyle;
+    extra: Record<string, unknown>;
+  } | null>(null);
+  const draftSegmentGeoRef = useRef<DraftSegmentGeo | null>(null);
+  const draftSegmentStyleRef = useRef<{
+    id: string;
+    kind: 'arrow' | 'line';
+    style: DraftSegmentStyle;
+    extra: Record<string, unknown>;
+  } | null>(null);
+  // The magnifier is the one tool whose live draft is a real component (live
+  // zoom bubble + crosshair) — it alone keeps the React draft path.
+  const [drawingElement, setDrawingElement] = useState<EditorElement | null>(null);
   const pendingDrawRef = useRef<EditorElement | null>(null);
   const drawRafRef = useRef<number | null>(null);
   const queueDrawingUpdate = (el: EditorElement) => {
@@ -414,7 +457,24 @@ const EditorCanvas: React.FC = () => {
     }
     setDrawingElement(null);
   };
-  const [guides, setGuides] = useState<GuideLine[]>([]);
+  // Imperative overlay: everything transient (drafts, marquee, eraser rect,
+  // snapping guides) is drawn here with raw Konva nodes.
+  const interactionLayerRef = useRef<Konva.Layer>(null);
+  const draftLayerRef = useRef<DraftLayer | null>(null);
+  const perfProbeRef = useRef<PerfProbe | null>(null);
+  useEffect(() => {
+    const layer = interactionLayerRef.current;
+    if (!layer) return;
+    const dl = new DraftLayer();
+    dl.attach(layer);
+    draftLayerRef.current = dl;
+    perfProbeRef.current = new PerfProbe();
+    return () => {
+      dl.detach();
+      draftLayerRef.current = null;
+      perfProbeRef.current = null;
+    };
+  }, []);
   const middlePanRef = useRef<{ lastX: number; lastY: number } | null>(null);
   const altDuplicateRef = useRef<string | null>(null);
   /** Last annotation mousedown, for time+position double-click detection. */
@@ -435,6 +495,8 @@ const EditorCanvas: React.FC = () => {
   const [ocrCopied, setOcrCopied] = useState(false);
   const hoverPreviousToolRef = useRef<ToolType | null>(null);
   const hoveredAnnotationRef = useRef<string | null>(null);
+  /** Text-tool attach preview: the line/arrow + path fraction the pointer is over. */
+  const textAttachRef = useRef<{ id: string; t: number } | null>(null);
   /** Temporary select-on-hover without changing toolbar activeTool. */
   const [hoverSelectMode, setHoverSelectModeState] = useState(false);
   const hoverSelectModeRef = useRef(false);
@@ -448,22 +510,71 @@ const EditorCanvas: React.FC = () => {
   }, []);
   const handDrawn = useEditorStore((s) => s.handDrawn);
   const [isHandDragging, setIsHandDragging] = useState(false);
-  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  // Marquee + eraser geometry lives in refs; the overlay renders them via the
+  // draft layer, so a moving pointer never re-renders React.
+  const marqueeRectRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const marqueeOriginRef = useRef<{ x: number; y: number } | null>(null);
   const marqueeAdditiveRef = useRef(false);
+  const isErasingRef = useRef(false);
+  // Kept as state only for cursor styling; the hot path reads the ref.
   const [isErasing, setIsErasing] = useState(false);
-  const [eraserStart, setEraserStart] = useState<{ x: number; y: number } | null>(null);
-  const [eraserEnd, setEraserEnd] = useState<{ x: number; y: number } | null>(null);
+  const eraserStartRef = useRef<{ x: number; y: number } | null>(null);
+  const eraserEndRef = useRef<{ x: number; y: number } | null>(null);
+  /**
+   * Imperatively fade/restore annotation nodes under the eraser stroke (30%
+   * opacity preview, Excalidraw's pending-erasure fade) without a React
+   * render — the store's elements are the source of each node's base opacity.
+   */
+  const applyEraserFade = useCallback((ids: Set<string> | null) => {
+    const layer = stageRef.current?.findOne('.annotation-layer') as Konva.Layer | undefined;
+    if (!layer) return;
+    const s = useEditorStore.getState();
+    const byId = new Map(s.elements.map((el) => [el.id, el]));
+    for (const node of layer.getChildren()) {
+      const id = node.id();
+      if (!id || !byId.has(id)) continue;
+      const base = byId.get(id)?.opacity ?? 1;
+      node.opacity(ids?.has(id) ? base * 0.3 : base);
+    }
+    layer.batchDraw();
+  }, []);
   const [spotlightOverlayImage, setSpotlightOverlayImage] = useState<HTMLImageElement | null>(null);
+
+  // --- Imperative viewport (zoom/pan) ---
+  // Wheel/pan/pinch update the Stage node immediately and only sync the store
+  // once per animation frame, so React never runs on the input hot path. The
+  // visible viewport always tracks the pointer; the store (and anything
+  // subscribed, e.g. the text overlay) lags by at most one frame.
+  const pendingViewportRef = useRef<{ zoom: number; x: number; y: number } | null>(null);
+  const viewportSyncRafRef = useRef<number | null>(null);
+  const syncViewportToStore = () => {
+    if (viewportSyncRafRef.current !== null) return;
+    viewportSyncRafRef.current = requestAnimationFrame(() => {
+      viewportSyncRafRef.current = null;
+      const vp = pendingViewportRef.current;
+      if (!vp) return;
+      pendingViewportRef.current = null;
+      const s = useEditorStore.getState();
+      if (vp.zoom !== s.zoom || vp.x !== s.stagePosition.x || vp.y !== s.stagePosition.y) {
+        s.setZoom(vp.zoom);
+        s.setStagePosition({ x: vp.x, y: vp.y });
+      }
+    });
+  };
+  useEffect(() => () => {
+    if (viewportSyncRafRef.current !== null) {
+      cancelAnimationFrame(viewportSyncRafRef.current);
+      viewportSyncRafRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (!middlePanRef.current) return;
-      const s = useEditorStore.getState();
       const dx = e.clientX - middlePanRef.current.lastX;
       const dy = e.clientY - middlePanRef.current.lastY;
       middlePanRef.current = { lastX: e.clientX, lastY: e.clientY };
-      s.setStagePosition({ x: s.stagePosition.x + dx, y: s.stagePosition.y + dy });
+      panStageBy(dx, dy);
     };
     const onUp = () => { middlePanRef.current = null; };
     window.addEventListener('mousemove', onMove);
@@ -473,6 +584,24 @@ const EditorCanvas: React.FC = () => {
       window.removeEventListener('mouseup', onUp);
     };
   }, []);
+
+  /**
+   * Imperatively pan the stage by a pointer delta and sync the store once per
+   * animation frame. Hoisted function declaration so the middle-pan effect
+   * (and any other event source) can share one implementation.
+   */
+  function panStageBy(dx: number, dy: number) {
+    const s = useEditorStore.getState();
+    const vp = pendingViewportRef.current ?? { zoom: s.zoom, x: s.stagePosition.x, y: s.stagePosition.y };
+    const next = { zoom: vp.zoom, x: vp.x + dx, y: vp.y + dy };
+    pendingViewportRef.current = next;
+    const st = stageRef.current;
+    if (st) {
+      st.position({ x: next.x, y: next.y });
+      st.batchDraw();
+    }
+    syncViewportToStore();
+  }
 
   /*
     OCR is triggered by a window event so the palette and context menu can reach
@@ -506,6 +635,9 @@ const EditorCanvas: React.FC = () => {
   const cornerRadius = useEditorStore((s) => s.cornerRadius);
   const elements = useEditorStore((s) => s.elements);
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
+  /** Multi-point polyline vertex-insertion gesture (midpoint ghost handles).
+   *  Holds the working points array for the current drag; committed on end. */
+  const midVertexRef = useRef<{ id: string; idx: number; points: number[] } | null>(null);
   const canvasStyle = useEditorStore((s) => s.canvasStyle);
   const gridEnabled = useEditorStore((s) => s.canvasStyle.gridEnabled);
   const stepCounter = useEditorStore((s) => s.stepCounter);
@@ -669,64 +801,79 @@ const EditorCanvas: React.FC = () => {
   // Calculate if there are any spotlights
   const hasSpotlights = elements.some(el => el.type === 'spotlight');
 
+  /**
+   * Spotlight overlay: a full-res darkened image with the lit regions cut
+   * back in. Rebuilt only when the spotlight regions themselves change
+   * (geometry or bitmap) and debounced, so adding/moving/editing *other*
+   * annotations never re-encodes the screenshot. Decoded spotlight PNGs are
+   * cached by data URL, so a move/resize re-draws instead of re-decoding.
+   */
+  const spotlightSigRef = useRef('');
+  const spotlightTimerRef = useRef<number | null>(null);
+  const spotlightImgCacheRef = useRef(new Map<string, HTMLImageElement>());
   useEffect(() => {
-    if (!backgroundImage || !hasSpotlights) {
-      const empty = document.createElement('canvas');
-      empty.width = backgroundImage?.width ?? 1;
-      empty.height = backgroundImage?.height ?? 1;
-      const emptyCtx = empty.getContext('2d');
-      if (emptyCtx && backgroundImage) {
-        emptyCtx.drawImage(backgroundImage, 0, 0);
+    if (!backgroundImage) return;
+    const spotlights = elements.filter((el): el is ShapeElement & { imageDataURL?: string } =>
+      el.type === 'spotlight' && Boolean((el as ShapeElement & { imageDataURL?: string }).imageDataURL),
+    );
+    const sig = spotlights
+      .map((el) => `${el.id}:${Math.round(el.x)},${Math.round(el.y)},${Math.round(el.width)},${Math.round(el.height)}:${(el.imageDataURL ?? '').length}`)
+      .join('|');
+    if (sig === spotlightSigRef.current) return;
+    spotlightSigRef.current = sig;
+    if (!spotlights.length) {
+      if (spotlightTimerRef.current !== null) {
+        window.clearTimeout(spotlightTimerRef.current);
+        spotlightTimerRef.current = null;
       }
-      const overlay = new window.Image();
-      overlay.src = empty.toDataURL('image/png');
-      overlay.onload = () => {
-        setSpotlightOverlayImage(overlay);
-      };
+      setSpotlightOverlayImage(null);
       return;
     }
-
-    const canvas = document.createElement('canvas');
-    canvas.width = backgroundImage.width;
-    canvas.height = backgroundImage.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.drawImage(backgroundImage, 0, 0);
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    const spotlightElements = elements.filter((el): el is ShapeElement & { imageDataURL?: string } => {
-      return el.type === 'spotlight' && Boolean((el as ShapeElement & { imageDataURL?: string }).imageDataURL);
-    });
-
-    const loadImages = spotlightElements.map((el) => {
-      return new Promise<HTMLImageElement>((resolve, reject) => {
-        const img = new window.Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = (el as ShapeElement & { imageDataURL?: string }).imageDataURL!;
-      });
-    });
-
-    if (!loadImages.length) {
-      const overlay = new window.Image();
-      overlay.onload = () => setSpotlightOverlayImage(overlay);
-      overlay.src = canvas.toDataURL('image/png');
-      return;
-    }
-
-    Promise.all(loadImages)
-      .then((images) => {
-        images.forEach((img) => {
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        });
-        const overlay = new window.Image();
-        overlay.onload = () => setSpotlightOverlayImage(overlay);
-        overlay.src = canvas.toDataURL('image/png');
-      })
-      .catch(() => setSpotlightOverlayImage(null));
-  }, [backgroundImage, elements, hasSpotlights]);
+    if (spotlightTimerRef.current !== null) window.clearTimeout(spotlightTimerRef.current);
+    spotlightTimerRef.current = window.setTimeout(() => {
+      spotlightTimerRef.current = null;
+      const cur = spotlightSigRef.current;
+      void (async () => {
+        if (!backgroundImage) return;
+        const canvas = document.createElement('canvas');
+        canvas.width = backgroundImage.width;
+        canvas.height = backgroundImage.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(backgroundImage, 0, 0);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        try {
+          for (const el of spotlights) {
+            let img = spotlightImgCacheRef.current.get(el.imageDataURL!);
+            if (!img) {
+              img = await new Promise<HTMLImageElement>((resolve, reject) => {
+                const i = new window.Image();
+                i.onload = () => resolve(i);
+                i.onerror = () => reject(new Error('spotlight decode failed'));
+                i.src = el.imageDataURL!;
+              });
+              spotlightImgCacheRef.current.set(el.imageDataURL!, img);
+            }
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          }
+          const overlay = new window.Image();
+          overlay.onload = () => {
+            if (spotlightSigRef.current === cur) setSpotlightOverlayImage(overlay);
+          };
+          overlay.src = canvas.toDataURL('image/png');
+        } catch {
+          if (spotlightSigRef.current === cur) setSpotlightOverlayImage(null);
+        }
+      })();
+    }, 80);
+    return () => {
+      if (spotlightTimerRef.current !== null) {
+        window.clearTimeout(spotlightTimerRef.current);
+        spotlightTimerRef.current = null;
+      }
+    };
+  }, [backgroundImage, elements]);
 
   // Register stage globally for export
   useEffect(() => {
@@ -753,10 +900,27 @@ const EditorCanvas: React.FC = () => {
         tr.getLayer()?.batchDraw();
         return;
       }
-      const skipTypes = new Set(['arrow', 'line', 'magnifier']);
+      // The custom shape overlay owns single box-shape selections (dashed
+      // outline + its own handles); the Transformer never attaches there.
+      const overlayActive = selectedElementIds.length === 1
+        && (() => {
+          const sole = elements.find((e) => e.id === selectedElementIds[0]);
+          return !!sole && !sole.locked && isShapeOverlayType(sole.type);
+        })();
+      if (overlayActive) {
+        tr.nodes([]);
+        tr.getLayer()?.batchDraw();
+        return;
+      }
+      // Freehand strokes get their own path-aware selection (dashed outline
+      // on the stroke itself), never a Transformer bounding box.
+      const skipTypes = new Set(['arrow', 'line', 'magnifier', 'pencil', 'highlighter']);
       const nodes = selectedElementIds
         .filter((id) => {
           const el = elements.find((e) => e.id === id);
+          // Attached labels (groupId) get their own subtle dashed box below,
+          // never the generic Transformer wrapping the text.
+          if (el?.type === 'text' && el.groupId) return false;
           return el && !skipTypes.has(el.type) && !el.locked;
         })
         .map((id) => findAnnotationNode(st, id))
@@ -869,6 +1033,20 @@ const EditorCanvas: React.FC = () => {
     return {
       x: (pos.x - s.stagePosition.x) / s.zoom - ox,
       y: (pos.y - s.stagePosition.y) / s.zoom - oy,
+    };
+  }
+
+  // The one authoritative stage -> image conversion (image coordinates). All
+  // pointer-derived canvas math goes through getCanvasPoint or this helper so
+  // the cursor, previews and drag constraints can never disagree about where a
+  // pointer lands (zoom, stage pan, padding and device-frame insets included).
+  function stageToImagePos(pos: { x: number; y: number }): { x: number; y: number } {
+    const s = useEditorStore.getState();
+    const pad = s.canvasStyle.padding || 0;
+    const ins = DEVICE_FRAME_INSETS[s.canvasStyle.deviceFrame];
+    return {
+      x: (pos.x - s.stagePosition.x) / s.zoom - (pad + ins.left),
+      y: (pos.y - s.stagePosition.y) / s.zoom - (pad + ins.top),
     };
   }
 
@@ -1039,14 +1217,42 @@ const EditorCanvas: React.FC = () => {
     if (!isDbl) return;
     const under = s.elements.find((x) => x.id === shapeId);
     if (under && under.type !== 'text' && !under.locked) {
+      // Double-clicking an interior polyline VERTEX deletes it (Excalidraw's
+      // point deletion) — the vertex handle's own onDblClick does that, so the
+      // mousedown must not swallow it by attaching a label here.
+      if ((e.target as Konva.Node).name?.().includes('mid-vertex-handle')) return;
       attachTextToAnnotation(under);
     }
   }
+
+  /** Capture the pointer for canvas-owned gestures (draw / marquee / eraser /
+   *  crop) so they keep tracking even when the pointer leaves the canvas — a
+   *  fast stroke to the edge must not freeze. Konva-owned node drags are left
+   *  alone (Konva captures internally). */
+  const capturePointer = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+    const st = stageRef.current;
+    const pe = e.evt as PointerEvent;
+    if (!st?.content || typeof pe.pointerId !== 'number') return;
+    try {
+      if (!st.content.hasPointerCapture?.(pe.pointerId)) st.content.setPointerCapture(pe.pointerId);
+    } catch { /* capture unsupported / already released */ }
+  };
+  const releasePointer = (e?: Konva.KonvaEventObject<unknown>) => {
+    const st = stageRef.current;
+    const pe = e?.evt as PointerEvent | undefined;
+    if (!st?.content || !pe || typeof pe.pointerId !== 'number') return;
+    try {
+      if (st.content.hasPointerCapture?.(pe.pointerId)) st.content.releasePointerCapture(pe.pointerId);
+    } catch { /* noop */ }
+  };
 
   function handleMouseDown(e: Konva.KonvaEventObject<MouseEvent>) {
     // Read ALL values from the store to avoid stale closure issues with React Konva
     const s = useEditorStore.getState();
     const st = stageRef.current;
+    // A pressed pointer is no longer hovering: drop the hover outline so it
+    // never lingers once a drag/select gesture starts.
+    draftLayerRef.current?.clearHoverOutline();
 
     // Robust double-click detection. The Transformer that appears after the
     // first click can swallow the second click, and a few pixels of drag drift
@@ -1154,6 +1360,22 @@ const EditorCanvas: React.FC = () => {
           }
         }
 
+        // Text tool: clicking a line/arrow BODY attaches a label at the exact
+        // hovered spot (the anchor-dot preview), not the default midpoint.
+        if (s.activeTool === 'text' && (clicked?.type === 'arrow' || clicked?.type === 'line')) {
+          if (!s.annotationsLocked) {
+            e.cancelBubble = true;
+            const atT = textAttachRef.current?.id === clicked.id ? textAttachRef.current.t : undefined;
+            textAttachRef.current = null;
+            draftLayerRef.current?.clearLabelAnchor();
+            attachTextToAnnotation(
+              clicked as ArrowElement | LineElement,
+              atT,
+            );
+            return;
+          }
+        }
+
         // Double-click a text annotation to edit it in place, from any tool
         // (except eraser/crop/hand). Uses the native click count (or the
         // time/position heuristic above) rather than Konva's dblclick, which a
@@ -1190,7 +1412,12 @@ const EditorCanvas: React.FC = () => {
             ? currentIds.filter((i) => i !== clickedId)
             : [...currentIds, clickedId];
         } else if (clicked?.groupId) {
-          nextIds = s.elements.filter((el) => el.groupId === clicked.groupId).map((el) => el.id);
+          // Shape↔label pairs select individually (Excalidraw: a bound label is
+          // a separate element — click the arrow, you get the arrow). User
+          // groups with other members still select as a unit.
+          nextIds = isLabelPairGroup(clicked.groupId, s.elements)
+            ? [clickedId]
+            : s.elements.filter((el) => el.groupId === clicked.groupId).map((el) => el.id);
         } else {
           nextIds = [clickedId];
         }
@@ -1228,8 +1455,10 @@ const EditorCanvas: React.FC = () => {
         const pos = getCanvasPoint();
         if (pos) {
           marqueeOriginRef.current = pos;
+          capturePointer(e);
           marqueeAdditiveRef.current = e.evt.shiftKey;
-          setMarquee({ x: pos.x, y: pos.y, w: 0, h: 0 });
+          marqueeRectRef.current = { x: pos.x, y: pos.y, w: 0, h: 0 };
+          draftLayerRef.current?.showMarquee(pos.x, pos.y, 0, 0, getSelectionTheme().accent, 'rgba(234,88,12,0.08)');
           if (!e.evt.shiftKey) s.setSelectedElementIds([]);
         }
         const previous = hoverPreviousToolRef.current;
@@ -1247,30 +1476,30 @@ const EditorCanvas: React.FC = () => {
     if (s.activeTool === 'eraser') {
       const pos = getCanvasPoint();
       if (!pos) return;
+      isErasingRef.current = true;
+      capturePointer(e);
       setIsErasing(true);
-      setEraserStart(pos);
-      setEraserEnd(pos);
+      eraserStartRef.current = pos;
+      eraserEndRef.current = pos;
+      draftLayerRef.current?.showEraser(pos.x, pos.y, pos.x, pos.y);
       return;
     }
 
-    // Crop tool: drag a region to crop the image
+    // Crop tool: drag a region to crop the image (imperative overlay marquee —
+    // never committed as an annotation).
     if (s.activeTool === 'crop') {
       const pos = getCanvasPoint();
       if (!pos) return;
       setIsDrawing(true);
-      // Temporary rect used only as a crop marquee (never committed as an annotation)
-      setDrawingElement({
-        id: '__crop_marquee__',
-        type: 'rectangle',
-        x: pos.x,
-        y: pos.y,
-        width: 0,
-        height: 0,
+      capturePointer(e);
+      const geo: DraftBoxGeo = { kind: 'crop', ox: pos.x, oy: pos.y, w: 0, h: 0 };
+      draftBoxGeoRef.current = geo;
+      draftLayerRef.current?.beginBox(geo, {
         stroke: '#3b82f6',
         fill: 'rgba(59,130,246,0.15)',
         strokeWidth: Math.max(1, Math.round(2 * getImageToolScale(s.imageSize.width, s.imageSize.height))),
         opacity: 1,
-      } as ShapeElement);
+      }, '__crop_marquee__', false);
       return;
     }
 
@@ -1316,6 +1545,7 @@ const EditorCanvas: React.FC = () => {
     const pos = getCanvasPoint();
     if (!pos) return;
     setIsDrawing(true);
+    capturePointer(e);
     drawOriginRef.current = { x: pos.x, y: pos.y };
     const base: Partial<EditorElement> = {
       id: generateId(),
@@ -1328,84 +1558,139 @@ const EditorCanvas: React.FC = () => {
     if (s.activeTool === 'pencil' || s.activeTool === 'highlighter') {
       // First sample: record pen pressure when a stylus is the source, else
       // a neutral 0.5 that perfect-freehand ignores (simulated pressure).
+      // The stroke lives in mutable refs + the imperative overlay; nothing
+      // touches React state until pointerup commits it.
       const evt = e.evt as PointerEvent;
       const downIsPen = evt.pointerType === 'pen' && evt.pressure > 0;
-      setDrawingElement({
-        ...base,
-        type: s.activeTool,
-        x: 0, y: 0,
-        points: [pos.x, pos.y],
-        pressures: [downIsPen ? Math.round(Math.min(1, Math.max(0, evt.pressure)) * 100) / 100 : 0.5],
+      const strokeWidth = s.activeTool === 'highlighter' ? hw : sw;
+      const opacity = s.activeTool === 'highlighter' ? 0.4 : (base.opacity ?? 1);
+      const points = [pos.x, pos.y];
+      const pressures = [downIsPen ? Math.round(Math.min(1, Math.max(0, evt.pressure)) * 100) / 100 : 0.5];
+      freehandDraftRef.current = {
+        id: base.id as string,
+        tool: s.activeTool,
+        strokeWidth,
+        color: s.strokeColor,
+        opacity,
         simulatePressure: !downIsPen,
-        stroke: s.strokeColor,
-        strokeWidth: s.activeTool === 'highlighter' ? hw : sw,
-        lineCap: 'round',
-        lineJoin: 'round',
-        tension: 0.5,
-        ...(s.activeTool === 'highlighter' ? { opacity: 0.4 } : {}),
-      } as PencilElement);
-    } else if (s.activeTool === 'arrow') {
-      setDrawingElement({
-        ...base,
-        type: 'arrow',
-        x: pos.x, y: pos.y,
-        points: [0, 0, 0, 0],
-        stroke: s.strokeColor,
-        strokeWidth: sw,
-        fill: s.strokeColor,
-        pointerLength: pointerSize,
-        pointerWidth: pointerSize,
-        endArrowhead: s.endArrowhead,
-        startArrowhead: s.startArrowhead,
-      } as ArrowElement);
-    } else if (s.activeTool === 'line') {
-      setDrawingElement({
-        ...base,
-        type: 'line',
-        x: pos.x, y: pos.y,
-        points: [0, 0, 0, 0],
-        stroke: s.strokeColor,
-        strokeWidth: sw,
-        endArrowhead: s.endArrowhead,
-        startArrowhead: s.startArrowhead,
-      } as LineElement);
+        base,
+      };
+      freehandPointsRef.current = points;
+      freehandPressuresRef.current = pressures;
+      draftLayerRef.current?.beginFreehand(s.activeTool, strokeWidth, s.strokeColor, opacity, !downIsPen);
+      draftLayerRef.current?.updateFreehand(points, pressures, !downIsPen);
+    } else if (s.activeTool === 'arrow' || s.activeTool === 'line') {
+      const geo: DraftSegmentGeo = {
+        kind: s.activeTool,
+        sx: pos.x, sy: pos.y, ex: pos.x, ey: pos.y,
+        // Elbow routing only exists for arrows (lines stay straight).
+        elbowed: s.activeTool === 'arrow' && s.arrowPath === 'elbow',
+      };
+      const headSize = (s.endArrowhead ?? 'arrow') !== 'none' ? pointerSize : 0;
+      draftSegmentGeoRef.current = geo;
+      draftSegmentStyleRef.current = {
+        id: base.id as string,
+        kind: s.activeTool,
+        style: {
+          stroke: s.strokeColor,
+          strokeWidth: sw,
+          fill: s.strokeColor,
+          headSize,
+          pointerWidth: pointerSize,
+          showStartHead: (s.startArrowhead ?? 'none') !== 'none',
+          strokeStyle: s.strokeStyle,
+          roughness: s.roughness,
+          opacity: s.opacity,
+        },
+        extra: {
+          endArrowhead: s.endArrowhead,
+          startArrowhead: s.startArrowhead,
+          elbowed: s.activeTool === 'arrow' && s.arrowPath === 'elbow',
+        },
+      };
+      draftLayerRef.current?.beginSegment(s.activeTool, geo, draftSegmentStyleRef.current.style, base.id as string, handDrawn);
     } else if (s.activeTool === 'circle' || s.activeTool === 'magnifier') {
-      setDrawingElement({
-        ...base,
-        type: s.activeTool === 'magnifier' ? 'magnifier' : 'circle',
-        x: pos.x, y: pos.y,
-        width: 0, height: 0,
-        stroke: s.strokeColor,
-        fill: s.activeTool === 'magnifier' ? 'transparent' : (s.fillColor === 'transparent' ? 'transparent' : s.fillColor),
-        strokeWidth: sw,
-        ...(s.activeTool === 'magnifier' ? { magnification: s.magnification, roughness: s.roughness } : {}),
-      } as CircleElement | MagnifierElement);
+      if (s.activeTool === 'magnifier') {
+        // The magnifier keeps its React draft (live zoom bubble component).
+        setDrawingElement({
+          ...base,
+          type: s.activeTool === 'magnifier' ? 'magnifier' : 'circle',
+          x: pos.x, y: pos.y,
+          width: 0, height: 0,
+          stroke: s.strokeColor,
+          fill: 'transparent',
+          strokeWidth: sw,
+          ...(s.activeTool === 'magnifier' ? { magnification: s.magnification, roughness: s.roughness } : {}),
+        } as CircleElement | MagnifierElement);
+        return;
+      }
+      const geo: DraftBoxGeo = { kind: 'ellipse', ox: pos.x, oy: pos.y, w: 0, h: 0 };
+      draftBoxGeoRef.current = geo;
+      draftBoxStyleRef.current = {
+        id: base.id as string,
+        type: 'circle',
+        style: {
+          stroke: s.strokeColor,
+          fill: s.fillColor === 'transparent' ? 'transparent' : s.fillColor,
+          strokeWidth: sw,
+          strokeStyle: s.strokeStyle,
+          fillStyle: s.fillStyle,
+          roughness: s.roughness,
+          opacity: s.opacity,
+        },
+        extra: {},
+      };
+      draftLayerRef.current?.beginBox(geo, draftBoxStyleRef.current.style, base.id as string, handDrawn);
     } else if (s.activeTool === 'diamond') {
-      setDrawingElement({
-        ...base,
+      const geo: DraftBoxGeo = { kind: 'diamond', ox: pos.x, oy: pos.y, w: 0, h: 0 };
+      draftBoxGeoRef.current = geo;
+      draftBoxStyleRef.current = {
+        id: base.id as string,
         type: 'diamond',
-        x: pos.x, y: pos.y,
-        width: 0, height: 0,
-        stroke: s.strokeColor,
-        fill: s.fillColor === 'transparent' ? 'transparent' : s.fillColor,
-        strokeWidth: sw,
-      } as DiamondElement);
+        style: {
+          stroke: s.strokeColor,
+          fill: s.fillColor === 'transparent' ? 'transparent' : s.fillColor,
+          strokeWidth: sw,
+          strokeStyle: s.strokeStyle,
+          fillStyle: s.fillStyle,
+          roughness: s.roughness,
+          opacity: s.opacity,
+        },
+        extra: {},
+      };
+      draftLayerRef.current?.beginBox(geo, draftBoxStyleRef.current.style, base.id as string, handDrawn);
     } else {
       // rectangle, rounded-rect, blur, pixelate, spotlight
-      setDrawingElement({
-        ...base,
+      const isEffect = ['blur', 'pixelate', 'spotlight'].includes(s.activeTool);
+      const geo: DraftBoxGeo = { kind: s.activeTool as DraftBoxGeo['kind'], ox: pos.x, oy: pos.y, w: 0, h: 0 };
+      const effectStyle: DraftBoxStyle =
+        s.activeTool === 'blur' || s.activeTool === 'pixelate'
+          ? { stroke: '#3b82f6', fill: 'rgba(59,130,246,0.1)', strokeWidth: 1.5, opacity: s.opacity }
+          : { stroke: '#facc15', fill: 'rgba(250,204,21,0.08)', strokeWidth: 1.5, opacity: s.opacity };
+      draftBoxGeoRef.current = geo;
+      draftBoxStyleRef.current = {
+        id: base.id as string,
         type: s.activeTool as ShapeElement['type'],
-        x: pos.x, y: pos.y,
-        width: 0, height: 0,
-        stroke: ['blur', 'pixelate', 'spotlight'].includes(s.activeTool) ? undefined : s.strokeColor,
-        fill: (s.activeTool === 'blur' || s.activeTool === 'pixelate')
-          ? undefined
-          : (s.activeTool === 'spotlight' ? undefined : s.fillColor),
-        strokeWidth: ['blur', 'pixelate', 'spotlight'].includes(s.activeTool) ? 0 : sw,
-        cornerRadius: s.activeTool === 'rounded-rect' ? s.cornerRadius * scale : 0,
-        blurRadius: s.activeTool === 'blur' ? s.blurRadius : undefined,
-        pixelSize: s.activeTool === 'pixelate' ? s.pixelSize : undefined,
-      } as ShapeElement);
+        style: isEffect ? effectStyle : {
+          stroke: s.strokeColor,
+          fill: s.fillColor,
+          strokeWidth: sw,
+          strokeStyle: s.strokeStyle,
+          fillStyle: s.fillStyle,
+          roughness: s.roughness,
+          // Rounded corners are configured on the Rectangle tool (Edges
+          // setting); legacy rounded-rect elements keep their own value.
+          cornerRadius: (s.activeTool === 'rectangle' || s.activeTool === 'rounded-rect')
+            ? s.cornerRadius * scale
+            : 0,
+          opacity: s.opacity,
+        },
+        extra: {
+          blurRadius: s.activeTool === 'blur' ? s.blurRadius : undefined,
+          pixelSize: s.activeTool === 'pixelate' ? s.pixelSize : undefined,
+        },
+      };
+      draftLayerRef.current?.beginBox(geo, draftBoxStyleRef.current.style, base.id as string, handDrawn);
     }
   }
 
@@ -1417,10 +1702,19 @@ const EditorCanvas: React.FC = () => {
       const s = useEditorStore.getState();
       const hoveredId = findAnnotationId(e.target);
       const drawingTools = !['select', 'hand', 'eraser', 'crop', 'magnifier'].includes(s.activeTool);
-      if (hoveredId && drawingTools) {
+      // The text tool hovering a line/arrow shows the attach-label preview
+      // (anchor dot + text cursor) instead of the generic selection cursor,
+      // so the preview and the cursor never disagree about what a click does.
+      const hoveredEl = hoveredId ? s.elements.find((el) => el.id === hoveredId) : undefined;
+      const textAttachHover = s.activeTool === 'text'
+        && (hoveredEl?.type === 'arrow' || hoveredEl?.type === 'line');
+      if (hoveredId && drawingTools && !textAttachHover) {
         if (!hoveredAnnotationRef.current) hoverPreviousToolRef.current = s.activeTool;
         hoveredAnnotationRef.current = hoveredId;
         if (!hoverSelectModeRef.current) setHoverSelectMode(true);
+      } else if (textAttachHover && hoveredAnnotationRef.current) {
+        hoveredAnnotationRef.current = null;
+        if (hoverSelectModeRef.current) setHoverSelectMode(false);
       } else if (
         !hoveredId
         && hoveredAnnotationRef.current
@@ -1430,89 +1724,122 @@ const EditorCanvas: React.FC = () => {
         hoverPreviousToolRef.current = null;
         if (hoverSelectModeRef.current) setHoverSelectMode(false);
       }
+
+      // Text tool over a line/arrow: preview where a click would attach a
+      // label — a quiet anchor dot on the stroke, drawn imperatively on the
+      // interaction layer (no React on the move hot path). The pointer is
+      // projected onto each arrow/line; the nearest one within ~10 screen px
+      // wins and is remembered for the click.
+      const textTool = s.activeTool === 'text';
+      // No preview while the label editor is open: the pointer is over the
+      // textarea, and the dot would linger under the editing UI.
+      if (textTool && !textInput.visible && !hoveredAnnotationRef.current) {
+        const pos = getCanvasPoint();
+        if (pos) {
+          let best: { id: string; t: number } | null = null;
+          let bestD = Infinity;
+          const threshold = 10 / s.zoom;
+          for (const el of s.elements) {
+            if (el.type !== 'arrow' && el.type !== 'line') continue;
+            // Cheap bbox pre-filter so arrows far from the pointer never pay
+            // for the 48-sample path projection.
+            const b = getElementBounds(el, s.imageSize);
+            if (
+              pos.x < b.x - threshold || pos.x > b.x + b.w + threshold
+              || pos.y < b.y - threshold || pos.y > b.y + b.h + threshold
+            ) continue;
+            const linear = el as ArrowElement | LineElement;
+            // A linear element that already has a label edits that label on
+            // click, so the preview anchors at the label's own position
+            // instead of the pointer-projected spot (preview == action).
+            const existingLabel = linear.groupId
+              ? s.elements.find(
+                  (x) => x.type === 'text' && x.groupId === linear.groupId,
+                ) as TextElement | undefined
+              : undefined;
+            let t: number;
+            let pt: { x: number; y: number };
+            if (existingLabel) {
+              t = existingLabel.labelOffset ?? 0.5;
+              pt = pointAlongPath(linear, t);
+            } else {
+              t = projectPointToPath(linear, pos.x - el.x, pos.y - el.y);
+              pt = pointAlongPath(linear, t);
+            }
+            const d = Math.hypot(pos.x - (el.x + pt.x), pos.y - (el.y + pt.y));
+            if (d < bestD) {
+              bestD = d;
+              best = { id: el.id, t };
+            }
+          }
+          if (best && bestD <= threshold) {
+            if (!textAttachRef.current) textAttachRef.current = { id: best.id, t: best.t };
+            else {
+              textAttachRef.current.id = best.id;
+              textAttachRef.current.t = best.t;
+            }
+            const linear = s.elements.find((x) => x.id === best!.id) as ArrowElement | LineElement;
+            const pt = pointAlongPath(linear, best.t);
+            draftLayerRef.current?.showLabelAnchor(linear.x + pt.x, linear.y + pt.y, s.zoom);
+          } else if (textAttachRef.current) {
+            textAttachRef.current = null;
+            draftLayerRef.current?.clearLabelAnchor();
+          }
+        }
+      } else if (textAttachRef.current) {
+        textAttachRef.current = null;
+        draftLayerRef.current?.clearLabelAnchor();
+      }
     }
 
-    // Marquee multi-select
+    // Marquee multi-select (drawn imperatively on the interaction layer)
     if (marqueeOriginRef.current) {
       const pos = getCanvasPoint();
       if (pos) {
         const o = marqueeOriginRef.current;
-        setMarquee({
+        marqueeRectRef.current = {
           x: Math.min(o.x, pos.x),
           y: Math.min(o.y, pos.y),
           w: Math.abs(pos.x - o.x),
           h: Math.abs(pos.y - o.y),
-        });
+        };
+        const m = marqueeRectRef.current;
+        draftLayerRef.current?.showMarquee(m.x, m.y, m.w, m.h, getSelectionTheme().accent, 'rgba(234,88,12,0.08)');
       }
       return;
     }
 
-    // Eraser: update selection rectangle
-    if (isErasing) {
+    // Eraser: update the selection rect + pending-erasure fade imperatively
+    if (isErasingRef.current) {
       const pos = getCanvasPoint();
-      if (pos) setEraserEnd(pos);
+      if (pos) {
+        eraserEndRef.current = pos;
+        const s0 = eraserStartRef.current;
+        const e0 = eraserEndRef.current;
+        if (s0) {
+          const x1 = Math.min(s0.x, e0.x);
+          const y1 = Math.min(s0.y, e0.y);
+          const x2 = Math.max(s0.x, e0.x);
+          const y2 = Math.max(s0.y, e0.y);
+          draftLayerRef.current?.showEraser(x1, y1, x2, y2);
+          applyEraserFade(new Set(computeEraserHitIds(useEditorStore.getState().elements, x1, y1, x2, y2)));
+        }
+      }
       return;
     }
 
-    if (!isDrawing || !drawingElement) return;
+    if (!isDrawing) return;
+    // Perf probe: pointermove → draft update cost (dev only, see perf.ts).
+    const moveStart = performance.now();
     const pos = getCanvasPoint();
     if (!pos) return;
 
-    if (drawingElement.type === 'pencil' || drawingElement.type === 'highlighter') {
-      const pencil = drawingElement as PencilElement;
-      const pts = pencil.points;
-      const ptCount = pts.length / 2;
-      let nx = pos.x;
-      let ny = pos.y;
-      if (handDrawn && ptCount > 0) {
-        [nx, ny] = wobbleFreehandPoint(pos.x, pos.y, ptCount, pencil.strokeWidth ?? 3);
-      }
-      const evt = e?.evt as PointerEvent | undefined;
-      const isPen = evt?.pointerType === 'pen' && (evt?.pressure ?? 0) > 0;
-      const next = appendFreehandSample(
-        pts,
-        pencil.pressures ?? [],
-        nx,
-        ny,
-        isPen ? (evt?.pressure ?? 0.5) : 0.5,
-      );
-      queueDrawingUpdate({
-        ...drawingElement,
-        points: next.points,
-        pressures: next.pressures,
-        simulatePressure: !isPen,
-      });
-    } else if (drawingElement.type === 'arrow' || drawingElement.type === 'line') {
-      let dx = pos.x - drawingElement.x;
-      let dy = pos.y - drawingElement.y;
-      if (e?.evt?.shiftKey) {
-        const angle = Math.atan2(dy, dx);
-        const snap = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
-        const len = Math.hypot(dx, dy);
-        dx = Math.cos(snap) * len;
-        dy = Math.sin(snap) * len;
-      }
-      if (e?.evt?.altKey && drawOriginRef.current) {
-        const ox = drawOriginRef.current.x;
-        const oy = drawOriginRef.current.y;
-        queueDrawingUpdate({
-          ...drawingElement,
-          x: ox - dx,
-          y: oy - dy,
-          points: [0, 0, dx * 2, dy * 2],
-        } as ArrowElement | LineElement);
-      } else {
-        queueDrawingUpdate({
-          ...drawingElement,
-          points: [0, 0, dx, dy],
-        } as ArrowElement | LineElement);
-      }
-    } else {
+    // The magnifier keeps its React draft (live zoom bubble component). Its
+    // updates are rAF-coalesced so this is at most one render per frame.
+    if (drawingElement?.type === 'magnifier') {
       const origin = drawOriginRef.current || { x: drawingElement.x, y: drawingElement.y };
       let w = pos.x - origin.x;
       let h = pos.y - origin.y;
-      // Magnifiers draw elliptically like every other shape; Shift constrains
-      // to a circle rather than the tool being permanently square-locked.
       if (e?.evt?.shiftKey) {
         const size = Math.max(Math.abs(w), Math.abs(h));
         w = Math.sign(w || 1) * size;
@@ -1525,7 +1852,7 @@ const EditorCanvas: React.FC = () => {
           y: origin.y - h,
           width: w * 2,
           height: h * 2,
-        } as ShapeElement | CircleElement | DiamondElement | MagnifierElement);
+        } as MagnifierElement);
       } else {
         queueDrawingUpdate({
           ...drawingElement,
@@ -1533,28 +1860,134 @@ const EditorCanvas: React.FC = () => {
           y: origin.y,
           width: w,
           height: h,
-        } as ShapeElement | CircleElement | DiamondElement | MagnifierElement);
+        } as MagnifierElement);
       }
+      perfProbeRef.current?.tick(performance.now() - moveStart, 'magnifier-draw');
+      return;
+    }
+
+    // Freehand: append samples in place, repaint only the active stroke.
+    if (freehandDraftRef.current && freehandPointsRef.current) {
+      const pts = freehandPointsRef.current;
+      const prs = freehandPressuresRef.current ?? (freehandPressuresRef.current = []);
+      const ptCount = pts.length / 2;
+      let nx = pos.x;
+      let ny = pos.y;
+      if (handDrawn && ptCount > 0) {
+        [nx, ny] = wobbleFreehandPoint(pos.x, pos.y, ptCount, freehandDraftRef.current.strokeWidth);
+      }
+      const evt = e?.evt as PointerEvent | undefined;
+      const isPen = evt?.pointerType === 'pen' && (evt?.pressure ?? 0) > 0;
+      appendFreehandSampleInPlace(pts, prs, nx, ny, isPen ? (evt?.pressure ?? 0.5) : 0.5);
+      draftLayerRef.current?.updateFreehand(pts, prs, !isPen);
+      perfProbeRef.current?.tick(performance.now() - moveStart, 'freehand-draw');
+      return;
+    }
+
+    // Arrow / line: the endpoint follows the pointer 1:1 (Shift constrains to
+    // 45°, Alt draws from the start point out both ways).
+    if (draftSegmentGeoRef.current) {
+      const geo = draftSegmentGeoRef.current;
+      let dx = pos.x - geo.sx;
+      let dy = pos.y - geo.sy;
+      if (e?.evt?.shiftKey) {
+        const angle = Math.atan2(dy, dx);
+        const snap = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+        const len = Math.hypot(dx, dy);
+        dx = Math.cos(snap) * len;
+        dy = Math.sin(snap) * len;
+      }
+      if (e?.evt?.altKey && drawOriginRef.current) {
+        const o = drawOriginRef.current;
+        geo.sx = o.x - dx;
+        geo.sy = o.y - dy;
+        geo.ex = o.x + dx;
+        geo.ey = o.y + dy;
+      } else {
+        geo.ex = geo.sx + dx;
+        geo.ey = geo.sy + dy;
+      }
+      // Live binding preview (Excalidraw's suggestedBinding): while the
+      // endpoint nears a bindable shape, highlight the target + attachment
+      // point and let the endpoint magnetically follow the outline. The
+      // persistent binding is still derived on commit from the same geometry,
+      // so preview and release always agree.
+      if (draftSegmentStyleRef.current) {
+        const st = useEditorStore.getState();
+        const kind = draftSegmentStyleRef.current.kind;
+        const pseudo = {
+          id: '__draft__',
+          type: kind,
+          x: geo.sx,
+          y: geo.sy,
+          points: [0, 0, geo.ex - geo.sx, geo.ey - geo.sy],
+          strokeWidth: draftSegmentStyleRef.current.style.strokeWidth,
+        } as ArrowElement;
+        const bsnap = snapEndpointForBinding(
+          pseudo, 'end',
+          [0, 0, geo.ex - geo.sx, geo.ey - geo.sy],
+          st.elements, st.imageSize, st.zoom, st.isBindingEnabled,
+        );
+        if (bsnap.preview) {
+          draftLayerRef.current?.showBindingPreview(bsnap.preview, getSelectionTheme().accent, st.zoom);
+          geo.ex = geo.sx + bsnap.points[2];
+          geo.ey = geo.sy + bsnap.points[3];
+        } else {
+          draftLayerRef.current?.clearBindingPreview();
+        }
+      }
+      draftLayerRef.current?.updateSegment(geo);
+      perfProbeRef.current?.tick(performance.now() - moveStart, 'segment-draw');
+      return;
+    }
+
+    // Box shapes (rect / rounded / ellipse / diamond / blur / pixelate /
+    // spotlight / crop): drag from the origin; Shift constrains aspect;
+    // Alt draws from the center.
+    if (draftBoxGeoRef.current) {
+      const geo = draftBoxGeoRef.current;
+      const origin = drawOriginRef.current || { x: geo.ox, y: geo.oy };
+      let w = pos.x - origin.x;
+      let h = pos.y - origin.y;
+      if (e?.evt?.shiftKey) {
+        const size = Math.max(Math.abs(w), Math.abs(h));
+        w = Math.sign(w || 1) * size;
+        h = Math.sign(h || 1) * size;
+      }
+      geo.w = w;
+      geo.h = h;
+      geo.centered = !!e?.evt?.altKey;
+      draftLayerRef.current?.updateBox(geo);
+      perfProbeRef.current?.tick(performance.now() - moveStart, 'box-draw');
     }
   }
 
   function handleMouseLeave() {
     const s = useEditorStore.getState();
+    // Leaving the canvas: drop the text-attach preview so it cannot linger.
+    if (textAttachRef.current) {
+      textAttachRef.current = null;
+      draftLayerRef.current?.clearLabelAnchor();
+    }
     if (s.selectedElementIds.length) return;
     hoveredAnnotationRef.current = null;
     hoverPreviousToolRef.current = null;
     if (hoverSelectModeRef.current) setHoverSelectMode(false);
   }
 
-  async function handleMouseUp() {
+  async function handleMouseUp(e?: Konva.KonvaEventObject<unknown>) {
+    // Gesture ended: release the pointer capture taken at pointerdown so the
+    // browser restores normal hover/hit behavior.
+    releasePointer(e);
     // Marquee multi-select commit
-    if (marqueeOriginRef.current && marquee) {
+    if (marqueeOriginRef.current && marqueeRectRef.current) {
       const s = useEditorStore.getState();
+      const m = marqueeRectRef.current;
       const box = {
-        x: marquee.x,
-        y: marquee.y,
-        w: Math.max(marquee.w, 1),
-        h: Math.max(marquee.h, 1),
+        x: m.x,
+        y: m.y,
+        w: Math.max(m.w, 1),
+        h: Math.max(m.h, 1),
       };
       const hit = s.elements
         .filter((el) => !el.locked && boundsIntersect(box, getElementBounds(el, s.imageSize)))
@@ -1568,67 +2001,165 @@ const EditorCanvas: React.FC = () => {
       }
       marqueeOriginRef.current = null;
       marqueeAdditiveRef.current = false;
-      setMarquee(null);
+      marqueeRectRef.current = null;
+      draftLayerRef.current?.clearMarquee();
       return;
     }
 
     // Eraser: commit - remove all elements that INTERSECT the selection rect
     // (same hit test as the live fade preview).
-    if (isErasing && eraserStart && eraserEnd) {
+    if (isErasingRef.current && eraserStartRef.current && eraserEndRef.current) {
       const s = useEditorStore.getState();
-      const x1 = Math.min(eraserStart.x, eraserEnd.x);
-      const y1 = Math.min(eraserStart.y, eraserEnd.y);
-      const x2 = Math.max(eraserStart.x, eraserEnd.x);
-      const y2 = Math.max(eraserStart.y, eraserEnd.y);
+      const x1 = Math.min(eraserStartRef.current.x, eraserEndRef.current.x);
+      const y1 = Math.min(eraserStartRef.current.y, eraserEndRef.current.y);
+      const x2 = Math.max(eraserStartRef.current.x, eraserEndRef.current.x);
+      const y2 = Math.max(eraserStartRef.current.y, eraserEndRef.current.y);
       const toRemove = computeEraserHitIds(s.elements, x1, y1, x2, y2);
       if (toRemove.length) s.removeElements(toRemove);
+      isErasingRef.current = false;
       setIsErasing(false);
-      setEraserStart(null);
-      setEraserEnd(null);
+      eraserStartRef.current = null;
+      eraserEndRef.current = null;
+      applyEraserFade(null);
+      draftLayerRef.current?.clearEraser();
       return;
     }
 
     if (!isDrawing) return;
     setIsDrawing(false);
-    // The draft state can be a frame behind the latest pointer (its updates
-    // are rAF-coalesced) - commit the coalesced final frame instead.
-    const finalDraft = pendingDrawRef.current ?? drawingElement;
+    // The magnifier is the only React-path draft; its updates are
+    // rAF-coalesced, so commit the coalesced final frame. Everything else was
+    // drawn imperatively and is committed from the refs below.
+    const finalDraft = drawingElement?.type === 'magnifier'
+      ? (pendingDrawRef.current ?? drawingElement)
+      : null;
     pendingDrawRef.current = null;
     if (drawRafRef.current !== null) {
       cancelAnimationFrame(drawRafRef.current);
       drawRafRef.current = null;
     }
-    if (!finalDraft) return;
-    const draft = finalDraft;
     const MIN_SIZE = 3;
     let valid = false;
+    let draft: EditorElement | null = null;
 
-    // Crop commit (marquee only - never saved as an annotation)
-    if (draft.id === '__crop_marquee__' && draft.type === 'rectangle') {
-      const shape = draft as ShapeElement;
-      const x = Math.min(shape.x, shape.x + shape.width);
-      const y = Math.min(shape.y, shape.y + shape.height);
-      const w = Math.abs(shape.width);
-      const h = Math.abs(shape.height);
-      setDrawingElement(null);
+    // Crop commit (imperative overlay marquee - never saved as an annotation)
+    if (draftBoxGeoRef.current?.kind === 'crop') {
+      const geo = draftBoxGeoRef.current;
+      const w0 = geo.centered ? geo.w * 2 : geo.w;
+      const h0 = geo.centered ? geo.h * 2 : geo.h;
+      const x = Math.min(geo.ox, geo.ox + w0);
+      const y = Math.min(geo.oy, geo.oy + h0);
+      const w = Math.abs(w0);
+      const h = Math.abs(h0);
+      draftBoxGeoRef.current = null;
+      draftBoxStyleRef.current = null;
+      draftLayerRef.current?.clear();
       if (w > MIN_SIZE && h > MIN_SIZE) {
         useEditorStore.getState().cropToRegion({ x, y, width: w, height: h });
       }
       return;
     }
 
-    if (draft.type === 'pencil' || draft.type === 'highlighter') {
-      valid = (draft as PencilElement).points.length > 4;
-    } else if (draft.type === 'arrow' || draft.type === 'line') {
-      const pts = (draft as ArrowElement | LineElement).points;
-      valid = Math.abs(pts[2]) > MIN_SIZE || Math.abs(pts[3]) > MIN_SIZE;
-    } else {
-      const w = Math.abs((draft as ShapeElement | CircleElement).width);
-      const h = Math.abs((draft as ShapeElement | CircleElement).height);
-      valid = w > MIN_SIZE || h > MIN_SIZE;
+    // Freehand: snapshot the mutable buffers into an immutable element.
+    if (freehandDraftRef.current && freehandPointsRef.current) {
+      const fd = freehandDraftRef.current;
+      const pts = freehandPointsRef.current;
+      const prs = freehandPressuresRef.current ?? [];
+      valid = pts.length > 4;
+      if (valid) {
+        draft = {
+          ...fd.base,
+          type: fd.tool,
+          x: 0, y: 0,
+          points: pts.slice(),
+          pressures: prs.slice(),
+          simulatePressure: fd.simulatePressure,
+          stroke: fd.color,
+          strokeWidth: fd.strokeWidth,
+          lineCap: 'round',
+          lineJoin: 'round',
+          tension: 0.5,
+          opacity: fd.opacity,
+        } as PencilElement;
+      }
+      freehandDraftRef.current = null;
+      freehandPointsRef.current = null;
+      freehandPressuresRef.current = null;
+    } else if (draftSegmentGeoRef.current && draftSegmentStyleRef.current) {
+      const geo = draftSegmentGeoRef.current;
+      const seg = draftSegmentStyleRef.current;
+      valid = Math.abs(geo.ex - geo.sx) > MIN_SIZE || Math.abs(geo.ey - geo.sy) > MIN_SIZE;
+      if (valid) {
+        draft = {
+          ...seg.extra,
+          id: seg.id,
+          type: seg.kind,
+          x: geo.sx,
+          y: geo.sy,
+          points: [0, 0, geo.ex - geo.sx, geo.ey - geo.sy],
+          stroke: seg.style.stroke,
+          strokeWidth: seg.style.strokeWidth,
+          fill: seg.style.fill,
+          // Arrowhead geometry only exists on arrows (matches the pre-audit
+          // draft: line drafts carried no pointerLength/pointerWidth).
+          ...(seg.kind === 'arrow'
+            ? {
+                pointerLength: seg.style.headSize ?? 0,
+                pointerWidth: seg.style.pointerWidth ?? (seg.style.headSize ?? 0),
+              }
+            : {}),
+          opacity: seg.style.opacity,
+          strokeStyle: seg.style.strokeStyle,
+          roughness: seg.style.roughness,
+        } as ArrowElement | LineElement;
+      }
+      draftSegmentGeoRef.current = null;
+      draftSegmentStyleRef.current = null;
+    } else if (draftBoxGeoRef.current && draftBoxStyleRef.current) {
+      const geo = draftBoxGeoRef.current;
+      const box = draftBoxStyleRef.current;
+      const w0 = geo.centered ? geo.w * 2 : geo.w;
+      const h0 = geo.centered ? geo.h * 2 : geo.h;
+      valid = Math.abs(w0) > MIN_SIZE || Math.abs(h0) > MIN_SIZE;
+      if (valid) {
+        const isEffect = ['blur', 'pixelate', 'spotlight'].includes(box.type);
+        draft = {
+          ...box.extra,
+          id: box.id,
+          type: box.type,
+          x: geo.centered ? geo.ox - geo.w : geo.ox,
+          y: geo.centered ? geo.oy - geo.h : geo.oy,
+          width: w0,
+          height: h0,
+          opacity: box.style.opacity,
+          strokeStyle: box.style.strokeStyle,
+          fillStyle: box.style.fillStyle,
+          roughness: box.style.roughness,
+          stroke: isEffect ? undefined : box.style.stroke,
+          fill: isEffect ? undefined : box.style.fill,
+          strokeWidth: isEffect ? 0 : box.style.strokeWidth,
+          cornerRadius: box.style.cornerRadius,
+        } as ShapeElement;
+      }
+      draftBoxGeoRef.current = null;
+      draftBoxStyleRef.current = null;
+    } else if (finalDraft) {
+      draft = finalDraft;
+      valid = (() => {
+        if (draft!.type === 'pencil' || draft!.type === 'highlighter') {
+          return (draft as PencilElement).points.length > 4;
+        }
+        if (draft!.type === 'arrow' || draft!.type === 'line') {
+          const pts = (draft as ArrowElement | LineElement).points;
+          return Math.abs(pts[2]) > MIN_SIZE || Math.abs(pts[3]) > MIN_SIZE;
+        }
+        const w = Math.abs((draft as ShapeElement | CircleElement).width);
+        const h = Math.abs((draft as ShapeElement | CircleElement).height);
+        return w > MIN_SIZE || h > MIN_SIZE;
+      })();
     }
 
-    if (valid) {
+    if (draft && valid) {
       if (draft.type === 'blur' || draft.type === 'pixelate') {
         const shape = draft as ShapeElement;
         const x = Math.min(shape.x, shape.x + shape.width);
@@ -1710,10 +2241,26 @@ const EditorCanvas: React.FC = () => {
               } as EditorElement;
             }
           }
+          // Elbow arrows route their interior at commit (binding on or off):
+          // the orthogonal corner(s) are derived from the endpoints and the
+          // side headings implied by the (possibly just attached) bindings.
+          if ((el as ArrowElement).elbowed) {
+            const a = el as ArrowElement;
+            const n = a.points.length;
+            const routed = elbowPointsLocal(
+              { x: a.x, y: a.y },
+              { x: a.x + a.points[0], y: a.y + a.points[1] },
+              { x: a.x + a.points[n - 2], y: a.y + a.points[n - 1] },
+              headingFromFixedPoint(a.startBinding?.fixedPoint),
+              headingFromFixedPoint(a.endBinding?.fixedPoint),
+            );
+            el = { ...el, points: routed as [number, number, number, number] } as EditorElement;
+          }
         }
         addElement(el);
       }
     }
+    draftLayerRef.current?.clear();
     setDrawingElement(null);
     drawOriginRef.current = null;
     // Keep the active drawing tool so consecutive annotations stay fast
@@ -1728,19 +2275,29 @@ const EditorCanvas: React.FC = () => {
     const rect = root.getBoundingClientRect();
     const pointer = { x: clientX - rect.left, y: clientY - rect.top };
     const s = useEditorStore.getState();
-    const oldZoom = s.zoom;
-    const oldPos = s.stagePosition;
+    // Chain off the pending viewport so back-to-back events compound before
+    // the once-per-frame store sync lands.
+    const vp = pendingViewportRef.current ?? { zoom: s.zoom, x: s.stagePosition.x, y: s.stagePosition.y };
+    const oldZoom = vp.zoom;
+    const oldPos = { x: vp.x, y: vp.y };
     const clamped = Math.max(0.1, Math.min(5, newZoom));
     const mousePointTo = {
       x: (pointer.x - oldPos.x) / oldZoom,
       y: (pointer.y - oldPos.y) / oldZoom,
     };
-    s.setZoom(clamped);
-    s.setStagePosition({
+    const next = {
+      zoom: clamped,
       x: pointer.x - mousePointTo.x * clamped,
       y: pointer.y - mousePointTo.y * clamped,
-    });
+    };
+    // Move the Stage node immediately; React only hears about it at the next
+    // animation frame (syncViewportToStore), so the canvas never lags behind
+    // the pointer and React never runs per wheel event.
+    pendingViewportRef.current = next;
+    st.scale({ x: clamped, y: clamped });
+    st.position({ x: next.x, y: next.y });
     st.batchDraw();
+    syncViewportToStore();
   }
 
   function handleWheel(e: Konva.KonvaEventObject<WheelEvent>) {
@@ -1792,9 +2349,12 @@ const EditorCanvas: React.FC = () => {
         // Cancel any in-progress draw so pinch doesn't create a stroke
         setIsDrawing(false);
         clearDrawingDraft();
+        isErasingRef.current = false;
         setIsErasing(false);
-        setEraserStart(null);
-        setEraserEnd(null);
+        eraserStartRef.current = null;
+        eraserEndRef.current = null;
+        applyEraserFade(null);
+        draftLayerRef.current?.clear();
       }
     };
     const onTouchMove = (e: TouchEvent) => {
@@ -1810,8 +2370,7 @@ const EditorCanvas: React.FC = () => {
       const dx = center.x - pinchRef.current.cx;
       const dy = center.y - pinchRef.current.cy;
       if (dx || dy) {
-        const s = useEditorStore.getState();
-        s.setStagePosition({ x: s.stagePosition.x + dx, y: s.stagePosition.y + dy });
+        panStageBy(dx, dy);
         pinchRef.current.cx = center.x;
         pinchRef.current.cy = center.y;
       }
@@ -1917,7 +2476,7 @@ const EditorCanvas: React.FC = () => {
    * a box, middle of a line/arrow) so it moves and resizes with the shape. The
    * text editor opens immediately; Esc or an empty commit removes the label.
    */
-  function attachTextToAnnotation(el: EditorElement) {
+  function attachTextToAnnotation(el: EditorElement, atT?: number) {
     const s = useEditorStore.getState();
     if (s.annotationsLocked || !s.imageSize.width) return;
     // Already has an attached label → just edit that one.
@@ -1936,15 +2495,31 @@ const EditorCanvas: React.FC = () => {
     // Centered label geometry is shared by every shape type (see
     // lib/editor/text-labels) so the editor overlay, the committed element,
     // and the Konva node all agree on placement.
-    const anchor = labelAnchorForElement(el, s.imageSize, fontSize, scale);
-    const textEl = createAttachedLabel(generateId(), groupId, anchor, {
+    const anchor = labelAnchorForElement(
+      el,
+      s.imageSize,
       fontSize,
-      fontFamily: s.fontFamily || HANDWRITTEN_FONT,
-      fontStyle: s.fontStyle || 'normal',
-      align: 'center',
-      fill: s.strokeColor,
-      opacity: s.opacity,
-    });
+      scale,
+      atT !== undefined && (el.type === 'arrow' || el.type === 'line')
+        ? { labelOffset: atT }
+        : undefined,
+    );
+    const textEl = createAttachedLabel(
+      generateId(),
+      groupId,
+      anchor,
+      {
+        fontSize,
+        fontFamily: s.fontFamily || HANDWRITTEN_FONT,
+        fontStyle: s.fontStyle || 'normal',
+        align: 'center',
+        fill: s.strokeColor,
+        opacity: s.opacity,
+      },
+      atT !== undefined && (el.type === 'arrow' || el.type === 'line')
+        ? { labelOffset: atT }
+        : undefined,
+    );
     // One undo step for the shape group + the label.
     s.attachText(el.id, textEl);
     openTextEditor(textEl, textEl.id);
@@ -1994,10 +2569,13 @@ const EditorCanvas: React.FC = () => {
     const newPoints = [...pts];
     newPoints.splice(bestI, 0, local.x, local.y);
     // Multi-point polylines render straight; a formerly bent 2-point arrow
-    // drops its curve so the new vertex is what bends the path.
+    // drops its curve so the new vertex is what bends the path. An elbow
+    // arrow becomes a free polyline the moment the user adds a vertex —
+    // routing is router-owned, so an explicit edit opts out of it.
     st.updateElement(el.id, {
       points: newPoints as [number, number, number, number],
       ...(el.type === 'arrow' ? { bend: 0 } : {}),
+      ...(el.type === 'arrow' && (el as ArrowElement).elbowed ? { elbowed: false } : {}),
     });
   }
 
@@ -2129,7 +2707,7 @@ const EditorCanvas: React.FC = () => {
   // --- Drag end ---
 
   function handleDragEnd(id: string, e: Konva.KonvaEventObject<DragEvent>) {
-    setGuides([]);
+    draftLayerRef.current?.clearGuides();
     let x = e.target.x();
     let y = e.target.y();
     const s = useEditorStore.getState();
@@ -2143,8 +2721,14 @@ const EditorCanvas: React.FC = () => {
         moving.w = Math.abs((el as ShapeElement).width || 0);
         moving.h = Math.abs((el as ShapeElement).height || 0);
       }
+      // Snap references exclude the dragged element's own group members (its
+      // attached label shares its bounds and would fire guides permanently).
       const others = s.elements
-        .filter((item) => item.id !== id && !s.selectedElementIds.includes(item.id))
+        .filter((item) => {
+          if (item.id === id || s.selectedElementIds.includes(item.id)) return false;
+          if (el.groupId && item.groupId === el.groupId) return false;
+          return true;
+        })
         .map((item) => getElementBounds(item, s.imageSize));
       const snapped = snapBounds(moving, others);
       x = snapped.x;
@@ -2156,21 +2740,45 @@ const EditorCanvas: React.FC = () => {
       altDuplicateRef.current = null;
       const source = s.elements.find((item) => item.id === id);
       if (source) {
+        // A fresh group id so the clone never joins the original group
+        // (attached labels would drag the original shape around).
+        const newGroupId = source.groupId ? generateId() : undefined;
+        const dx = x - source.x;
+        const dy = y - source.y;
         const clone = {
           ...JSON.parse(JSON.stringify(source)),
           id: generateId(),
           x,
           y,
-          // A fresh group id so the clone never joins the original group
-          // (attached labels would drag the original shape around).
-          ...(source.groupId ? { groupId: generateId() } : {}),
+          ...(newGroupId ? { groupId: newGroupId } : {}),
         } as EditorElement;
+        const clones: EditorElement[] = [clone];
+        const cloneIds = [clone.id];
+        // Alt-drag duplicating either half of a shape↔label pair carries the
+        // partner (fresh id, same fresh group) so the copy is never stranded
+        // or joined to the original's label.
+        if (source.groupId && isLabelPairGroup(source.groupId, s.elements)) {
+          const partner = s.elements.find(
+            (el) => el.id !== source.id && el.groupId === source.groupId,
+          );
+          if (partner) {
+            const partnerClone = {
+              ...JSON.parse(JSON.stringify(partner)),
+              id: generateId(),
+              x: partner.x + dx,
+              y: partner.y + dy,
+              groupId: newGroupId,
+            } as EditorElement;
+            clones.push(partnerClone);
+            cloneIds.push(partnerClone.id);
+          }
+        }
         // Restore original position, add clone at new position
         const orig = s.elements.find((item) => item.id === id);
         if (orig) {
           e.target.position({ x: orig.x, y: orig.y });
-          s.addElement(clone);
-          s.setSelectedElementIds([clone.id]);
+          s.addElements(clones);
+          s.setSelectedElementIds(cloneIds);
           return;
         }
       }
@@ -2200,11 +2808,53 @@ const EditorCanvas: React.FC = () => {
     }
   }
 
+  /**
+   * Imperatively keep an attached label's Konva node glued to its shape while
+   * the shape's BODY is dragged. Konva moves only the dragged node; the label
+   * node is a sibling, so it must follow per frame (the store only hears
+   * about the move at dragend, then moves the whole group by the same delta).
+   */
+  const glueAttachedLabelLive = (
+    labelEl: EditorElement | undefined,
+    originX: number,
+    originY: number,
+    targetX: number,
+    targetY: number,
+  ) => {
+    if (!labelEl) return;
+    const stage = stageRef.current;
+    const node = stage ? findAnnotationNode(stage, labelEl.id) : undefined;
+    if (!node) return;
+    node.position({
+      x: labelEl.x + (targetX - originX),
+      y: labelEl.y + (targetY - originY),
+    });
+    node.getLayer()?.batchDraw();
+  };
+
   function handleDragMove(id: string, e: Konva.KonvaEventObject<DragEvent>) {
     const s = useEditorStore.getState();
     const el = s.elements.find((item) => item.id === id);
-    if (!el || !('width' in el)) {
-      setGuides([]);
+    if (!el) {
+      draftLayerRef.current?.clearGuides();
+      return;
+    }
+    // Live binding: bound arrows follow the dragged target on every frame.
+    // Purely imperative (node attrs + batchDraw) — the store only hears about
+    // the move at dragend, and arrows selected together re-anchor at commit.
+    if (isBindableElement(el)) {
+      applyLiveBindingsForTarget(id, liveElementFromNode(el, e.target));
+    }
+    const attachedLabel = el.groupId
+      ? s.elements.find((x) => x.type === 'text' && x.groupId === el.groupId)
+      : undefined;
+    if (!('width' in el)) {
+      // Line/arrow body drag: keep an attached label glued to the shape on
+      // every frame (a shape label is fixed inside its shape, so the plain
+      // translate below is right for arrows too — the label's own
+      // `labelOffset`/`labelOffsetY` re-anchor it at commit).
+      glueAttachedLabelLive(attachedLabel, el.x, el.y, e.target.x(), e.target.y());
+      draftLayerRef.current?.clearGuides();
       return;
     }
     const moving = {
@@ -2217,8 +2867,11 @@ const EditorCanvas: React.FC = () => {
       .filter((item) => item.id !== id)
       .map((item) => getElementBounds(item, s.imageSize));
     const snapped = snapBounds(moving, others);
-    setGuides(snapped.guides);
+    draftLayerRef.current?.showGuides(snapped.guides);
     e.target.position({ x: snapped.x, y: snapped.y });
+    // Shape body drag: keep an attached label glued to the shape on every
+    // frame, using the SNAPPED position so the label never lags the guides.
+    glueAttachedLabelLive(attachedLabel, el.x, el.y, e.target.x(), e.target.y());
   }
 
   // --- Element rendering ---
@@ -2260,7 +2913,32 @@ const EditorCanvas: React.FC = () => {
     // there is no single points-holding node to patch, so fall back to a
     // silent store update and let React re-render the clipped geometry.
     if (node.getClassName() === 'Group') {
-      useEditorStore.getState().updateElementSilent(id, { points } as Partial<EditorElement>);
+      const st = useEditorStore.getState();
+      st.updateElementSilent(id, { points } as Partial<EditorElement>);
+      // The attached label must follow on the SAME pass or it lags the bend
+      // until commit: reflow it to the new path (labelOffset/labelOffsetY
+      // preserved) and write both silently so React renders them together.
+      const parent = st.elements.find((x) => x.id === id);
+      if (parent?.groupId) {
+        const labelEl = st.elements.find(
+          (x) => x.type === 'text' && x.groupId === parent.groupId,
+        ) as TextElement | undefined;
+        if (labelEl) {
+          const scale = getImageToolScale(st.imageSize.width, st.imageSize.height);
+          const anchor = labelAnchorForElement(
+            { ...parent, points, bend: bendVal } as ArrowElement | LineElement,
+            st.imageSize,
+            labelEl.fontSize ?? 24,
+            scale,
+            labelEl,
+          );
+          st.updateElementSilent(labelEl.id, {
+            x: anchor.x,
+            y: anchor.y,
+            width: anchor.width,
+          } as Partial<EditorElement>);
+        }
+      }
       return;
     }
     const multi = points.length > 4;
@@ -2282,6 +2960,57 @@ const EditorCanvas: React.FC = () => {
       dash: strokeDash(strokeStyle),
     });
     node.getLayer()?.batchDraw();
+  };
+
+  /**
+   * Imperative live binding — the target is mid-gesture (drag/resize/rotate)
+   * so its geometry is read from the Konva node, not the store. Every arrow
+   * bound to it is re-pointed directly (applyArrowLineLive) and the layer is
+   * batch-drawn; the store is untouched until the gesture commits. Arrows
+   * moving together with the target (same selection) are skipped here and
+   * re-anchored once at commit, so movement is never double-applied.
+   */
+  const applyLiveBindingsForTarget = (targetId: string, liveTarget: EditorElement) => {
+    const st = useEditorStore.getState();
+    if (!st.isBindingEnabled) return;
+    const skip = st.selectedElementIds.length > 1 ? new Set(st.selectedElementIds) : undefined;
+    const updates = computeBoundArrowUpdates(st.elements, targetId, liveTarget, st.imageSize, skip);
+    for (const { arrow, points } of updates) {
+      applyArrowLineLive(arrow.id, points, arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
+    }
+  };
+
+  /**
+   * Reflow an attached label's Konva node from the LIVE element geometry
+   * while its shape is being resized/rotated (the store only hears the final
+   * commit, so without this the label sits at the stale spot until release).
+   * Rotated container labels render as a Group offset by half the box, so
+   * position = anchor + offset; unrotated labels sit at the anchor directly.
+   */
+  const applyLiveLabelReflow = (liveEl: EditorElement) => {
+    const st = useEditorStore.getState();
+    // A label's position is owned by its shape; never reflow a text element
+    // against its own bounds.
+    if (!liveEl.groupId || liveEl.type === 'text') return;
+    const labelEl = st.elements.find(
+      (x) => x.type === 'text' && x.groupId === liveEl.groupId,
+    ) as TextElement | undefined;
+    if (!labelEl) return;
+    const stage = stageRef.current;
+    const node = stage ? findAnnotationNode(stage, labelEl.id) : undefined;
+    if (!node) return;
+    const scale = getImageToolScale(st.imageSize.width, st.imageSize.height);
+    const anchor = labelAnchorForElement(liveEl, st.imageSize, labelEl.fontSize ?? 24, scale, labelEl);
+    const offX = node.offsetX() || 0;
+    const offY = node.offsetY() || 0;
+    node.position({ x: anchor.x + offX, y: anchor.y + offY });
+    node.getLayer()?.batchDraw();
+  };
+
+  /** Live pass during a shape resize/rotate: bound arrows + attached label. */
+  const handleLiveShapeTransform = (liveEl: EditorElement, node: Konva.Node) => {
+    applyLiveBindingsForTarget(liveEl.id, liveElementFromNode(liveEl, node));
+    applyLiveLabelReflow(liveEl);
   };
 
   function renderElement(el: EditorElement, isDraft = false, fadeIds: Set<string> | null = null) {
@@ -2308,11 +3037,208 @@ const EditorCanvas: React.FC = () => {
       onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
       onDragMove: (e: Konva.KonvaEventObject<DragEvent>) => handleDragMove(el.id, e),
       onTransformEnd: () => handleElementTransformEnd(el.id),
+      // Subtle hover feedback: a thin accent outline drawn imperatively on the
+      // interaction layer (Excalidraw's hover state). No React, no store.
+      onMouseEnter: (e: Konva.KonvaEventObject<MouseEvent>) => {
+        // While the button is held (drag / press) hover feedback is noise:
+        // dragging element A should not outline element B underneath.
+        if ((e.evt as MouseEvent).buttons) return;
+        const st = useEditorStore.getState();
+        if (
+          st.activeTool === 'hand' || st.activeTool === 'eraser' || st.activeTool === 'crop'
+          || marqueeOriginRef.current || isErasingRef.current
+          || st.selectedElementIds.includes(el.id) || el.locked
+        ) return;
+        draftLayerRef.current?.showHoverOutline(getElementBounds(el, st.imageSize));
+      },
+      onMouseLeave: () => {
+        draftLayerRef.current?.clearHoverOutline();
+      },
       // Double-click a line/arrow body to insert a vertex (polyline editing).
       // Only wired for line-like types; text overrides it with its own handler.
       ...((el.type === 'arrow' || el.type === 'line')
         ? { onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => handleLineVertexInsert(el as ArrowElement | LineElement, e) }
         : {}),
+    };
+
+    /**
+     * Binding focus points (Excalidraw's `arrows/focus.ts`): a bound arrow
+     * endpoint renders a dashed connector to the normalized attachment point
+     * inside its target, and that point is a small draggable circle. Dragging
+     * it moves the attachment around the shape; the endpoint follows on the
+     * same frame (imperative) and commits one undo step. The dashed line is
+     * updated imperatively during the drag so React never runs on the move
+     * hot path.
+     */
+    const dragFocusPoint = (
+      linear: ArrowElement | LineElement,
+      which: 'start' | 'end',
+      b: FixedPointBinding,
+      node: Konva.Node,
+    ) => {
+      const st = useEditorStore.getState();
+      const target = st.elements.find((x) => x.id === b.elementId);
+      if (!target || !isBindableElement(target)) return;
+      const fp = fixedPointFromGlobalPoint(target, node.x(), node.y(), st.imageSize);
+      const anchorPt = anchorForBinding(target, fp, b.mode, st.imageSize);
+      const eIdx = which === 'start' ? 0 : linear.points.length - 2;
+      const newPoints = [...linear.points];
+      newPoints[eIdx] = anchorPt.x - linear.x;
+      newPoints[eIdx + 1] = anchorPt.y - linear.y;
+      applyArrowLineLive(linear.id, focusRouted(linear, newPoints), linear.bend ?? 0, linear.strokeWidth ?? 2, handDrawn, linear.strokeStyle);
+      // Keep the dashed connector glued to the pointer on this frame.
+      const lineNode = stageRef.current?.findOne(`#focus-line-${linear.id}-${which}`) as Konva.Line | undefined;
+      lineNode?.points([newPoints[eIdx] + linear.x, newPoints[eIdx + 1] + linear.y, node.x(), node.y()]);
+      lineNode?.getLayer()?.batchDraw();
+    };
+    /** Re-route an elbowed arrow's interior after a focus-point drag. */
+    const focusRouted = (linear: ArrowElement | LineElement, pts: number[]) => {
+      if (linear.type !== 'arrow' || !linear.elbowed) return pts;
+      const n = pts.length;
+      return elbowPointsLocal(
+        { x: linear.x, y: linear.y },
+        { x: linear.x + pts[0], y: linear.y + pts[1] },
+        { x: linear.x + pts[n - 2], y: linear.y + pts[n - 1] },
+        headingFromFixedPoint(linear.startBinding?.fixedPoint),
+        headingFromFixedPoint(linear.endBinding?.fixedPoint),
+      ) as number[];
+    };
+    const commitFocusPoint = (
+      linear: ArrowElement | LineElement,
+      which: 'start' | 'end',
+      b: FixedPointBinding,
+      node: Konva.Node,
+    ) => {
+      const st = useEditorStore.getState();
+      const target = st.elements.find((x) => x.id === b.elementId);
+      if (!target || !isBindableElement(target)) return;
+      const fp = fixedPointFromGlobalPoint(target, node.x(), node.y(), st.imageSize);
+      const anchorPt = anchorForBinding(target, fp, b.mode, st.imageSize);
+      const eIdx = which === 'start' ? 0 : linear.points.length - 2;
+      const newPoints = [...linear.points];
+      newPoints[eIdx] = anchorPt.x - linear.x;
+      newPoints[eIdx + 1] = anchorPt.y - linear.y;
+      const updates: Partial<ArrowElement> = {
+        points: focusRouted(linear, newPoints) as [number, number, number, number],
+        ...(which === 'start'
+          ? { startBinding: { ...b, fixedPoint: fp } }
+          : { endBinding: { ...b, fixedPoint: fp } }),
+      };
+      commitElementUpdate(linear.id, updates);
+    };
+    const renderFocusPointUI = (
+      linear: ArrowElement | LineElement,
+      hoverEvents: ReturnType<typeof handleHoverEvents>,
+    ) => {
+      if (isDraft || !isSelected) return null;
+      const st = useEditorStore.getState();
+      const theme = getSelectionTheme();
+      const binds: Array<{ which: 'start' | 'end'; b: FixedPointBinding }> = [];
+      if (linear.startBinding) binds.push({ which: 'start', b: linear.startBinding });
+      if (linear.endBinding) binds.push({ which: 'end', b: linear.endBinding });
+      const out: React.ReactNode[] = [];
+      for (const { which, b } of binds) {
+        const target = st.elements.find((x) => x.id === b.elementId);
+        if (!target || !isBindableElement(target)) continue;
+        const focus = globalFixedPointForBinding(target, b.fixedPoint, st.imageSize);
+        const eIdx = which === 'start' ? 0 : linear.points.length - 2;
+        const ep = { x: linear.x + linear.points[eIdx], y: linear.y + linear.points[eIdx + 1] };
+        out.push(
+          <React.Fragment key={`focus-${which}`}>
+            <Line
+              id={`focus-line-${linear.id}-${which}`}
+              points={[ep.x, ep.y, focus.x, focus.y]}
+              stroke={theme.accentDim}
+              strokeWidth={1.2}
+              dash={[4, 3]}
+              listening={false}
+              perfectDrawEnabled={false}
+            />
+            <Circle
+              name="edit-handle focus-point-handle"
+              x={focus.x}
+              y={focus.y}
+              radius={4.5}
+              fill="rgba(255, 255, 255, 0.92)"
+              stroke={theme.accentSoft}
+              strokeWidth={1.2}
+              hitStrokeWidth={16}
+              cursor="grab"
+              draggable
+              onMouseDown={(e) => handleHandleMouseDown(linear.id, e)}
+              onDragMove={(e) => { e.cancelBubble = true; dragFocusPoint(linear, which, b, e.target); }}
+              onDragEnd={(e) => { e.cancelBubble = true; commitFocusPoint(linear, which, b, e.target); }}
+              {...hoverEvents}
+            />
+          </React.Fragment>,
+        );
+      }
+      return out.length ? out : null;
+    };
+
+    /**
+     * Excalidraw-style midpoint ghost handles for multi-point polylines: a
+     * quiet dashed handle on every segment midpoint. Dragging one inserts a
+     * vertex there and follows the pointer; release commits one history entry.
+     * Hand-drawn (jittered) polylines skip the ghosts — their drawn vertices
+     * are offset from the raw points, so a ghost would float off the stroke.
+     */
+    const renderMidGhosts = (el: ArrowElement | LineElement, pts: number[], handDrawnStyle: boolean) => {
+      // Excalidraw shows a midpoint ghost on EVERY segment of straight 2-point
+      // and multi-point elements — the primary "bend" affordance, and dragging
+      // one converts the midpoint into a real vertex. Legacy curved elements
+      // (bend !== 0) keep their quadratic bend handle instead, and hand-drawn
+      // jitter would float a ghost off the stroke.
+      if (handDrawnStyle || (pts.length <= 4 && (el.bend ?? 0) !== 0)) return null;
+      const ghostProps = midHandleProps();
+      const ghostHover = handleHoverEvents();
+      const ghosts: { x: number; y: number; seg: number }[] = [];
+      for (let i = 0; i < pts.length - 2; i += 2) {
+        ghosts.push({
+          x: (pts[i] + pts[i + 2]) / 2,
+          y: (pts[i + 1] + pts[i + 3]) / 2,
+          seg: i / 2,
+        });
+      }
+      return ghosts.map((m, k) => (
+        <Circle
+          key={`mid-${k}`}
+          x={el.x + m.x}
+          y={el.y + m.y}
+          {...ghostProps}
+          draggable
+          onMouseDown={(e) => handleHandleMouseDown(el.id, e)}
+          onDragStart={(e) => {
+            e.cancelBubble = true;
+            const idx = m.seg * 2 + 2;
+            midVertexRef.current = { id: el.id, idx, points: [...pts] };
+            const mv = midVertexRef.current;
+            mv.points.splice(idx, 0, m.x, m.y);
+            applyArrowLineLive(el.id, mv.points, 0, el.strokeWidth ?? 2, false, el.strokeStyle);
+          }}
+          onDragMove={(e) => {
+            e.cancelBubble = true;
+            const mv = midVertexRef.current;
+            if (!mv || mv.id !== el.id) return;
+            mv.points[mv.idx] = e.target.x() - el.x;
+            mv.points[mv.idx + 1] = e.target.y() - el.y;
+            applyArrowLineLive(el.id, mv.points, 0, el.strokeWidth ?? 2, false, el.strokeStyle);
+          }}
+          onDragEnd={(e) => {
+            e.cancelBubble = true;
+            const mv = midVertexRef.current;
+            if (!mv || mv.id !== el.id) return;
+            midVertexRef.current = null;
+            commitElementUpdate(el.id, {
+              points: mv.points as [number, number, number, number],
+              // An explicit vertex edit on an elbow converts it to a free
+              // polyline — router-owned interior would otherwise overwrite it.
+              ...(el.type === 'arrow' && (el as ArrowElement).elbowed ? { elbowed: false } : {}),
+            });
+          }}
+          {...ghostHover}
+        />
+      ));
     };
 
     switch (el.type) {
@@ -2586,6 +3512,10 @@ const EditorCanvas: React.FC = () => {
         const bendHandleProps = selectionHandleProps('bend');
         const styleDash = strokeDash(arrow.strokeStyle);
         const isMulti = arrow.points.length > 4;
+        const isElbow = arrow.elbowed === true;
+        // Elbow interior vertices are router-owned: no vertex handle (only
+        // midpoint ghosts per segment). Free polylines keep the middle handle.
+        const showMidVertexHandle = isMulti && !isElbow;
         const multiPoints = isMulti ? arrow.points : [];
         const hoverHandles = handleHoverEvents();
 
@@ -2643,13 +3573,40 @@ const EditorCanvas: React.FC = () => {
             applyArrowLineLive(arrow.id, [sx, sy, ex, ey], bendVal, arrow.strokeWidth ?? 2, false, arrow.strokeStyle);
           }
         };
-        const updateEndpoint = (which: 'start' | 'end', node: Konva.Node, commit = false, forceInside = false) => {
+        const updateEndpoint = (which: 'start' | 'end', node: Konva.Node, commit = false, forceInside = false, evt?: { shiftKey?: boolean }) => {
           // Copy the points and replace only the dragged endpoint, so multi-point
           // polylines keep their interior vertices instead of collapsing to two.
           const eIdx = which === 'start' ? 0 : arrow.points.length - 2;
           const newPoints = [...arrow.points];
           newPoints[eIdx] = node.x() - arrow.x - offAt(eIdx);
           newPoints[eIdx + 1] = node.y() - arrow.y - offAt(eIdx + 1);
+          // Shift constrains the dragged endpoint to 45° steps relative to the
+          // opposite endpoint (Excalidraw's angle snapping for line/arrow
+          // points) — applied to both the live move and the commit.
+          if (evt?.shiftKey) {
+            const oIdx = which === 'start' ? newPoints.length - 2 : 0;
+            const dx = newPoints[eIdx] - newPoints[oIdx];
+            const dy = newPoints[eIdx + 1] - newPoints[oIdx + 1];
+            const len = Math.hypot(dx, dy);
+            if (len > 1e-6) {
+              const snappedAngle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
+              newPoints[eIdx] = newPoints[oIdx] + Math.cos(snappedAngle) * len;
+              newPoints[eIdx + 1] = newPoints[oIdx + 1] + Math.sin(snappedAngle) * len;
+            }
+          }
+          // Elbow arrows: the interior is router-owned, so it is re-derived
+          // from the (possibly just snapped) endpoints + side headings.
+          const routeElbowPoints = (pts: number[]) => {
+            if (!arrow.elbowed) return pts;
+            const n = pts.length;
+            return elbowPointsLocal(
+              { x: arrow.x, y: arrow.y },
+              { x: arrow.x + pts[0], y: arrow.y + pts[1] },
+              { x: arrow.x + pts[n - 2], y: arrow.y + pts[n - 1] },
+              headingFromFixedPoint(arrow.startBinding?.fixedPoint),
+              headingFromFixedPoint(arrow.endBinding?.fixedPoint),
+            ) as number[];
+          };
           if (commit) {
             // Drag-to-bind / unbind: release over a shape to bind the dragged
             // endpoint, drag it away (or disable binding) to free it. Alt
@@ -2668,15 +3625,28 @@ const EditorCanvas: React.FC = () => {
                 newPoints[eIdx + 1] = anchor.y - arrow.y;
               }
             }
+            const finalPoints = routeElbowPoints(newPoints);
             const updates: Partial<ArrowElement> = {
-              points: newPoints as [number, number, number, number],
+              points: finalPoints as [number, number, number, number],
               bend: arrow.bend ?? 0,
             };
             if (which === 'start') updates.startBinding = binding;
             else updates.endBinding = binding;
+            draftLayerRef.current?.clearBindingPreview();
             commitElementUpdate(arrow.id, updates);
           } else {
-            applyArrowLineLive(arrow.id, newPoints, arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
+            const st = useEditorStore.getState();
+            const bsnap = snapEndpointForBinding(
+              { ...arrow, points: newPoints as [number, number, number, number] } as ArrowElement,
+              which, newPoints, st.elements, st.imageSize, st.zoom, st.isBindingEnabled,
+            );
+            if (bsnap.preview) {
+              draftLayerRef.current?.showBindingPreview(bsnap.preview, getSelectionTheme().accent, st.zoom);
+              applyArrowLineLive(arrow.id, routeElbowPoints(bsnap.points), arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
+            } else {
+              draftLayerRef.current?.clearBindingPreview();
+              applyArrowLineLive(arrow.id, routeElbowPoints(newPoints), arrow.bend ?? 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
+            }
           }
         };
 
@@ -2781,8 +3751,8 @@ const EditorCanvas: React.FC = () => {
                   <>
                     <Circle x={arrow.x + sx} y={arrow.y + sy} {...handleProps} draggable
                       onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
-                      onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
-                      onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey); }}
+                      onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false, false, e.evt); }}
+                      onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey, e.evt); }}
                       {...hoverHandles}
                     />
                     <Circle x={arrow.x + control.x} y={arrow.y + control.y} {...bendHandleProps} draggable
@@ -2793,8 +3763,8 @@ const EditorCanvas: React.FC = () => {
                     />
                     <Circle x={arrow.x + ex} y={arrow.y + ey} {...handleProps} draggable
                       onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
-                      onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
-                      onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true, e.evt.altKey); }}
+                      onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false, false, e.evt); }}
+                      onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true, e.evt.altKey, e.evt); }}
                       {...hoverHandles}
                     />
                   </>
@@ -2835,8 +3805,8 @@ const EditorCanvas: React.FC = () => {
                 <>
                   <Circle x={arrow.x + sx} y={arrow.y + sy} {...handleProps} draggable
                     onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
-                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
-                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey); }}
+                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false, false, e.evt); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey, e.evt); }}
                     {...hoverHandles}
                   />
                   <Circle x={arrow.x + control.x} y={arrow.y + control.y} {...bendHandleProps} draggable
@@ -2847,8 +3817,8 @@ const EditorCanvas: React.FC = () => {
                   />
                   <Circle x={arrow.x + ex} y={arrow.y + ey} {...handleProps} draggable
                     onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
-                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
-                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true, e.evt.altKey); }}
+                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false, false, e.evt); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true, e.evt.altKey, e.evt); }}
                     {...hoverHandles}
                   />
                 </>
@@ -2957,22 +3927,43 @@ const EditorCanvas: React.FC = () => {
               <>
                 <Circle x={arrow.x + drawPoints[0]} y={arrow.y + drawPoints[1]} {...handleProps} draggable
                   onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
-                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
-                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey); }}
+                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false, false, e.evt); }}
+                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey, e.evt); }}
                   {...hoverHandles}
                 />
-                {isMulti ? (
-                  // Multi-point polylines keep just the middle vertex handle;
-                  // everything else is the classic 3-dot model.
-                  <Circle x={arrow.x + drawPoints[midVertexIdx]}
-                    y={arrow.y + drawPoints[midVertexIdx + 1]}
-                    {...bendHandleProps} draggable
-                    onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
-                    onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
-                    onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
-                    {...hoverHandles}
-                  />
-                ) : (
+                {showMidVertexHandle ? (
+                  // Free multi-point polylines keep the middle vertex handle
+                  // (drag moves it, double-click DELETES it — Excalidraw's
+                  // point deletion) plus midpoint ghost handles: drag one to
+                  // insert a new vertex and bend the polyline there. Elbow
+                  // arrows skip the vertex handle entirely: their interior is
+                  // router-owned, so only per-segment midpoint ghosts show.
+                  <>
+                    <Circle x={arrow.x + drawPoints[midVertexIdx]}
+                      y={arrow.y + drawPoints[midVertexIdx + 1]}
+                      {...bendHandleProps} draggable
+                      name="edit-handle mid-vertex-handle"
+                      onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
+                      onDblClick={(e) => {
+                        e.cancelBubble = true;
+                        const removed = removeVertexAt(arrow, midVertexIdx);
+                        if (removed) {
+                          commitElementUpdate(arrow.id, { points: removed as [number, number, number, number] });
+                        }
+                      }}
+                      onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
+                      onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
+                      {...hoverHandles}
+                    />
+                    {renderMidGhosts(arrow, multiPoints, handDrawn)}
+                  </>
+                ) : isMulti ? (
+                  renderMidGhosts(arrow, multiPoints, handDrawn)
+                ) : (bend !== 0 || handDrawn) ? (
+                  // Legacy curved arrows (bend !== 0) and hand-drawn arrows
+                  // keep the quadratic bend handle; straight 2-point arrows
+                  // get the Excalidraw midpoint ghost instead (drag converts
+                  // the midpoint into a real vertex).
                   <Circle x={arrow.x + (drawPoints.length > 4 ? drawPoints[2] : control.x)}
                     y={arrow.y + (drawPoints.length > 4 ? drawPoints[3] : control.y)}
                     {...bendHandleProps} draggable
@@ -2981,17 +3972,20 @@ const EditorCanvas: React.FC = () => {
                     onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
                     {...hoverHandles}
                   />
+                ) : (
+                  renderMidGhosts(arrow, arrow.points, false)
                 )}
                 <Circle x={arrow.x + drawPoints[drawPoints.length - 2]}
                   y={arrow.y + drawPoints[drawPoints.length - 1]}
                   {...handleProps} draggable
                   onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
-                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
-                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true, e.evt.altKey); }}
+                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false, false, e.evt); }}
+                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true, e.evt.altKey, e.evt); }}
                   {...hoverHandles}
                 />
               </>
             )}
+            {showHandles && renderFocusPointUI(arrow, hoverHandles)}
           </React.Fragment>
         );
       }
@@ -3034,13 +4028,27 @@ const EditorCanvas: React.FC = () => {
           if (commit) commitElementUpdate(line.id, { points: newPoints });
           else applyArrowLineLive(line.id, newPoints, 0, line.strokeWidth ?? 2, handDrawn, line.strokeStyle);
         };
-        const updateEndpoint = (which: 'start' | 'end', node: Konva.Node, commit = false, forceInside = false) => {
+        const updateEndpoint = (which: 'start' | 'end', node: Konva.Node, commit = false, forceInside = false, evt?: { shiftKey?: boolean }) => {
           // Copy the points and replace only the dragged endpoint, so multi-point
           // polylines keep their interior vertices instead of collapsing to two.
           const eIdx = which === 'start' ? 0 : line.points.length - 2;
           const newPoints = [...line.points];
           newPoints[eIdx] = node.x() - line.x - offAt(eIdx);
           newPoints[eIdx + 1] = node.y() - line.y - offAt(eIdx + 1);
+          // Shift constrains the dragged endpoint to 45° steps relative to the
+          // opposite endpoint (Excalidraw's angle snapping for line/arrow
+          // points) — applied to both the live move and the commit.
+          if (evt?.shiftKey) {
+            const oIdx = which === 'start' ? newPoints.length - 2 : 0;
+            const dx = newPoints[eIdx] - newPoints[oIdx];
+            const dy = newPoints[eIdx + 1] - newPoints[oIdx + 1];
+            const len = Math.hypot(dx, dy);
+            if (len > 1e-6) {
+              const snappedAngle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
+              newPoints[eIdx] = newPoints[oIdx] + Math.cos(snappedAngle) * len;
+              newPoints[eIdx + 1] = newPoints[oIdx + 1] + Math.sin(snappedAngle) * len;
+            }
+          }
           if (commit) {
             // Drag-to-bind / unbind: release over a shape to bind the dragged
             // endpoint, drag it away (or disable binding) to free it. Alt
@@ -3064,9 +4072,21 @@ const EditorCanvas: React.FC = () => {
             };
             if (which === 'start') updates.startBinding = binding;
             else updates.endBinding = binding;
+            draftLayerRef.current?.clearBindingPreview();
             commitElementUpdate(line.id, updates);
           } else {
-            applyArrowLineLive(line.id, newPoints, line.bend ?? 0, line.strokeWidth ?? 2, handDrawn, line.strokeStyle);
+            const st = useEditorStore.getState();
+            const bsnap = snapEndpointForBinding(
+              { ...line, points: newPoints as [number, number, number, number] } as LineElement,
+              which, newPoints, st.elements, st.imageSize, st.zoom, st.isBindingEnabled,
+            );
+            if (bsnap.preview) {
+              draftLayerRef.current?.showBindingPreview(bsnap.preview, getSelectionTheme().accent, st.zoom);
+              applyArrowLineLive(line.id, bsnap.points, line.bend ?? 0, line.strokeWidth ?? 2, handDrawn, line.strokeStyle);
+            } else {
+              draftLayerRef.current?.clearBindingPreview();
+              applyArrowLineLive(line.id, newPoints, line.bend ?? 0, line.strokeWidth ?? 2, handDrawn, line.strokeStyle);
+            }
           }
         };
         const updateBendFromHandle = (node: Konva.Node, commit = false) => {
@@ -3136,15 +4156,15 @@ const EditorCanvas: React.FC = () => {
                 <>
                   <Circle x={line.x + sx} y={line.y + sy} {...handleProps} draggable
                     onMouseDown={(e) => handleHandleMouseDown(line.id, e)}
-                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
-                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey); }}
+                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false, false, e.evt); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey, e.evt); }}
                     {...hoverHandles}
                   />
                   {bendHandle}
                   <Circle x={line.x + ex} y={line.y + ey} {...handleProps} draggable
                     onMouseDown={(e) => handleHandleMouseDown(line.id, e)}
-                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
-                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true, e.evt.altKey); }}
+                    onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false, false, e.evt); }}
+                    onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true, e.evt.altKey, e.evt); }}
                     {...hoverHandles}
                   />
                 </>
@@ -3169,32 +4189,49 @@ const EditorCanvas: React.FC = () => {
               <>
                 <Circle x={line.x + drawPoints[0]} y={line.y + drawPoints[1]} {...handleProps} draggable
                   onMouseDown={(e) => handleHandleMouseDown(line.id, e)}
-                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false); }}
-                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey); }}
+                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, false, false, e.evt); }}
+                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey, e.evt); }}
                   {...hoverHandles}
                 />
                 {isMulti ? (
-                  <Circle x={line.x + drawPoints[midVertexIdx]}
-                    y={line.y + drawPoints[midVertexIdx + 1]}
-                    {...bendHandleProps} draggable
-                    onMouseDown={(e) => handleHandleMouseDown(line.id, e)}
-                    onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
-                    onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
-                    {...hoverHandles}
-                  />
-                ) : (
+                  <>
+                    <Circle x={line.x + drawPoints[midVertexIdx]}
+                      y={line.y + drawPoints[midVertexIdx + 1]}
+                      {...bendHandleProps} draggable
+                      name="edit-handle mid-vertex-handle"
+                      onMouseDown={(e) => handleHandleMouseDown(line.id, e)}
+                      onDblClick={(e) => {
+                        e.cancelBubble = true;
+                        const removed = removeVertexAt(line, midVertexIdx);
+                        if (removed) {
+                          commitElementUpdate(line.id, { points: removed as [number, number, number, number] });
+                        }
+                      }}
+                      onDragMove={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, false); }}
+                      onDragEnd={(e) => { e.cancelBubble = true; updatePoint(midVertexIdx, e.target, true); }}
+                      {...hoverHandles}
+                    />
+                    {renderMidGhosts(line, multiPoints, handDrawn)}
+                  </>
+                ) : (bend !== 0 || handDrawn) ? (
+                  // Legacy curved lines and hand-drawn lines keep the quadratic
+                  // bend handle; straight 2-point lines get the Excalidraw
+                  // midpoint ghost instead (drag converts it to a vertex).
                   bendHandle
+                ) : (
+                  renderMidGhosts(line, line.points, false)
                 )}
                 <Circle x={line.x + drawPoints[drawPoints.length - 2]}
                   y={line.y + drawPoints[drawPoints.length - 1]}
                   {...handleProps} draggable
                   onMouseDown={(e) => handleHandleMouseDown(line.id, e)}
-                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false); }}
-                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true, e.evt.altKey); }}
+                  onDragMove={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, false, false, e.evt); }}
+                  onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('end', e.target, true, e.evt.altKey, e.evt); }}
                   {...hoverHandles}
                 />
               </>
             )}
+            {showHandles && renderFocusPointUI(line, hoverHandles)}
           </React.Fragment>
         );
       }
@@ -3210,19 +4247,50 @@ const EditorCanvas: React.FC = () => {
           pressures: pencil.pressures,
           simulatePressure: pencil.simulatePressure,
         });
+        if (!(isSelected && !isDraft)) {
+          return (
+            <Line
+              key={pencil.id}
+              {...baseProps}
+              points={outline}
+              closed
+              fill={pencil.stroke}
+              stroke="transparent"
+              strokeWidth={0.01}
+              hitStrokeWidth={20}
+              lineCap="round"
+              lineJoin="round"
+            />
+          );
+        }
+        // Path-aware selection (Excalidraw): the selected stroke is indicated
+        // by a thin dashed outline that hugs the perfect-freehand geometry —
+        // no bounding rectangle. Stroke and outline share one Group, so they
+        // move (and drag) together. Resize/rotate are intentionally not
+        // offered for freehand (the outline is the stroke itself).
         return (
-          <Line
-            key={pencil.id}
-            {...baseProps}
-            points={outline}
-            closed
-            fill={pencil.stroke}
-            stroke="transparent"
-            strokeWidth={0.01}
-            hitStrokeWidth={20}
-            lineCap="round"
-            lineJoin="round"
-          />
+          <Group key={pencil.id} {...baseProps}>
+            <Line
+              points={outline}
+              closed
+              fill={pencil.stroke}
+              stroke="transparent"
+              strokeWidth={0.01}
+              hitStrokeWidth={20}
+              lineCap="round"
+              lineJoin="round"
+            />
+            <Line
+              points={outline}
+              closed
+              fill="transparent"
+              stroke={selectionTheme.accentDim}
+              strokeWidth={1.4}
+              dash={[4, 3]}
+              listening={false}
+              perfectDrawEnabled={false}
+            />
+          </Group>
         );
       }
 
@@ -3245,85 +4313,117 @@ const EditorCanvas: React.FC = () => {
         const isPathLabel =
           !!parentEl && (parentEl.type === 'arrow' || parentEl.type === 'line');
 
-        // Clicking a label selects the whole group (shape + label) - the label
-        // is part of its shape, not an independent text annotation.
+        // Clicking a label selects the label only (Excalidraw's bound text:
+        // its own small box, still attached to the shape). The shape stays
+        // visible and drags the label along; the label drags along its path.
         const selectLabel = (e: Konva.KonvaEventObject<MouseEvent>) => {
           e.cancelBubble = true;
-          if (isAttached && parentEl) {
-            const ids = [parentEl.id, textEl.id];
-            useEditorStore.getState().setSelectedElementIds(ids);
-            syncSettingsFromSelection(ids);
-          } else {
-            handleSelect(textEl.id, e);
-          }
+          handleSelect(textEl.id, e);
         };
 
-        // Arrow/line labels drag ALONG the stroke: dragBoundFunc snaps the
-        // dragged position back onto the path and the 0..1 offset is stored
-        // so reflow keeps it pinned after any arrow edit. Image <-> stage
-        // conversion mirrors getCanvasPoint (zoom + stage pos + frame inset).
+        // Subtle dashed box: shown when the label itself is selected or when
+        // its shape is selected (arrow dots + label box, never a Transformer).
+        const parentSelected = !!parentEl && selectedElementIds.includes(parentEl.id);
+        const showLabelBox = isAttached && (isSelected || parentSelected);
+        const labelBox = showLabelBox ? (
+          <Rect
+            x={0}
+            y={0}
+            width={boxW}
+            height={boxH}
+            stroke={isSelected ? getSelectionTheme().accent : getSelectionTheme().accentDim}
+            strokeWidth={1}
+            dash={[3, 2]}
+            listening={false}
+            perfectDrawEnabled={false}
+          />
+        ) : null;
+
+        // Arrow/line labels drag along the stroke AND perpendicular to it:
+        // dragBoundFunc projects the dragged position onto the path (fraction
+        // t -> `labelOffset`) and records the signed perpendicular distance
+        // (`labelOffsetY`, positive = right of travel direction), so the label
+        // can sit BESIDE the line instead of only on it. Both are stored so
+        // reflow keeps the label pinned after any arrow edit/bend; the stroke
+        // is only clipped behind the label while the label actually overlaps
+        // it. Stage <-> image conversion mirrors getCanvasPoint.
         const dragLabelToPath = (pos: { x: number; y: number }) => {
-          const s = useEditorStore.getState();
-          const pad = s.canvasStyle.padding || 0;
-          const ins = DEVICE_FRAME_INSETS[s.canvasStyle.deviceFrame];
-          const imgX = (pos.x - stagePosition.x) / zoom - (pad + ins.left);
-          const imgY = (pos.y - stagePosition.y) / zoom - (pad + ins.top);
           const parent = parentEl as ArrowElement | LineElement;
-          const t = projectPointToPath(parent, imgX - parent.x, imgY - parent.y);
+          const img = stageToImagePos(pos);
+          const t = projectPointToPath(parent, img.x - parent.x, img.y - parent.y);
+          const pt = pointAlongPath(parent, t);
+          const tan = tangentAlongPath(parent, t);
+          const offsetY = (img.x - parent.x - pt.x) * -tan.y + (img.y - parent.y - pt.y) * tan.x;
           const scale = getImageToolScale(imageSize.width, imageSize.height);
           const anchor = labelAnchorForElement(parent, imageSize, textEl.fontSize ?? 24, scale, {
             ...textEl,
             labelOffset: t,
+            labelOffsetY: offsetY,
           });
+          // Live store values (not captured): the annotation render is
+          // memoized across zoom/pan, so the bound function must not close
+          // over a stale viewport.
+          const s = useEditorStore.getState();
+          const pad = s.canvasStyle.padding || 0;
+          const ins = DEVICE_FRAME_INSETS[s.canvasStyle.deviceFrame];
           return {
-            x: (anchor.x + pad + ins.left) * zoom + stagePosition.x,
-            y: (anchor.y + pad + ins.top) * zoom + stagePosition.y,
+            x: (anchor.x + pad + ins.left) * s.zoom + s.stagePosition.x,
+            y: (anchor.y + pad + ins.top) * s.zoom + s.stagePosition.y,
           };
         };
-        // Project the label's CENTER onto the path: the label box sits with its
-        // left edge half a box-width left of the path point, so projecting the
-        // top-left corner clamps to 0 at the start of the arrow.
-        const labelCenterT = (node: Konva.Node) => {
+        // Label geometry from the dragged node's CURRENT position (parent =
+        // layer space = image coords): center of the box projected onto the
+        // path (t) plus the signed perpendicular distance of that center from
+        // the stroke (offsetY). `labelOffsetY` is recovered from the rendered
+        // position rather than the pointer, so the stored value always matches
+        // what is on screen, even after a dragBoundFunc snap.
+        const labelCenterGeometry = (node: Konva.Node) => {
           const parent = parentEl as ArrowElement | LineElement;
           const halfW = (textEl.width ?? 220) / 2;
           const halfH = ((textEl.fontSize ?? 24) * TEXT_LINE_HEIGHT) / 2;
-          return projectPointToPath(
-            parent,
-            node.x() - parent.x + halfW,
-            node.y() - parent.y + halfH,
-          );
+          const cx = node.x() - parent.x + halfW;
+          const cy = node.y() - parent.y + halfH;
+          const t = projectPointToPath(parent, cx, cy);
+          const pt = pointAlongPath(parent, t);
+          const tan = tangentAlongPath(parent, t);
+          const offsetY = (cx - pt.x) * -tan.y + (cy - pt.y) * tan.x;
+          return { t, offsetY };
         };
         // Silent store update each move so the arrow's line-erase follows.
         const liveLabelDrag = (e: Konva.KonvaEventObject<DragEvent>) => {
           const parent = parentEl as ArrowElement | LineElement;
-          const t = labelCenterT(e.target);
+          const { t, offsetY } = labelCenterGeometry(e.target);
           const scale = getImageToolScale(imageSize.width, imageSize.height);
           const anchor = labelAnchorForElement(parent, imageSize, textEl.fontSize ?? 24, scale, {
             ...textEl,
             labelOffset: t,
+            labelOffsetY: offsetY,
           });
           updateElementSilent(textEl.id, {
             x: anchor.x,
             y: anchor.y,
             width: anchor.width,
             labelOffset: t,
+            labelOffsetY: offsetY,
           } as Partial<EditorElement>);
         };
         // Commit the dragged offset as one undo step (position is already on
         // screen; the store now agrees with it).
         const commitLabelDrag = (e: Konva.KonvaEventObject<DragEvent>) => {
           const parent = parentEl as ArrowElement | LineElement;
-          const t = labelCenterT(e.target);
+          const { t, offsetY } = labelCenterGeometry(e.target);
           const scale = getImageToolScale(imageSize.width, imageSize.height);
           const anchor = labelAnchorForElement(parent, imageSize, textEl.fontSize ?? 24, scale, {
             ...textEl,
             labelOffset: t,
+            labelOffsetY: offsetY,
           });
           commitElementUpdate(textEl.id, {
             x: anchor.x,
             y: anchor.y,
             width: anchor.width,
             labelOffset: t,
+            labelOffsetY: offsetY,
           } as Partial<EditorElement>);
         };
 
@@ -3366,7 +4466,7 @@ const EditorCanvas: React.FC = () => {
           groupProps.draggable = false;
         }
         if (!hasRotation) {
-          return <Group key={textEl.id} {...groupProps}>{textNode}</Group>;
+          return <Group key={textEl.id} {...groupProps}>{labelBox}{textNode}</Group>;
         }
         // Rotated container text: Group at the box center, Text offset by half
         // the box so rotation spins around the center (same pivot as the shape).
@@ -3380,6 +4480,7 @@ const EditorCanvas: React.FC = () => {
             offsetY={boxH / 2}
             rotation={textEl.rotation ?? 0}
           >
+            {labelBox}
             {textNode}
           </Group>
         );
@@ -3454,58 +4555,6 @@ const EditorCanvas: React.FC = () => {
     }
   }
 
-  // Render eraser draft: red dotted box while dragging + red tint on every
-  // element that would be deleted, so the eraser is a preview instead of a
-  // surprise. Both use the same hit test as the commit, so what you see is
-  // exactly what gets removed on mouse-up.
-  function renderEraserDraft() {
-    if (!isErasing || !eraserStart || !eraserEnd) return null;
-    const x1 = Math.min(eraserStart.x, eraserEnd.x);
-    const y1 = Math.min(eraserStart.y, eraserEnd.y);
-    const x2 = Math.max(eraserStart.x, eraserEnd.x);
-    const y2 = Math.max(eraserStart.y, eraserEnd.y);
-    const w = x2 - x1;
-    const h = y2 - y1;
-    // The elements themselves already fade to 30% (see eraserFadeIds); this
-    // dashed marquee is the only extra chrome the eraser draws.
-    return (
-      <Rect
-        x={x1}
-        y={y1}
-        width={w}
-        height={h}
-        fill="rgba(239,68,68,0.06)"
-        stroke="#ef4444"
-        strokeWidth={1.5}
-        dash={[6, 4]}
-        listening={false}
-      />
-    );
-  }
-
-  // Render spotlight draft (dotted box while dragging)
-  function renderSpotlightDraft() {
-    if (!drawingElement || drawingElement.type !== 'spotlight') return null;
-    const shape = drawingElement as ShapeElement;
-    const x = Math.min(shape.x, shape.x + shape.width);
-    const y = Math.min(shape.y, shape.y + shape.height);
-    const w = Math.abs(shape.width);
-    const h = Math.abs(shape.height);
-    return (
-      <Rect
-        x={x}
-        y={y}
-        width={w}
-        height={h}
-        fill="rgba(250,204,21,0.08)"
-        stroke="#facc15"
-        strokeWidth={1.5}
-        dash={[6, 4]}
-        listening={false}
-      />
-    );
-  }
-
   // Premium selection chrome follows theme tokens
   const selectionTheme = useMemo(() => getSelectionTheme(), [activeTool, selectedElementIds]);
 
@@ -3536,20 +4585,68 @@ const EditorCanvas: React.FC = () => {
   const showFrame = !!backgroundImage && (contentPad > 0 || canvasStyle.bgStyle !== 'none' || canvasStyle.shadowEnabled || canvasStyle.borderRadius > 0 || canvasStyle.deviceFrame !== 'none');
   const frameInner = { x: contentOffsetX, y: contentOffsetY, w: imageSize.width || 0, h: imageSize.height || 0 };
 
-  // Elements the active eraser stroke would delete — rendered at ~30% opacity
-  // (Excalidraw's pending-erasure fade) until the stroke commits.
-  const eraserFadeIds = (() => {
-    if (!isErasing || !eraserStart || !eraserEnd) return null;
-    const x1 = Math.min(eraserStart.x, eraserEnd.x);
-    const y1 = Math.min(eraserStart.y, eraserEnd.y);
-    const x2 = Math.max(eraserStart.x, eraserEnd.x);
-    const y2 = Math.max(eraserStart.y, eraserEnd.y);
-    return new Set(computeEraserHitIds(elements, x1, y1, x2, y2));
-  })();
-
   // Get current zoom/position for textarea positioning using fresh values
   const currentZoom = useEditorStore((s) => s.zoom);
   const currentStagePos = useEditorStore((s) => s.stagePosition);
+
+  /**
+   * Committed annotations are memoized as a unit: element objects are
+   * immutable (Zustand replaces only the changed one), so this list is only
+   * rebuilt when something the render actually reads changes. Zoom/pan,
+   * drawing, dragging, marquee and eraser never touch these deps, so those
+   * interactions do not reconcile (or redraw) any committed annotation.
+   * Selection/tool changes still rebuild — they alter draggable/listening.
+   */
+  /**
+   * Keep every interaction handle screen-sized regardless of zoom (Excalidraw's
+   * zoom-invariant grab points): `.edit-handle` nodes (line/arrow endpoint +
+   * bend + midpoint ghost handles, magnifier handles) are counter-scaled by
+   * 1/zoom, and the Transformer is pushed through an update so its zoom-aware
+   * anchorStyleFunc re-runs. Runs via useLayoutEffect so newly-attached
+   * handles are corrected before the browser paints the frame. Konva Circle
+   * geometry is centered on the node origin, so scaling a handle keeps it
+   * glued to its endpoint while the visual radius and hit area stay
+   * screen-constant.
+   */
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const z = zoom > 0 ? zoom : 1;
+    let changed = false;
+    stage.find('.edit-handle').forEach((node) => {
+      const base = (node.getAttr('handleBaseScale') as number | undefined) ?? 1;
+      if (base !== 1 / z) {
+        node.setAttr('handleBaseScale', 1 / z);
+        node.scale({ x: 1 / z, y: 1 / z });
+        changed = true;
+      }
+    });
+    transformerRef.current?.update();
+    if (changed) stage.batchDraw();
+  }, [zoom, selectedElementIds]);
+
+  // Custom shape selection overlay: a single selected box-shaped annotation
+  // (rectangle/rounded-rect/circle/diamond/step) is edited through its own
+  // dashed-outline overlay instead of the generic Konva Transformer. Text and
+  // multi-selection keep the Transformer (Excalidraw also uses a combined box
+  // for multi-select).
+  const shapeOverlayEl = (() => {
+    if (selectedElementIds.length !== 1) return null;
+    const sole = elements.find((e) => e.id === selectedElementIds[0]);
+    if (!sole || sole.locked) return null;
+    if (!isShapeOverlayType(sole.type)) return null;
+    // Hide while its label is being edited in the textarea.
+    if (textInput.visible && textInput.editId === sole.id) return null;
+    return sole;
+  })();
+
+  const annotationNodes = useMemo(
+    () => elements.map((el) => renderElement(el, false, null)),
+    [
+      elements, handDrawn, annotationsLocked, textInput, imageSize,
+      backgroundImage, selectedElementIds, activeTool, hoverSelectMode,
+    ],
+  );
 
   return (
     <div
@@ -3601,12 +4698,20 @@ const EditorCanvas: React.FC = () => {
         }}
         onDragMove={(e) => {
           if (useEditorStore.getState().activeTool === 'hand') {
-            setStagePosition({ x: e.target.x(), y: e.target.y() });
+            // Konva owns the drag; the store is synced once per frame so a
+            // dragmove stream never re-renders React per event.
+            const s = useEditorStore.getState();
+            const vp = pendingViewportRef.current ?? { zoom: s.zoom, x: s.stagePosition.x, y: s.stagePosition.y };
+            pendingViewportRef.current = { zoom: vp.zoom, x: e.target.x(), y: e.target.y() };
+            syncViewportToStore();
           }
         }}
         onDragEnd={(e) => {
           if (useEditorStore.getState().activeTool === 'hand') {
-            setStagePosition({ x: e.target.x(), y: e.target.y() });
+            const s = useEditorStore.getState();
+            const vp = pendingViewportRef.current ?? { zoom: s.zoom, x: s.stagePosition.x, y: s.stagePosition.y };
+            pendingViewportRef.current = { zoom: vp.zoom, x: e.target.x(), y: e.target.y() };
+            syncViewportToStore();
             setIsHandDragging(false);
           }
         }}
@@ -3688,44 +4793,8 @@ const EditorCanvas: React.FC = () => {
 
         {/* Annotation layer (same offset as the framed image) */}
         <Layer name="annotation-layer" x={contentOffsetX} y={contentOffsetY}>
-          {elements.map((el) => renderElement(el, false, eraserFadeIds))}
+          {annotationNodes}
           {drawingElement && renderElement(drawingElement, true)}
-          {renderSpotlightDraft()}
-          {renderEraserDraft()}
-          {guides.map((g, i) => (
-            g.orientation === 'vertical' ? (
-              <Line
-                key={`guide-v-${i}`}
-                points={[g.position, g.start, g.position, g.end]}
-                stroke="#F97316"
-                strokeWidth={1}
-                dash={[4, 4]}
-                listening={false}
-              />
-            ) : (
-              <Line
-                key={`guide-h-${i}`}
-                points={[g.start, g.position, g.end, g.position]}
-                stroke="#F97316"
-                strokeWidth={1}
-                dash={[4, 4]}
-                listening={false}
-              />
-            )
-          ))}
-          {marquee && (
-            <Rect
-              x={marquee.x}
-              y={marquee.y}
-              width={marquee.w}
-              height={marquee.h}
-              fill="rgba(234,88,12,0.08)"
-              stroke={selectionTheme.accent}
-              strokeWidth={1}
-              dash={[6, 4]}
-              listening={false}
-            />
-          )}
           <Transformer
             ref={transformerRef}
             shouldOverdrawWholeArea
@@ -3742,20 +4811,50 @@ const EditorCanvas: React.FC = () => {
               if (newBox.width < 5 || newBox.height < 5) return oldBox;
               return newBox;
             }}
-            padding={8}
-            anchorSize={10}
-            anchorCornerRadius={5}
-            borderStroke={selectionTheme.accent}
-            borderStrokeWidth={1.5}
-            borderDash={[6, 4]}
-            anchorStroke={selectionTheme.accent}
+            padding={6}
+            anchorSize={8}
+            anchorCornerRadius={4}
+            borderStroke={selectionTheme.accentDim}
+            borderStrokeWidth={1.1}
+            borderDash={[4, 3]}
+            anchorStroke={selectionTheme.accentDim}
             anchorFill={selectionTheme.surface}
             rotateEnabled={!annotationsLocked}
             resizeEnabled={!annotationsLocked}
-            rotateAnchorOffset={28}
-            rotateAnchorSize={12}
+            rotateAnchorOffset={22}
+            rotateAnchorSize={9}
             rotateAnchorCursor="grab"
             anchorStyleFunc={styleSelectionAnchor}
+            onTransform={(e) => {
+              const st = useEditorStore.getState();
+              const tr = transformerRef.current;
+              if (!tr) return;
+              const nodes = tr.nodes();
+              const evt = e.evt as { shiftKey?: boolean };
+              // Rotation snapping — Excalidraw semantics (Shift constrains
+              // rotation to 15° steps). Applied after Konva's own rotate math
+              // each frame, so the object follows the pointer until it nears a
+              // step and then lands on it; releasing Shift frees rotation
+              // immediately (never sticky).
+              if (evt?.shiftKey && nodes.length === 1) {
+                const snapped = Math.round(nodes[0].rotation() / 15) * 15;
+                if (Math.abs(nodes[0].rotation() - snapped) > 0.001) {
+                  nodes[0].rotation(snapped);
+                  tr.forceUpdate();
+                }
+              }
+              // Live binding during resize/rotate: a single bindable target
+              // keeps every bound arrow glued on every frame. Multi-select
+              // re-anchors once at commit (recomputeBindings) — per-element
+              // scaling mid-gesture would be guesswork.
+              if (st.isBindingEnabled && st.selectedElementIds.length === 1) {
+                const id = st.selectedElementIds[0];
+                const el = st.elements.find((x) => x.id === id);
+                if (el && isBindableElement(el) && nodes[0]) {
+                  handleLiveShapeTransform(el, nodes[0]);
+                }
+              }
+            }}
             enabledAnchors={(() => {
               if (annotationsLocked) return [];
               const sole = selectedElementIds.length === 1
@@ -3774,7 +4873,23 @@ const EditorCanvas: React.FC = () => {
               ];
             })()}
           />
+          {shapeOverlayEl && (
+            <ShapeSelectionOverlay
+              el={shapeOverlayEl}
+              zoom={zoom}
+              annotationsLocked={annotationsLocked}
+              getNode={(id) => (stageRef.current ? findAnnotationNode(stageRef.current, id) : undefined)}
+              toImagePoint={getCanvasPoint}
+              onLiveTransform={handleLiveShapeTransform}
+              onCommit={handleElementTransformEnd}
+            />
+          )}
         </Layer>
+
+        {/* Transient interaction layer: drawing drafts, marquee, eraser rect
+            and snapping guides. Driven imperatively by DraftLayer from pointer
+            events — React never renders here during a gesture. */}
+        <Layer name="interaction-layer" x={contentOffsetX} y={contentOffsetY} listening={false} ref={interactionLayerRef} />
       </Stage>
 
       {/* Text input overlay: the single in-place editor for every text entry
@@ -3808,3 +4923,4 @@ const EditorCanvas: React.FC = () => {
 };
 
 export default EditorCanvas;
+

@@ -26,6 +26,7 @@ export type SettingKey =
   | 'textAlign'
   | 'textVerticalAlign'
   | 'arrowheads'
+  | 'arrowPath'
   | 'magnification'
   | 'blurRadius'
   | 'pixelSize'
@@ -62,6 +63,7 @@ export const SETTING_SPECS: Record<SettingKey, SettingSpec> = {
   roughness: { kind: 'preset', key: 'roughness', label: 'Sloppiness' },
   cornerRadius: { kind: 'preset', key: 'cornerRadius', label: 'Edges' },
   arrowheads: { kind: 'preset', key: 'arrowheads', label: 'Arrowheads' },
+  arrowPath: { kind: 'preset', key: 'arrowPath', label: 'Arrow path', railLabel: 'Path' },
   fontFamily: { kind: 'preset', key: 'fontFamily', label: 'Font style', railLabel: 'Style' },
   fontStyle: { kind: 'preset', key: 'fontStyle', label: 'Bold / Italic', railLabel: 'Bold' },
   textAlign: { kind: 'preset', key: 'textAlign', label: 'Alignment', railLabel: 'Align' },
@@ -112,7 +114,7 @@ export const TOOL_SETTINGS: Record<ToolType, SettingKey[]> = {
   circle: ['strokeColor', 'fillColor', 'strokeWidth', 'strokeStyle', 'fillStyle', 'roughness', 'opacity'],
   diamond: ['strokeColor', 'fillColor', 'strokeWidth', 'strokeStyle', 'fillStyle', 'roughness', 'opacity'],
 
-  arrow: ['strokeColor', 'strokeWidth', 'strokeStyle', 'roughness', 'arrowheads', 'opacity'],
+  arrow: ['strokeColor', 'strokeWidth', 'strokeStyle', 'roughness', 'arrowheads', 'arrowPath', 'opacity'],
   line: ['strokeColor', 'strokeWidth', 'strokeStyle', 'roughness', 'arrowheads', 'opacity'],
 
   // Freehand ignores dash at render, so no strokeStyle.
