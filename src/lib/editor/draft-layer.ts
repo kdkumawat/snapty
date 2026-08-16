@@ -134,6 +134,7 @@ export class DraftLayer {
   private eraser: { x1: number; y1: number; x2: number; y2: number } | null = null;
   private bindingPreview: { preview: BindingPreview; accent: string; zoom: number } | null = null;
   private hoverOutline: { x: number; y: number; w: number; h: number } | null = null;
+  private labelAnchor: { x: number; y: number; zoom: number } | null = null;
 
   attach(layer: Konva.Layer) {
     this.layer = layer;
@@ -177,6 +178,7 @@ export class DraftLayer {
     this.eraser = null;
     this.bindingPreview = null;
     this.hoverOutline = null;
+    this.labelAnchor = null;
     if (this.layer) {
       // batchDraw now so the overlay never shows a stale frame.
       this.layer.batchDraw();
@@ -597,6 +599,22 @@ export class DraftLayer {
     this.rebuildChrome();
   }
 
+  /**
+   * Text-tool attach preview: a quiet dashed ring + center dot on a line/arrow
+   * stroke marking where a click would attach a text label. Screen-constant
+   * size via zoom (like the binding-preview dot); driven imperatively so a
+   * moving pointer never touches React.
+   */
+  showLabelAnchor(x: number, y: number, zoom: number) {
+    this.labelAnchor = { x, y, zoom };
+    this.rebuildChrome();
+  }
+
+  clearLabelAnchor() {
+    this.labelAnchor = null;
+    this.rebuildChrome();
+  }
+
   /** Rebuild marquee + eraser + guides nodes (called when one is cleared). */
   private rebuildChrome() {
     const nodes: Konva.Shape[] = [];
@@ -650,6 +668,23 @@ export class DraftLayer {
         fill: accent,
         stroke: '#ffffff',
         strokeWidth: 1 / z,
+        listening: false,
+      }));
+    }
+    if (this.labelAnchor) {
+      const { x, y, zoom } = this.labelAnchor;
+      const z = zoom > 0 ? zoom : 1;
+      const theme = getSelectionTheme();
+      nodes.push(new Konva.Circle({
+        x, y, radius: 6 / z,
+        stroke: theme.accentSoft,
+        strokeWidth: 1 / z,
+        dash: [3 / z, 2 / z],
+        listening: false,
+      }));
+      nodes.push(new Konva.Circle({
+        x, y, radius: 1.75 / z,
+        fill: theme.accentSoft,
         listening: false,
       }));
     }

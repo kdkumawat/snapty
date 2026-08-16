@@ -32,6 +32,7 @@ import {
   clipPolylineAgainstRect,
   pointAlongPath,
   projectPointToPath,
+  tangentAlongPath,
   estimateLabelHeight,
 } from '@/lib/editor/text-labels';
 import TextEditOverlay from '@/components/editor/canvas/text-edit-overlay';
@@ -489,6 +490,8 @@ const EditorCanvas: React.FC = () => {
   const [ocrCopied, setOcrCopied] = useState(false);
   const hoverPreviousToolRef = useRef<ToolType | null>(null);
   const hoveredAnnotationRef = useRef<string | null>(null);
+  /** Text-tool attach preview: the line/arrow + path fraction the pointer is over. */
+  const textAttachRef = useRef<{ id: string; t: number } | null>(null);
   /** Temporary select-on-hover without changing toolbar activeTool. */
   const [hoverSelectMode, setHoverSelectModeState] = useState(false);
   const hoverSelectModeRef = useRef(false);
@@ -1025,6 +1028,20 @@ const EditorCanvas: React.FC = () => {
     };
   }
 
+  // The one authoritative stage -> image conversion (image coordinates). All
+  // pointer-derived canvas math goes through getCanvasPoint or this helper so
+  // the cursor, previews and drag constraints can never disagree about where a
+  // pointer lands (zoom, stage pan, padding and device-frame insets included).
+  function stageToImagePos(pos: { x: number; y: number }): { x: number; y: number } {
+    const s = useEditorStore.getState();
+    const pad = s.canvasStyle.padding || 0;
+    const ins = DEVICE_FRAME_INSETS[s.canvasStyle.deviceFrame];
+    return {
+      x: (pos.x - s.stagePosition.x) / s.zoom - (pad + ins.left),
+      y: (pos.y - s.stagePosition.y) / s.zoom - (pad + ins.top),
+    };
+  }
+
   // Create a blurred or pixelated image data URL for a region.
   // Intensity comes in as an argument rather than being read from the store, so
   // an existing element can be re-baked with its own settings after the fact.
@@ -1327,6 +1344,22 @@ const EditorCanvas: React.FC = () => {
           if (!s.annotationsLocked) {
             e.cancelBubble = true;
             openTextEditor(clicked as TextElement);
+            return;
+          }
+        }
+
+        // Text tool: clicking a line/arrow BODY attaches a label at the exact
+        // hovered spot (the anchor-dot preview), not the default midpoint.
+        if (s.activeTool === 'text' && (clicked?.type === 'arrow' || clicked?.type === 'line')) {
+          if (!s.annotationsLocked) {
+            e.cancelBubble = true;
+            const atT = textAttachRef.current?.id === clicked.id ? textAttachRef.current.t : undefined;
+            textAttachRef.current = null;
+            draftLayerRef.current?.clearLabelAnchor();
+            attachTextToAnnotation(
+              clicked as ArrowElement | LineElement,
+              atT,
+            );
             return;
           }
         }
@@ -1642,10 +1675,19 @@ const EditorCanvas: React.FC = () => {
       const s = useEditorStore.getState();
       const hoveredId = findAnnotationId(e.target);
       const drawingTools = !['select', 'hand', 'eraser', 'crop', 'magnifier'].includes(s.activeTool);
-      if (hoveredId && drawingTools) {
+      // The text tool hovering a line/arrow shows the attach-label preview
+      // (anchor dot + text cursor) instead of the generic selection cursor,
+      // so the preview and the cursor never disagree about what a click does.
+      const hoveredEl = hoveredId ? s.elements.find((el) => el.id === hoveredId) : undefined;
+      const textAttachHover = s.activeTool === 'text'
+        && (hoveredEl?.type === 'arrow' || hoveredEl?.type === 'line');
+      if (hoveredId && drawingTools && !textAttachHover) {
         if (!hoveredAnnotationRef.current) hoverPreviousToolRef.current = s.activeTool;
         hoveredAnnotationRef.current = hoveredId;
         if (!hoverSelectModeRef.current) setHoverSelectMode(true);
+      } else if (textAttachHover && hoveredAnnotationRef.current) {
+        hoveredAnnotationRef.current = null;
+        if (hoverSelectModeRef.current) setHoverSelectMode(false);
       } else if (
         !hoveredId
         && hoveredAnnotationRef.current
@@ -1654,6 +1696,57 @@ const EditorCanvas: React.FC = () => {
         hoveredAnnotationRef.current = null;
         hoverPreviousToolRef.current = null;
         if (hoverSelectModeRef.current) setHoverSelectMode(false);
+      }
+
+      // Text tool over a line/arrow: preview where a click would attach a
+      // label — a quiet anchor dot on the stroke, drawn imperatively on the
+      // interaction layer (no React on the move hot path). The pointer is
+      // projected onto each arrow/line; the nearest one within ~10 screen px
+      // wins and is remembered for the click.
+      const textTool = s.activeTool === 'text';
+      // No preview while the label editor is open: the pointer is over the
+      // textarea, and the dot would linger under the editing UI.
+      if (textTool && !textInput.visible && !hoveredAnnotationRef.current) {
+        const pos = getCanvasPoint();
+        if (pos) {
+          let best: { id: string; t: number } | null = null;
+          let bestD = Infinity;
+          const threshold = 10 / s.zoom;
+          for (const el of s.elements) {
+            if (el.type !== 'arrow' && el.type !== 'line') continue;
+            // Cheap bbox pre-filter so arrows far from the pointer never pay
+            // for the 48-sample path projection.
+            const b = getElementBounds(el, s.imageSize);
+            if (
+              pos.x < b.x - threshold || pos.x > b.x + b.w + threshold
+              || pos.y < b.y - threshold || pos.y > b.y + b.h + threshold
+            ) continue;
+            const linear = el as ArrowElement | LineElement;
+            const t = projectPointToPath(linear, pos.x - el.x, pos.y - el.y);
+            const pt = pointAlongPath(linear, t);
+            const d = Math.hypot(pos.x - (el.x + pt.x), pos.y - (el.y + pt.y));
+            if (d < bestD) {
+              bestD = d;
+              best = { id: el.id, t };
+            }
+          }
+          if (best && bestD <= threshold) {
+            if (!textAttachRef.current) textAttachRef.current = { id: best.id, t: best.t };
+            else {
+              textAttachRef.current.id = best.id;
+              textAttachRef.current.t = best.t;
+            }
+            const linear = s.elements.find((x) => x.id === best!.id) as ArrowElement | LineElement;
+            const pt = pointAlongPath(linear, best.t);
+            draftLayerRef.current?.showLabelAnchor(linear.x + pt.x, linear.y + pt.y, s.zoom);
+          } else if (textAttachRef.current) {
+            textAttachRef.current = null;
+            draftLayerRef.current?.clearLabelAnchor();
+          }
+        }
+      } else if (textAttachRef.current) {
+        textAttachRef.current = null;
+        draftLayerRef.current?.clearLabelAnchor();
       }
     }
 
@@ -1829,6 +1922,11 @@ const EditorCanvas: React.FC = () => {
 
   function handleMouseLeave() {
     const s = useEditorStore.getState();
+    // Leaving the canvas: drop the text-attach preview so it cannot linger.
+    if (textAttachRef.current) {
+      textAttachRef.current = null;
+      draftLayerRef.current?.clearLabelAnchor();
+    }
     if (s.selectedElementIds.length) return;
     hoveredAnnotationRef.current = null;
     hoverPreviousToolRef.current = null;
@@ -2321,7 +2419,7 @@ const EditorCanvas: React.FC = () => {
    * a box, middle of a line/arrow) so it moves and resizes with the shape. The
    * text editor opens immediately; Esc or an empty commit removes the label.
    */
-  function attachTextToAnnotation(el: EditorElement) {
+  function attachTextToAnnotation(el: EditorElement, atT?: number) {
     const s = useEditorStore.getState();
     if (s.annotationsLocked || !s.imageSize.width) return;
     // Already has an attached label → just edit that one.
@@ -2340,15 +2438,31 @@ const EditorCanvas: React.FC = () => {
     // Centered label geometry is shared by every shape type (see
     // lib/editor/text-labels) so the editor overlay, the committed element,
     // and the Konva node all agree on placement.
-    const anchor = labelAnchorForElement(el, s.imageSize, fontSize, scale);
-    const textEl = createAttachedLabel(generateId(), groupId, anchor, {
+    const anchor = labelAnchorForElement(
+      el,
+      s.imageSize,
       fontSize,
-      fontFamily: s.fontFamily || HANDWRITTEN_FONT,
-      fontStyle: s.fontStyle || 'normal',
-      align: 'center',
-      fill: s.strokeColor,
-      opacity: s.opacity,
-    });
+      scale,
+      atT !== undefined && (el.type === 'arrow' || el.type === 'line')
+        ? { labelOffset: atT }
+        : undefined,
+    );
+    const textEl = createAttachedLabel(
+      generateId(),
+      groupId,
+      anchor,
+      {
+        fontSize,
+        fontFamily: s.fontFamily || HANDWRITTEN_FONT,
+        fontStyle: s.fontStyle || 'normal',
+        align: 'center',
+        fill: s.strokeColor,
+        opacity: s.opacity,
+      },
+      atT !== undefined && (el.type === 'arrow' || el.type === 'line')
+        ? { labelOffset: atT }
+        : undefined,
+    );
     // One undo step for the shape group + the label.
     s.attachText(el.id, textEl);
     openTextEditor(textEl, textEl.id);
@@ -2618,6 +2732,25 @@ const EditorCanvas: React.FC = () => {
       applyLiveBindingsForTarget(id, liveElementFromNode(el, e.target));
     }
     if (!('width' in el)) {
+      // Line/arrow body drag: keep an attached label glued to the stroke on
+      // every frame (imperative — the store only hears about the move at
+      // dragend, then moves the whole group by the same delta).
+      if (el.type === 'arrow' || el.type === 'line') {
+        const label = s.elements.find(
+          (x) => x.type === 'text' && x.groupId === el.groupId,
+        );
+        if (label) {
+          const stage = stageRef.current;
+          const node = stage ? findAnnotationNode(stage, label.id) : undefined;
+          if (node) {
+            node.position({
+              x: label.x + (e.target.x() - el.x),
+              y: label.y + (e.target.y() - el.y),
+            });
+            node.getLayer()?.batchDraw();
+          }
+        }
+      }
       draftLayerRef.current?.clearGuides();
       return;
     }
@@ -2674,7 +2807,32 @@ const EditorCanvas: React.FC = () => {
     // there is no single points-holding node to patch, so fall back to a
     // silent store update and let React re-render the clipped geometry.
     if (node.getClassName() === 'Group') {
-      useEditorStore.getState().updateElementSilent(id, { points } as Partial<EditorElement>);
+      const st = useEditorStore.getState();
+      st.updateElementSilent(id, { points } as Partial<EditorElement>);
+      // The attached label must follow on the SAME pass or it lags the bend
+      // until commit: reflow it to the new path (labelOffset/labelOffsetY
+      // preserved) and write both silently so React renders them together.
+      const parent = st.elements.find((x) => x.id === id);
+      if (parent?.groupId) {
+        const labelEl = st.elements.find(
+          (x) => x.type === 'text' && x.groupId === parent.groupId,
+        ) as TextElement | undefined;
+        if (labelEl) {
+          const scale = getImageToolScale(st.imageSize.width, st.imageSize.height);
+          const anchor = labelAnchorForElement(
+            { ...parent, points, bend: bendVal } as ArrowElement | LineElement,
+            st.imageSize,
+            labelEl.fontSize ?? 24,
+            scale,
+            labelEl,
+          );
+          st.updateElementSilent(labelEl.id, {
+            x: anchor.x,
+            y: anchor.y,
+            width: anchor.width,
+          } as Partial<EditorElement>);
+        }
+      }
       return;
     }
     const multi = points.length > 4;
@@ -3852,75 +4010,91 @@ const EditorCanvas: React.FC = () => {
           }
         };
 
-        // Arrow/line labels drag ALONG the stroke: dragBoundFunc snaps the
-        // dragged position back onto the path and the 0..1 offset is stored
-        // so reflow keeps it pinned after any arrow edit. Image <-> stage
-        // conversion mirrors getCanvasPoint (zoom + stage pos + frame inset).
+        // Arrow/line labels drag along the stroke AND perpendicular to it:
+        // dragBoundFunc projects the dragged position onto the path (fraction
+        // t -> `labelOffset`) and records the signed perpendicular distance
+        // (`labelOffsetY`, positive = right of travel direction), so the label
+        // can sit BESIDE the line instead of only on it. Both are stored so
+        // reflow keeps the label pinned after any arrow edit/bend; the stroke
+        // is only clipped behind the label while the label actually overlaps
+        // it. Stage <-> image conversion mirrors getCanvasPoint.
         const dragLabelToPath = (pos: { x: number; y: number }) => {
-          const s = useEditorStore.getState();
-          const pad = s.canvasStyle.padding || 0;
-          const ins = DEVICE_FRAME_INSETS[s.canvasStyle.deviceFrame];
-          // Live store values (not captured): the annotation render is
-          // memoized across zoom/pan, so the bound function must not close
-          // over a stale viewport.
-          const imgX = (pos.x - s.stagePosition.x) / s.zoom - (pad + ins.left);
-          const imgY = (pos.y - s.stagePosition.y) / s.zoom - (pad + ins.top);
           const parent = parentEl as ArrowElement | LineElement;
-          const t = projectPointToPath(parent, imgX - parent.x, imgY - parent.y);
+          const img = stageToImagePos(pos);
+          const t = projectPointToPath(parent, img.x - parent.x, img.y - parent.y);
+          const pt = pointAlongPath(parent, t);
+          const tan = tangentAlongPath(parent, t);
+          const offsetY = (img.x - parent.x - pt.x) * -tan.y + (img.y - parent.y - pt.y) * tan.x;
           const scale = getImageToolScale(imageSize.width, imageSize.height);
           const anchor = labelAnchorForElement(parent, imageSize, textEl.fontSize ?? 24, scale, {
             ...textEl,
             labelOffset: t,
+            labelOffsetY: offsetY,
           });
+          // Live store values (not captured): the annotation render is
+          // memoized across zoom/pan, so the bound function must not close
+          // over a stale viewport.
+          const s = useEditorStore.getState();
+          const pad = s.canvasStyle.padding || 0;
+          const ins = DEVICE_FRAME_INSETS[s.canvasStyle.deviceFrame];
           return {
-            x: (anchor.x + pad + ins.left) * zoom + stagePosition.x,
-            y: (anchor.y + pad + ins.top) * zoom + stagePosition.y,
+            x: (anchor.x + pad + ins.left) * s.zoom + s.stagePosition.x,
+            y: (anchor.y + pad + ins.top) * s.zoom + s.stagePosition.y,
           };
         };
-        // Project the label's CENTER onto the path: the label box sits with its
-        // left edge half a box-width left of the path point, so projecting the
-        // top-left corner clamps to 0 at the start of the arrow.
-        const labelCenterT = (node: Konva.Node) => {
+        // Label geometry from the dragged node's CURRENT position (parent =
+        // layer space = image coords): center of the box projected onto the
+        // path (t) plus the signed perpendicular distance of that center from
+        // the stroke (offsetY). `labelOffsetY` is recovered from the rendered
+        // position rather than the pointer, so the stored value always matches
+        // what is on screen, even after a dragBoundFunc snap.
+        const labelCenterGeometry = (node: Konva.Node) => {
           const parent = parentEl as ArrowElement | LineElement;
           const halfW = (textEl.width ?? 220) / 2;
           const halfH = ((textEl.fontSize ?? 24) * TEXT_LINE_HEIGHT) / 2;
-          return projectPointToPath(
-            parent,
-            node.x() - parent.x + halfW,
-            node.y() - parent.y + halfH,
-          );
+          const cx = node.x() - parent.x + halfW;
+          const cy = node.y() - parent.y + halfH;
+          const t = projectPointToPath(parent, cx, cy);
+          const pt = pointAlongPath(parent, t);
+          const tan = tangentAlongPath(parent, t);
+          const offsetY = (cx - pt.x) * -tan.y + (cy - pt.y) * tan.x;
+          return { t, offsetY };
         };
         // Silent store update each move so the arrow's line-erase follows.
         const liveLabelDrag = (e: Konva.KonvaEventObject<DragEvent>) => {
           const parent = parentEl as ArrowElement | LineElement;
-          const t = labelCenterT(e.target);
+          const { t, offsetY } = labelCenterGeometry(e.target);
           const scale = getImageToolScale(imageSize.width, imageSize.height);
           const anchor = labelAnchorForElement(parent, imageSize, textEl.fontSize ?? 24, scale, {
             ...textEl,
             labelOffset: t,
+            labelOffsetY: offsetY,
           });
           updateElementSilent(textEl.id, {
             x: anchor.x,
             y: anchor.y,
             width: anchor.width,
             labelOffset: t,
+            labelOffsetY: offsetY,
           } as Partial<EditorElement>);
         };
         // Commit the dragged offset as one undo step (position is already on
         // screen; the store now agrees with it).
         const commitLabelDrag = (e: Konva.KonvaEventObject<DragEvent>) => {
           const parent = parentEl as ArrowElement | LineElement;
-          const t = labelCenterT(e.target);
+          const { t, offsetY } = labelCenterGeometry(e.target);
           const scale = getImageToolScale(imageSize.width, imageSize.height);
           const anchor = labelAnchorForElement(parent, imageSize, textEl.fontSize ?? 24, scale, {
             ...textEl,
             labelOffset: t,
+            labelOffsetY: offsetY,
           });
           commitElementUpdate(textEl.id, {
             x: anchor.x,
             y: anchor.y,
             width: anchor.width,
             labelOffset: t,
+            labelOffsetY: offsetY,
           } as Partial<EditorElement>);
         };
 

@@ -202,6 +202,13 @@ export interface TextElement extends BaseElement {
    * the path; 0.5 = midpoint. Lets the label slide along the arrow.
    */
   labelOffset?: number;
+  /**
+   * Signed perpendicular offset (image px) of a line/arrow label from the
+   * stroke; positive = right side of travel direction. Lets a label sit
+   * beside the line instead of on it. Preserved through reflow like
+   * `labelOffset`, so bends/moves keep the label off the stroke.
+   */
+  labelOffsetY?: number;
 }
 
 export interface StepElement extends BaseElement {

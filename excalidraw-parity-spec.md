@@ -333,6 +333,18 @@ Post-spec passes (commits `fdd20c5`, `57e83d5` + working tree) rebuilt the inter
 
 **Kept by design:** text keeps the Transformer re-wrap UX (side handles re-wrap, corners scale type); multi-selection keeps the combined Transformer box (Excalidraw also uses a combined box for multi-select) — both restyled to the same quiet dotted-border/small-handle language. Visual bind-target highlight while an endpoint hovers a shape during a bind drag remains deferred (§6.2.2).
 
+## 13. Deep interaction refinement — text on arrows/lines (2026-08-16) ✅ implemented
+
+Follow-up pass (working tree) focused on the four residual interaction areas; this section covers the text-label + cursor/preview-sync work shipped so far. Linear-element bending polish and settings/properties UI quality remain as follow-up passes.
+
+| Item | Files | Notes |
+|------|-------|-------|
+| Perpendicular label offset | `src/types/editor.ts`, `src/lib/editor/text-labels.ts` | `TextElement.labelOffsetY` — signed perpendicular distance (image px) from the stroke, applied along the path normal (`tangentAlongPath`, numerically sampled so it is correct for Bézier bends and polylines). The label can sit BESIDE the line instead of on it; the erase-behind-label clip only cuts the stroke while the label actually overlaps it |
+| 2D label drag | `editor-canvas.tsx` | dragging a path label is now 2D: `dragBoundFunc` projects the pointer onto the path (`labelOffset`) AND records the signed perpendicular distance (`labelOffsetY`); `liveLabelDrag`/`commitLabelDrag` recover both from the rendered position so the stored values always match the screen. Both survive reflow (bends, endpoint edits, resize) |
+| Live label-follow | `editor-canvas.tsx` | arrow/line body drags move an attached label imperatively every frame (node position + batchDraw, no store until dragend, which then moves the group in one undo). Bend/endpoint/vertex handle drags reflow the label in the same silent store pass (`applyArrowLineLive` Group path), so the label never lags a gesture |
+| Text-tool attach preview | `src/lib/editor/draft-layer.ts`, `editor-canvas.tsx` | with the text tool over a line/arrow, a quiet dashed ring + dot (zoom-invariant, `accentSoft`) marks the exact attach point; projection is bbox pre-filtered and runs imperatively on the move hot path (no React). Click attaches the label at the hovered `t` instead of the midpoint |
+| Cursor/preview sync | `editor-canvas.tsx` | the text tool over a line/arrow keeps the text cursor (hover-select suppressed for attachable strokes) so the preview and cursor agree about what a click does; the preview clears on pointer-leave, tool change, attach, or while the label editor is open |
+
 ### Deferred ⏳ (planned in this spec, not yet built)
 
 - **6.1.3 live rAF canvas layer** — the dedicated direct-canvas stroke layer (Phase A step 2; current rAF-coalesced `queueDrawingUpdate` + outline cache already remove most per-frame cost; this needs visual/perf verification).
