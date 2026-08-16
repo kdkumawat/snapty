@@ -31,7 +31,9 @@ export const TOOL_SHORTCUTS: ToolShortcutDef[] = [
   { id: 'pixelate', label: 'Pixelate', hint: 'Pixelate a region', letter: 'X' },
   { id: 'crop', label: 'Crop', hint: 'Crop the image', letter: 'C' },
   { id: 'eraser', label: 'Eraser', hint: 'Remove annotations', letter: 'E' },
-  { id: 'rounded-rect', label: 'Rounded rectangle', hint: 'Soft-corner box', letter: 'U' },
+  // No 'rounded-rect' tool/shortcut: rounding is configured on the Rectangle
+  // tool (Edges setting). Legacy rounded-rect elements still render; the
+  // ToolType stays for backward compatibility.
   { id: 'spotlight', label: 'Spotlight', hint: 'Dim around a focus area', letter: 'S' },
 ];
 

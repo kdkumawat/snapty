@@ -260,6 +260,11 @@ export class DraftLayer {
 
     if (d.handDrawn && (d.geo.kind === 'rectangle' || d.geo.kind === 'rounded-rect' || d.geo.kind === 'ellipse' || d.geo.kind === 'diamond')) {
       const kind = d.geo.kind === 'ellipse' ? 'ellipse' : d.geo.kind === 'diamond' ? 'diamond' : 'rectangle';
+      // The rough drawable is painted in node-local coordinates, so it must
+      // be generated at (0,0) while the Konva node carries the position —
+      // same convention as the committed RoughKonvaShape. Generating it at
+      // absolute (x,y) AND placing the node at (x,y) doubled the offset, so
+      // the draft preview visibly trailed the pointer while drawing.
       const drawable = generateRoughDrawable({
         kind,
         seed: d.seed,
@@ -269,8 +274,8 @@ export class DraftLayer {
         strokeStyle: s.strokeStyle,
         fillStyle: s.fillStyle,
         roughness: s.roughness ?? 1.25,
-        x,
-        y,
+        x: 0,
+        y: 0,
         width: Math.max(1, w),
         height: Math.max(1, h),
         cornerRadius: s.cornerRadius,

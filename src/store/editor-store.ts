@@ -1021,6 +1021,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         imageLoading: false,
       });
     }
+    // Fit the view in the SAME synchronous pass as the image state: both sets
+    // batch into one render, so the image first paints already centered
+    // instead of flashing at the top-left corner and then jumping to the
+    // fitted position (the canvas effect's deferred re-fit still covers the
+    // not-yet-laid-out case).
+    get().resetView();
   },
 
   clearImage: () => {

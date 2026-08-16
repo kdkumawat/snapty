@@ -1655,7 +1655,11 @@ const EditorCanvas: React.FC = () => {
           strokeStyle: s.strokeStyle,
           fillStyle: s.fillStyle,
           roughness: s.roughness,
-          cornerRadius: s.activeTool === 'rounded-rect' ? s.cornerRadius * scale : 0,
+          // Rounded corners are configured on the Rectangle tool (Edges
+          // setting); legacy rounded-rect elements keep their own value.
+          cornerRadius: (s.activeTool === 'rectangle' || s.activeTool === 'rounded-rect')
+            ? s.cornerRadius * scale
+            : 0,
           opacity: s.opacity,
         },
         extra: {
