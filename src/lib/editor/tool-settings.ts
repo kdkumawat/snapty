@@ -124,6 +124,7 @@ export const TOOL_SETTINGS: Record<ToolType, SettingKey[]> = {
 
   text: ['strokeColor', 'fontFamily', 'fontStyle', 'textAlign', 'textVerticalAlign', 'fontSize', 'opacity'],
   step: ['strokeColor', 'stepRadius', 'stepNumbering', 'opacity'],
+  callout: ['strokeColor', 'fillColor', 'strokeWidth', 'strokeStyle', 'fillStyle', 'roughness', 'cornerRadius', 'opacity'],
 
   magnifier: ['strokeColor', 'strokeWidth', 'strokeStyle', 'roughness', 'magnification', 'opacity'],
 

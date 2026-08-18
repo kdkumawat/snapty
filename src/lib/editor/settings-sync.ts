@@ -80,6 +80,10 @@ export function applySettingToElement(
     }
     case 'highlighterWidth': {
       const v = num(value);
+      return v === null ? null : { strokeWidth: Math.max(0.5, v * s) };
+    }
+    case 'highlighterWidth': {
+      const v = num(value);
       return v === null ? null : { strokeWidth: Math.max(2, v * s) };
     }
     case 'fontSize': {

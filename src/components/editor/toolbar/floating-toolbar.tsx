@@ -5,7 +5,7 @@ import { motion } from 'framer-motion';
 import {
   MousePointer2, Hand, MoveUpRight, Square, Circle,
   Diamond, Minus, Pencil, Highlighter, Type, Droplets, Grid3x3, ListOrdered,
-  Crop, Search, Eraser, ScanSearch, ScanText,
+  Crop, Search, Eraser, ScanSearch, ScanText, MessageCircle,
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { FloatingSurface } from '@/components/editor/ui/floating-surface';
@@ -39,6 +39,7 @@ const tools: ToolDef[] = [
   { id: 'highlighter', label: 'Highlighter', icon: <Highlighter className="w-[18px] h-[18px]" /> },
   { id: 'pixelate', label: 'Pixelate', icon: <Grid3x3 className="w-[18px] h-[18px]" /> },
   { id: 'diamond', label: 'Diamond', icon: <Diamond className="w-[18px] h-[18px]" /> },
+  { id: 'callout', label: 'Callout', icon: <MessageCircle className="w-[18px] h-[18px]" /> },
   { id: 'crop', label: 'Crop', icon: <Crop className="w-[18px] h-[18px]" /> },
   { id: 'eraser', label: 'Eraser', icon: <Eraser className="w-[18px] h-[18px]" /> },
   { id: 'hand', label: 'Hand', icon: <Hand className="w-[18px] h-[18px]" /> },
@@ -194,6 +195,7 @@ const TOOL_TIPS: Record<string, React.ReactNode> = {
   crop: <>Drag a crop region, then confirm.</>,
   step: <>Click to place numbered badges. <Kbd>N</Kbd> again bumps the start number.</>,
   eraser: <>Drag over annotations to erase.</>,
+  callout: <>Drag to draw a callout bubble. Use the pointer handle to aim the tail in any direction. <Kbd>C</Kbd> again cycles fill style.</>,
 };
 
 export function ToolbarTips() {

@@ -37,7 +37,8 @@ export type DraftBoxKind =
   | 'blur'
   | 'pixelate'
   | 'spotlight'
-  | 'crop';
+  | 'crop'
+  | 'callout';
 
 export interface DraftBoxStyle {
   stroke?: string;
@@ -359,6 +360,67 @@ export class DraftLayer {
         });
         this.replaceNode(diamond);
       }
+      this.draw();
+      return;
+    }
+
+    // Callout: rounded rectangle + triangular pointer (default bottom-left).
+    if (d.geo.kind === 'callout') {
+      const cornerR = Math.max(0, s.cornerRadius ?? 0);
+      const pointerLen = 16;
+      const pointerW = 12;
+      // Pointer sits at 30% along the bottom edge, pointing down-left.
+      const px1 = x + w * 0.3;
+      const py1 = y + h;
+      const px2 = px1 + pointerW;
+      const py2 = py1;
+      const pxTip = px1 - pointerLen * 0.4;
+      const pyTip = py1 + pointerLen;
+
+      const node = new Konva.Shape({
+        x, y,
+        width: Math.max(1, w),
+        height: Math.max(1, h),
+        opacity,
+        listening: false,
+        sceneFunc: (ctx, shape) => {
+          const c = ctx as unknown as CanvasRenderingContext2D;
+          c.beginPath();
+          // Rounded rect with cut for pointer: start from top-left, go CW
+          // Top edge
+          c.moveTo(cornerR, 0);
+          c.lineTo(w - cornerR, 0);
+          c.arcTo(w, 0, w, cornerR, cornerR);
+          // Right edge
+          c.lineTo(w, h - cornerR);
+          c.arcTo(w, h, w - cornerR, h, cornerR);
+          // Bottom edge (right part)
+          c.lineTo(px2, py1 - y);
+          // Pointer tip
+          c.lineTo(pxTip, pyTip - y);
+          // Pointer left base
+          c.lineTo(px1, py1 - y);
+          // Bottom edge (left part)
+          c.lineTo(cornerR, h);
+          c.arcTo(0, h, 0, h - cornerR, cornerR);
+          // Left edge
+          c.lineTo(0, cornerR);
+          c.arcTo(0, 0, cornerR, 0, cornerR);
+          c.closePath();
+
+          if (s.fill && s.fill !== 'transparent') {
+            c.fillStyle = s.fill;
+            c.fill();
+          }
+          if (s.stroke && s.strokeWidth) {
+            c.strokeStyle = s.stroke;
+            c.lineWidth = s.strokeWidth;
+            c.setLineDash(dashOf(s.strokeStyle) ?? []);
+            c.stroke();
+          }
+        },
+      });
+      this.replaceNode(node);
       this.draw();
       return;
     }

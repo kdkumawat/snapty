@@ -48,6 +48,7 @@ import MagnifierKonva from '@/components/editor/canvas/magnifier-konva';
 import DeviceFrameKonva from '@/components/editor/canvas/device-frame-konva';
 import ShapeSelectionOverlay, { isShapeOverlayType } from '@/components/editor/canvas/shape-selection-overlay';
 import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
+import { computeCalloutPointerPath } from '@/lib/editor/callout-pointer';
 import { arrowHeadPoints, generateArrowHead, paintDrawable } from '@/lib/rough-renderer';
 import type { Drawable } from 'roughjs/bin/core';
 import type { RoughDrawInput } from '@/lib/rough-renderer';
@@ -61,7 +62,7 @@ import {
 import type {
   EditorElement, ShapeElement, ArrowElement, LineElement, FixedPointBinding,
   PencilElement, CircleElement, TextElement, StepElement, DiamondElement,
-  MagnifierElement, ToolType,
+  CalloutElement, MagnifierElement, ToolType,
 } from '@/types/editor';
 import {
   HANDWRITTEN_FONT, BADGE_FONT, TEXT_PADDING, TEXT_LINE_HEIGHT, fontFamilyForCanvas,
@@ -320,6 +321,12 @@ function toolCursorSVG(tool: ToolType, opts: CursorOpts = {}): string {
         <rect x="7" y="9" width="16" height="14" rx="2" transform="rotate(-28 15 16)" fill="${halo}"/>
         <rect x="8" y="10" width="14" height="12" rx="2" transform="rotate(-28 15 16)" fill="#f87171"/>
         <rect x="10" y="12" width="10" height="5" rx="1" transform="rotate(-28 15 16)" fill="#fecaca"/>
+      </svg>`;
+    case 'callout':
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <rect x="4" y="4" width="22" height="18" rx="3" fill="${halo}" stroke="${halo}" stroke-width="4"/>
+        <rect x="5" y="5" width="20" height="16" rx="2" fill="none" stroke="${color}" stroke-width="1.5"/>
+        <polygon points="10,22 14,22 8,29" fill="${color}"/>
       </svg>`;
     case 'magnifier':
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
@@ -1659,6 +1666,25 @@ const EditorCanvas: React.FC = () => {
         extra: {},
       };
       draftLayerRef.current?.beginBox(geo, draftBoxStyleRef.current.style, base.id as string, handDrawn);
+    } else if (s.activeTool === 'callout') {
+      const geo: DraftBoxGeo = { kind: 'callout', ox: pos.x, oy: pos.y, w: 0, h: 0 };
+      draftBoxGeoRef.current = geo;
+      draftBoxStyleRef.current = {
+        id: base.id as string,
+        type: 'callout',
+        style: {
+          stroke: s.strokeColor,
+          fill: s.fillColor,
+          strokeWidth: sw,
+          strokeStyle: s.strokeStyle,
+          fillStyle: s.fillStyle,
+          roughness: s.roughness,
+          cornerRadius: s.cornerRadius * scale,
+          opacity: s.opacity,
+        },
+        extra: {},
+      };
+      draftLayerRef.current?.beginBox(geo, draftBoxStyleRef.current.style, base.id as string, handDrawn);
     } else {
       // rectangle, rounded-rect, blur, pixelate, spotlight
       const isEffect = ['blur', 'pixelate', 'spotlight'].includes(s.activeTool);
@@ -2139,7 +2165,8 @@ const EditorCanvas: React.FC = () => {
           fill: isEffect ? undefined : box.style.fill,
           strokeWidth: isEffect ? 0 : box.style.strokeWidth,
           cornerRadius: box.style.cornerRadius,
-        } as ShapeElement;
+          ...(box.type === 'callout' ? { pointerDirection: 'bottom' as const } : {}),
+        } as ShapeElement | CalloutElement;
       }
       draftBoxGeoRef.current = null;
       draftBoxStyleRef.current = null;
@@ -4545,6 +4572,64 @@ const EditorCanvas: React.FC = () => {
               height={r * 2}
               offsetX={r}
               offsetY={r}
+            />
+          </Group>
+        );
+      }
+
+      case 'callout': {
+        const co = el as CalloutElement;
+        const cw = Math.max(1, co.width);
+        const ch = Math.max(1, co.height);
+        const coStroke = co.stroke ?? '#000000';
+        const coStrokeW = co.strokeWidth ?? 2;
+        const coFill = co.fill ?? 'rgba(255,255,255,0.92)';
+        const coCornerRadius = co.cornerRadius ?? 8;
+        const pDir = co.pointerDirection ?? 'bottom';
+        const pOffset = co.pointerOffset ?? 0.5;
+        const pLength = co.pointerLength ?? 16;
+        const pWidth = co.pointerWidth ?? 20;
+        const pointer = computeCalloutPointerPath(cw, ch, pDir, pOffset, pLength, pWidth);
+        const cornerR = Math.min(coCornerRadius, cw / 2, ch / 2);
+        return (
+          <Group key={co.id} {...baseProps} listening={true}>
+            <Shape
+              sceneFunc={(ctx) => {
+                ctx.beginPath();
+                ctx.moveTo(cornerR, 0);
+                ctx.lineTo(cw - cornerR, 0);
+                ctx.arcTo(cw, 0, cw, cornerR, cornerR);
+                ctx.lineTo(cw, ch - cornerR);
+                ctx.arcTo(cw, ch, cw - cornerR, ch, cornerR);
+                ctx.lineTo(cornerR, ch);
+                ctx.arcTo(0, ch, 0, ch - cornerR, cornerR);
+                ctx.lineTo(0, cornerR);
+                ctx.arcTo(0, 0, cornerR, 0, cornerR);
+                ctx.closePath();
+                ctx.fillStyle = coFill;
+                ctx.fill();
+                ctx.strokeStyle = coStroke;
+                ctx.lineWidth = coStrokeW;
+                ctx.stroke();
+                if (pointer) {
+                  ctx.beginPath();
+                  ctx.moveTo(pointer.base1.x, pointer.base1.y);
+                  ctx.lineTo(pointer.tip.x, pointer.tip.y);
+                  ctx.lineTo(pointer.base2.x, pointer.base2.y);
+                  ctx.closePath();
+                  ctx.fillStyle = coFill;
+                  ctx.fill();
+                  ctx.strokeStyle = coStroke;
+                  ctx.lineWidth = coStrokeW;
+                  ctx.stroke();
+                }
+              }}
+              hitFunc={(ctx, shape) => {
+                ctx.beginPath();
+                ctx.rect(-pLength, -pLength, cw + pLength * 2, ch + pLength * 2);
+                ctx.closePath();
+                ctx.fillStrokeShape(shape);
+              }}
             />
           </Group>
         );

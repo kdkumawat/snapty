@@ -32,6 +32,7 @@ export function cycleToolSetting(tool: ToolType): void {
     case 'rounded-rect':
     case 'circle':
     case 'diamond':
+    case 'callout':
       s.setFillStyle(nextIn(FILL_STYLES, s.fillStyle));
       break;
     case 'pencil':
