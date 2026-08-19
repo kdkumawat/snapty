@@ -447,10 +447,24 @@ export default function ShapeSelectionOverlay({
     const cw = d.calloutBase.width;
     const ch = d.calloutBase.height;
     const { direction, offset } = snapCalloutPointer(lx, ly, cw, ch);
-    const co = el as CalloutElement;
+    // Compute pointer length from the distance between the drag tip
+    // and the nearest box boundary, clamped to [8, 100].
+    let distFromEdge = 0;
+    switch (direction) {
+      case 'top': distFromEdge = -ly; break;
+      case 'bottom': distFromEdge = ly - ch; break;
+      case 'left': distFromEdge = -lx; break;
+      case 'right': distFromEdge = lx - cw; break;
+      case 'top-left': distFromEdge = Math.hypot(lx, ly); break;
+      case 'top-right': distFromEdge = Math.hypot(lx - cw, ly); break;
+      case 'bottom-left': distFromEdge = Math.hypot(lx, ly - ch); break;
+      case 'bottom-right': distFromEdge = Math.hypot(lx - cw, ly - ch); break;
+    }
+    const newLength = Math.max(8, Math.min(100, Math.round(distFromEdge)));
     useEditorStore.getState().updateElement(el.id, {
       pointerDirection: direction,
       pointerOffset: offset,
+      pointerLength: newLength,
     } as Partial<CalloutElement>);
     node.getLayer()?.batchDraw();
   };

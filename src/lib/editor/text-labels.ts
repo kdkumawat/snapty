@@ -31,7 +31,7 @@ import { controlPoint } from '@/lib/editor/curve';
 
 export type LabelAnchor = { x: number; y: number; width: number; height?: number };
 
-const CLOSED_SHAPES = new Set(['rectangle', 'rounded-rect', 'circle', 'diamond']);
+const CLOSED_SHAPES = new Set(['rectangle', 'rounded-rect', 'circle', 'diamond', 'callout']);
 
 /**
  * True when `groupId` describes a shape↔label pair: exactly one text member
