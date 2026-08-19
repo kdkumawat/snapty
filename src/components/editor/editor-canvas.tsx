@@ -48,7 +48,7 @@ import MagnifierKonva from '@/components/editor/canvas/magnifier-konva';
 import DeviceFrameKonva from '@/components/editor/canvas/device-frame-konva';
 import ShapeSelectionOverlay, { isShapeOverlayType } from '@/components/editor/canvas/shape-selection-overlay';
 import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
-import { computeCalloutPointerPath } from '@/lib/editor/callout-pointer';
+import { calloutPath } from '@/lib/editor/callout-pointer';
 import { arrowHeadPoints, generateArrowHead, paintDrawable } from '@/lib/rough-renderer';
 import type { Drawable } from 'roughjs/bin/core';
 import type { RoughDrawInput } from '@/lib/rough-renderer';
@@ -4581,47 +4581,26 @@ const EditorCanvas: React.FC = () => {
         const co = el as CalloutElement;
         const cw = Math.max(1, co.width);
         const ch = Math.max(1, co.height);
-        const coStroke = co.stroke ?? '#000000';
-        const coStrokeW = co.strokeWidth ?? 2;
-        const coFill = co.fill ?? 'rgba(255,255,255,0.92)';
+        const coFill = co.fill ?? '#3b82f6';
+        const coStroke = co.stroke ?? 'none';
+        const coStrokeW = co.strokeWidth ?? 0;
         const coCornerRadius = co.cornerRadius ?? 8;
         const pDir = co.pointerDirection ?? 'bottom';
         const pOffset = co.pointerOffset ?? 0.5;
-        const pLength = co.pointerLength ?? 16;
+        const pLength = co.pointerLength ?? 24;
         const pWidth = co.pointerWidth ?? 20;
-        const pointer = computeCalloutPointerPath(cw, ch, pDir, pOffset, pLength, pWidth);
-        const cornerR = Math.min(coCornerRadius, cw / 2, ch / 2);
+        const pathD = calloutPath(cw, ch, pDir, pOffset, pLength, pWidth, coCornerRadius);
         return (
           <Group key={co.id} {...baseProps} listening={true}>
             <Shape
               sceneFunc={(ctx) => {
-                ctx.beginPath();
-                ctx.moveTo(cornerR, 0);
-                ctx.lineTo(cw - cornerR, 0);
-                ctx.arcTo(cw, 0, cw, cornerR, cornerR);
-                ctx.lineTo(cw, ch - cornerR);
-                ctx.arcTo(cw, ch, cw - cornerR, ch, cornerR);
-                ctx.lineTo(cornerR, ch);
-                ctx.arcTo(0, ch, 0, ch - cornerR, cornerR);
-                ctx.lineTo(0, cornerR);
-                ctx.arcTo(0, 0, cornerR, 0, cornerR);
-                ctx.closePath();
+                const svgPath = new Path2D(pathD);
                 ctx.fillStyle = coFill;
-                ctx.fill();
-                ctx.strokeStyle = coStroke;
-                ctx.lineWidth = coStrokeW;
-                ctx.stroke();
-                if (pointer) {
-                  ctx.beginPath();
-                  ctx.moveTo(pointer.base1.x, pointer.base1.y);
-                  ctx.lineTo(pointer.tip.x, pointer.tip.y);
-                  ctx.lineTo(pointer.base2.x, pointer.base2.y);
-                  ctx.closePath();
-                  ctx.fillStyle = coFill;
-                  ctx.fill();
+                ctx.fill(svgPath);
+                if (coStroke && coStroke !== 'none' && coStrokeW > 0) {
                   ctx.strokeStyle = coStroke;
                   ctx.lineWidth = coStrokeW;
-                  ctx.stroke();
+                  ctx.stroke(svgPath);
                 }
               }}
               hitFunc={(ctx, shape) => {

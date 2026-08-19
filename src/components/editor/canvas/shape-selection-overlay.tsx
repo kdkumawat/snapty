@@ -7,7 +7,7 @@ import type Konva from 'konva';
 import type { EditorElement, ShapeElement, StepElement, CalloutElement, CalloutPointerDirection } from '@/types/editor';
 import { getSelectionTheme, handleHoverEvents, selectionHandleProps } from '@/lib/selection-theme';
 import type { Bounds } from '@/lib/editor/snap-guides';
-import { computeCalloutPointerPath } from '@/lib/editor/callout-pointer';
+import { calloutPointerTip as getCalloutPointerTip } from '@/lib/editor/callout-pointer';
 
 /**
  * Custom shape selection/transform overlay (Excalidraw-style).
@@ -367,17 +367,16 @@ export default function ShapeSelectionOverlay({
   const calloutNodeRef = useRef<Konva.Circle>(null);
 
   /** Compute the pointer tip position in overlay-local (unrotated) coords. */
-  const calloutPointerTip = (): { x: number; y: number } | null => {
+  const calloutPointerTipPos = (): { x: number; y: number } | null => {
     if (!isCallout) return null;
     const co = el as CalloutElement;
     const cw = Math.max(1, baseBox.w);
     const ch = Math.max(1, baseBox.h);
     const dir = co.pointerDirection ?? 'bottom';
     const offset = co.pointerOffset ?? 0.5;
-    const pLen = co.pointerLength ?? 16;
+    const pLen = co.pointerLength ?? 24;
     const pWid = co.pointerWidth ?? 20;
-    const path = computeCalloutPointerPath(cw, ch, dir, offset, pLen, pWid);
-    return path ? { x: path.tip.x, y: path.tip.y } : null;
+    return getCalloutPointerTip(cw, ch, dir, offset, pLen, pWid);
   };
 
   /** Snap a pointer position to the nearest callout direction + offset. */
@@ -541,7 +540,7 @@ export default function ShapeSelectionOverlay({
           />
           {/* Callout pointer drag handle — sits at the pointer tip. */}
           {isCallout && (() => {
-            const tip = calloutPointerTip();
+            const tip = calloutPointerTipPos();
             if (!tip) return null;
             return (
               <Circle
