@@ -15,6 +15,7 @@ export type ToolType =
   | 'pixelate'
   | 'spotlight'
   | 'step'
+  | 'callout'
   | 'eraser'
   | 'crop';
 
@@ -246,6 +247,7 @@ export type EditorElement =
   | CircleElement
   | TextElement
   | StepElement
+  | CalloutElement
   | MagnifierElement;
 
 export interface CanvasStyle {
@@ -322,6 +324,42 @@ export const BADGE_FONT = '-apple-system, BlinkMacSystemFont, sans-serif';
  */
 export const TEXT_PADDING = 4;
 export const TEXT_LINE_HEIGHT = 1.25;
+
+export type CalloutPointerDirection = 'top' | 'top-right' | 'right' | 'bottom-right' | 'bottom' | 'bottom-left' | 'left' | 'top-left';
+
+export interface CalloutElement extends BaseElement {
+  type: 'callout';
+  width: number;
+  height: number;
+  fill?: string;
+  stroke?: string;
+  strokeWidth?: number;
+  cornerRadius?: number;
+  /**
+   * Direction the pointer (tail) extends outward from the box.
+   * 'bottom' means the pointer points downward below the box,
+   * 'top' means upward above the box, etc.
+   */
+  pointerDirection: CalloutPointerDirection;
+  /**
+   * Position of the pointer along the edge it sits on, as a fraction (0..1).
+   * 0 = left/top edge start, 1 = right/bottom edge end.
+   * For 'top' and 'bottom' directions: 0 = left corner, 1 = right corner.
+   * For 'left' and 'right' directions: 0 = top corner, 1 = bottom corner.
+   * For diagonal directions (e.g. 'top-right'), the pointer sits at the corner.
+   */
+  pointerOffset: number;
+  /**
+   * How far the pointer extends outward from the box edge (image px).
+   * Defaults to 16 (scaled by image tool scale).
+   */
+  pointerLength?: number;
+  /**
+   * Width of the base of the triangular pointer (image px).
+   * Defaults to 20 (scaled by image tool scale).
+   */
+  pointerWidth?: number;
+}
 
 export interface MagnifierElement extends BaseElement {
   type: 'magnifier';

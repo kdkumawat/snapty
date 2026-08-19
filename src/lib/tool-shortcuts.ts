@@ -35,6 +35,7 @@ export const TOOL_SHORTCUTS: ToolShortcutDef[] = [
   // tool (Edges setting). Legacy rounded-rect elements still render; the
   // ToolType stays for backward compatibility.
   { id: 'spotlight', label: 'Spotlight', hint: 'Dim around a focus area', letter: 'S' },
+  { id: 'callout', label: 'Callout', hint: 'Speech bubble with configurable pointer', letter: 'U' },
 ];
 
 export const letterToTool: Record<string, ToolType> = Object.fromEntries(

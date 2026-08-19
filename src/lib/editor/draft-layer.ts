@@ -17,6 +17,7 @@
 
 import Konva from 'konva';
 import type { FillStyle, StrokeStyle } from '@/types/editor';
+import { calloutPath } from './callout-pointer';
 import { computeFreehandOutline, type FreehandTool } from './freehand';
 import { handDrawnPolyline } from '../hand-drawn';
 import { routeElbow } from './elbow';
@@ -37,7 +38,8 @@ export type DraftBoxKind =
   | 'blur'
   | 'pixelate'
   | 'spotlight'
-  | 'crop';
+  | 'crop'
+  | 'callout';
 
 export interface DraftBoxStyle {
   stroke?: string;
@@ -75,6 +77,13 @@ export interface DraftBoxGeo {
   h: number;
   /** True when drawing from the center (alt-drag). */
   centered?: boolean;
+  /** Extra data for callout pointer properties. */
+  extra?: {
+    pointerDirection?: import('@/types/editor').CalloutPointerDirection;
+    pointerLength?: number;
+    pointerWidth?: number;
+    pointerOffset?: number;
+  };
 }
 
 export interface DraftSegmentGeo {
@@ -359,6 +368,41 @@ export class DraftLayer {
         });
         this.replaceNode(diamond);
       }
+      this.draw();
+      return;
+    }
+
+    // Callout: single continuous silhouette (Shottr-style).
+    if (d.geo.kind === 'callout') {
+      const cornerR = Math.max(0, s.cornerRadius ?? 12);
+      const pointerLen = d.geo.extra?.pointerLength ?? 24;
+      const pointerW = d.geo.extra?.pointerWidth ?? 20;
+      const pDir = (d.geo.extra?.pointerDirection ?? 'bottom-left') as import('@/types/editor').CalloutPointerDirection;
+      const pOffset = d.geo.extra?.pointerOffset ?? 0.5;
+      const pathD = calloutPath(w, h, pDir, pOffset, pointerLen, pointerW, cornerR);
+
+      const node = new Konva.Shape({
+        x, y,
+        width: Math.max(1, w),
+        height: Math.max(1, h),
+        opacity,
+        listening: false,
+        sceneFunc: (ctx, shape) => {
+          const c = ctx as unknown as CanvasRenderingContext2D;
+          const svgPath = new Path2D(pathD);
+          if (s.fill && s.fill !== 'transparent') {
+            c.fillStyle = s.fill;
+            c.fill(svgPath);
+          }
+          if (s.stroke && s.strokeWidth) {
+            c.strokeStyle = s.stroke;
+            c.lineWidth = s.strokeWidth;
+            c.setLineDash(dashOf(s.strokeStyle) ?? []);
+            c.stroke(svgPath);
+          }
+        },
+      });
+      this.replaceNode(node);
       this.draw();
       return;
     }

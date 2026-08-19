@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import { useEditorStore } from '@/store/editor-store';
 import { Circle, Group, Line, Rect } from 'react-konva';
 import type Konva from 'konva';
-import type { EditorElement, ShapeElement, StepElement } from '@/types/editor';
+import type { EditorElement, ShapeElement, StepElement, CalloutElement, CalloutPointerDirection } from '@/types/editor';
 import { getSelectionTheme, handleHoverEvents, selectionHandleProps } from '@/lib/selection-theme';
 import type { Bounds } from '@/lib/editor/snap-guides';
+import { calloutPointerTip as getCalloutPointerTip } from '@/lib/editor/callout-pointer';
 
 /**
  * Custom shape selection/transform overlay (Excalidraw-style).
@@ -75,7 +77,7 @@ const ALL_ANCHORS: OverlayAnchor[] = [
 ];
 
 /** Box-shaped types the overlay owns (text keeps the Transformer re-wrap UX). */
-const OVERLAY_TYPES = new Set(['rectangle', 'rounded-rect', 'circle', 'diamond', 'step']);
+const OVERLAY_TYPES = new Set(['rectangle', 'rounded-rect', 'circle', 'diamond', 'step', 'callout']);
 
 export function isShapeOverlayType(type: string): boolean {
   return OVERLAY_TYPES.has(type);
@@ -106,7 +108,9 @@ export function elementSelectionBox(el: EditorElement): Bounds {
 }
 
 interface DragState {
-  kind: 'resize' | 'rotate';
+  kind: 'resize' | 'rotate' | 'callout-pointer';
+  /** Callout pointer drag: current element state snapshot. */
+  calloutBase?: { width: number; height: number; pointerOffset: number; pointerLength: number; pointerWidth: number; pointerDirection: CalloutPointerDirection };
   /** Visual box (already includes any residual element scale). */
   base: Bounds;
   rotDeg: number;
@@ -357,6 +361,121 @@ export default function ShapeSelectionOverlay({
     if (node) onCommit(el.id, node);
   };
 
+  // --- Callout pointer handle ---
+
+  const isCallout = el.type === 'callout';
+  const calloutNodeRef = useRef<Konva.Circle>(null);
+
+  /** Compute the pointer tip position in overlay-local (unrotated) coords. */
+  const calloutPointerTipPos = (): { x: number; y: number } | null => {
+    if (!isCallout) return null;
+    const co = el as CalloutElement;
+    const cw = Math.max(1, baseBox.w);
+    const ch = Math.max(1, baseBox.h);
+    const dir = co.pointerDirection ?? 'bottom-left';
+    const offset = co.pointerOffset ?? 0.5;
+    const pLen = co.pointerLength ?? 24;
+    const pWid = co.pointerWidth ?? 20;
+    return getCalloutPointerTip(cw, ch, dir, offset, pLen, pWid);
+  };
+
+  /** Snap a pointer position to the nearest callout direction + offset. */
+  const snapCalloutPointer = (
+    px: number, py: number, cw: number, ch: number,
+  ): { direction: CalloutPointerDirection; offset: number } => {
+    // Determine primary direction from the angle relative to box center
+    const cx = cw / 2;
+    const cy = ch / 2;
+    const angle = Math.atan2(py - cy, px - cx);
+    const deg = ((angle * 180) / Math.PI + 360) % 360;
+    // Map angle to one of 8 directions
+    let direction: CalloutPointerDirection;
+    if (deg >= 337.5 || deg < 22.5) direction = 'right';
+    else if (deg < 67.5) direction = 'bottom-right';
+    else if (deg < 112.5) direction = 'bottom';
+    else if (deg < 157.5) direction = 'bottom-left';
+    else if (deg < 202.5) direction = 'left';
+    else if (deg < 247.5) direction = 'top-left';
+    else if (deg < 292.5) direction = 'top';
+    else direction = 'top-right';
+    // Compute offset along the edge (0..1)
+    let offset = 0.5;
+    if (direction === 'bottom' || direction === 'top') {
+      offset = cw > 0 ? Math.max(0, Math.min(1, px / cw)) : 0.5;
+    } else if (direction === 'left' || direction === 'right') {
+      offset = ch > 0 ? Math.max(0, Math.min(1, py / ch)) : 0.5;
+    }
+    return { direction, offset };
+  };
+
+  const startCalloutPointer = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    e.cancelBubble = true;
+    const co = el as CalloutElement;
+    dragRef.current = {
+      kind: 'callout-pointer',
+      base: baseBox,
+      rotDeg,
+      uniform,
+      centered: false,
+      calloutBase: {
+        width: baseBox.w,
+        height: baseBox.h,
+        pointerOffset: co.pointerOffset ?? 0.5,
+        pointerLength: co.pointerLength ?? 16,
+        pointerWidth: co.pointerWidth ?? 20,
+        pointerDirection: (co.pointerDirection ?? 'bottom-left') as CalloutPointerDirection,
+      },
+    };
+    setHandleActive(e.target as Konva.Circle);
+  };
+
+  const moveCalloutPointer = (e: Konva.KonvaEventObject<DragEvent>) => {
+    const d = dragRef.current;
+    if (!d || d.kind !== 'callout-pointer' || !d.calloutBase) return;
+    const P = toImagePoint();
+    if (!P) return;
+    const node = getNode(el.id);
+    if (!node) return;
+    // Convert pointer to element-local coords (account for node position)
+    const rad = (d.rotDeg * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const dx = P.x - (d.base.x);
+    const dy = P.y - (d.base.y);
+    const lx = dx * cos + dy * sin;
+    const ly = -dx * sin + dy * cos;
+    const cw = d.calloutBase.width;
+    const ch = d.calloutBase.height;
+    const { direction, offset } = snapCalloutPointer(lx, ly, cw, ch);
+    // Compute pointer length from the distance between the drag tip
+    // and the nearest box boundary, clamped to [8, 100].
+    let distFromEdge = 0;
+    switch (direction) {
+      case 'top': distFromEdge = -ly; break;
+      case 'bottom': distFromEdge = ly - ch; break;
+      case 'left': distFromEdge = -lx; break;
+      case 'right': distFromEdge = lx - cw; break;
+      case 'top-left': distFromEdge = Math.hypot(lx, ly); break;
+      case 'top-right': distFromEdge = Math.hypot(lx - cw, ly); break;
+      case 'bottom-left': distFromEdge = Math.hypot(lx, ly - ch); break;
+      case 'bottom-right': distFromEdge = Math.hypot(lx - cw, ly - ch); break;
+    }
+    const newLength = Math.max(8, Math.min(100, Math.round(distFromEdge)));
+    useEditorStore.getState().updateElement(el.id, {
+      pointerDirection: direction,
+      pointerOffset: offset,
+      pointerLength: newLength,
+    } as Partial<CalloutElement>);
+    node.getLayer()?.batchDraw();
+  };
+
+  const endCalloutPointer = (e: Konva.KonvaEventObject<DragEvent>) => {
+    moveCalloutPointer(e);
+    dragRef.current = null;
+    setHandleIdle(e.target as Konva.Circle);
+    onCommit(el.id, getNode(el.id)!);
+  };
+
   if (baseBox.w < MIN_SIZE || baseBox.h < MIN_SIZE) return null;
 
   return (
@@ -433,6 +552,35 @@ export default function ShapeSelectionOverlay({
             onDragEnd={endRotate}
             {...hover}
           />
+          {/* Callout pointer drag handle — sits at the pointer tip. */}
+          {isCallout && (() => {
+            const tip = calloutPointerTipPos();
+            if (!tip) return null;
+            return (
+              <Circle
+                ref={calloutNodeRef}
+                name="edit-handle"
+                x={tip.x}
+                y={tip.y}
+                radius={5}
+                fill={theme.accent}
+                stroke="rgba(255, 255, 255, 0.94)"
+                strokeWidth={1.5}
+                shadowColor={theme.shadow}
+                shadowBlur={3}
+                shadowOpacity={0.16}
+                shadowOffset={{ x: 0, y: 0.5 }}
+                hitStrokeWidth={18}
+                cursor="move"
+                draggable
+                onMouseDown={(e) => { e.cancelBubble = true; }}
+                onDragStart={startCalloutPointer}
+                onDragMove={moveCalloutPointer}
+                onDragEnd={endCalloutPointer}
+                {...hover}
+              />
+            );
+          })()}
         </>
       )}
     </Group>
