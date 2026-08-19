@@ -291,7 +291,7 @@ export function calloutFullBounds(
   h: number,
   direction: CalloutPointerDirection,
   pointerLength: number,
-): { x: number; y: number; width: number; height: number } {
+): { x: number; y: number; w: number; h: number } {
   let minX = x;
   let minY = y;
   let maxX = x + w;
@@ -331,8 +331,8 @@ export function calloutFullBounds(
   return {
     x: minX,
     y: minY,
-    width: maxX - minX,
-    height: maxY - minY,
+    w: maxX - minX,
+    h: maxY - minY,
   };
 }
 

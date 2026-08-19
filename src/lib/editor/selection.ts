@@ -2,6 +2,7 @@ import type { EditorElement } from '@/types/editor';
 import type { Bounds } from '@/lib/editor/snap-guides';
 import { magnifierBounds, type ImageSize } from '@/lib/editor/magnifier-geometry';
 import { quadBounds, polylineBounds } from '@/lib/editor/curve';
+import { calloutFullBounds } from '@/lib/editor/callout-pointer';
 
 export function getElementBounds(el: EditorElement, imageSize?: ImageSize): Bounds {
   const stroke = ('strokeWidth' in el ? Number((el as { strokeWidth?: number }).strokeWidth) : 0) || 0;
@@ -67,6 +68,19 @@ export function getElementBounds(el: EditorElement, imageSize?: ImageSize): Boun
     case 'magnifier':
       // Shares the rendering geometry so the bubble's actual placement is covered.
       return magnifierBounds(el, imageSize, pad);
+    case 'callout': {
+      const co = el as { width: number; height: number; pointerDirection?: string; pointerLength?: number };
+      const cw = Math.abs(co.width);
+      const ch = Math.abs(co.height);
+      const cx = co.width < 0 ? el.x + co.width : el.x;
+      const cy = co.height < 0 ? el.y + co.height : el.y;
+      // Use full bounds including pointer area for selection and export.
+      return calloutFullBounds(
+        cx - pad, cy - pad, cw + pad * 2, ch + pad * 2,
+        (co.pointerDirection ?? 'bottom-left') as any,
+        co.pointerLength ?? 16,
+      );
+    }
   }
   return { x: (el as EditorElement).x, y: (el as EditorElement).y, w: 0, h: 0 };
 }

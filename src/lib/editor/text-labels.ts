@@ -8,7 +8,7 @@ import type {
   TextElement,
 } from '@/types/editor';
 import { getElementBounds } from '@/lib/editor/selection';
-import { TEXT_PADDING, TEXT_LINE_HEIGHT, HANDWRITTEN_FONT } from '@/types/editor';
+import { TEXT_PADDING, TEXT_LINE_HEIGHT, HANDWRITTEN_FONT, type CalloutElement } from '@/types/editor';
 import { controlPoint } from '@/lib/editor/curve';
 
 /**
@@ -87,6 +87,18 @@ export function innerBoxOf(
   imageSize: { width: number; height: number },
   pad: number,
 ): { x: number; y: number; w: number; h: number } {
+  // For callouts, center text in the body only (exclude pointer area)
+  // so text sits in the visible rounded-rect, not shifted by the tail.
+  if (el.type === 'callout') {
+    const co = el as CalloutElement;
+    const cw = Math.abs(co.width);
+    const ch = Math.abs(co.height);
+    const cx = co.width < 0 ? el.x + co.width : el.x;
+    const cy = co.height < 0 ? el.y + co.height : el.y;
+    const w = Math.max(20, cw - pad * 2);
+    const h = Math.max(20, ch - pad * 2);
+    return { x: cx + pad, y: cy + pad, w, h };
+  }
   const bounds = getElementBounds(el, imageSize);
   const w = Math.max(20, bounds.w - pad * 2);
   const h = Math.max(20, bounds.h - pad * 2);
