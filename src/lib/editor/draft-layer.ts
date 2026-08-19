@@ -77,6 +77,13 @@ export interface DraftBoxGeo {
   h: number;
   /** True when drawing from the center (alt-drag). */
   centered?: boolean;
+  /** Extra data for callout pointer properties. */
+  extra?: {
+    pointerDirection?: import('@/types/editor').CalloutPointerDirection;
+    pointerLength?: number;
+    pointerWidth?: number;
+    pointerOffset?: number;
+  };
 }
 
 export interface DraftSegmentGeo {
@@ -367,11 +374,11 @@ export class DraftLayer {
 
     // Callout: single continuous silhouette (Shottr-style).
     if (d.geo.kind === 'callout') {
-      const cornerR = Math.max(0, s.cornerRadius ?? 0);
-      const pointerLen = 24;
-      const pointerW = 20;
-      const pDir = 'bottom';
-      const pOffset = 0.3;
+      const cornerR = Math.max(0, s.cornerRadius ?? 12);
+      const pointerLen = d.geo.extra?.pointerLength ?? 24;
+      const pointerW = d.geo.extra?.pointerWidth ?? 20;
+      const pDir = (d.geo.extra?.pointerDirection ?? 'bottom-left') as import('@/types/editor').CalloutPointerDirection;
+      const pOffset = d.geo.extra?.pointerOffset ?? 0.5;
       const pathD = calloutPath(w, h, pDir, pOffset, pointerLen, pointerW, cornerR);
 
       const node = new Konva.Shape({

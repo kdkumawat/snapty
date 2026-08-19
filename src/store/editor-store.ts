@@ -27,6 +27,7 @@ const PERSIST_KEYS = [
   'arrowPath', 'fontStyle', 'textAlign', 'textVerticalAlign',
   'transparentExport', 'keepOriginal', 'isBindingEnabled',
   'exportScale', 'exportSelectionOnly',
+  'pointerLength', 'pointerWidth', 'pointerDirection',
   // panelCollapsed is responsive/session - not persisted across reloads
 ] as const;
 type PersistKey = typeof PERSIST_KEYS[number];
@@ -99,6 +100,9 @@ interface EditorState {
   setTextVerticalAlign: (align: 'top' | 'middle' | 'bottom') => void;
   opacity: number;
   cornerRadius: number;
+  pointerLength: number;
+  pointerWidth: number;
+  pointerDirection: import('@/types/editor').CalloutPointerDirection;
   blurRadius: number;
   pixelSize: number;
   highlighterWidth: number;
@@ -197,6 +201,9 @@ interface EditorState {
 
   setOpacity: (opacity: number) => void;
   setCornerRadius: (radius: number) => void;
+  setPointerLength: (length: number) => void;
+  setPointerWidth: (width: number) => void;
+  setPointerDirection: (dir: import('@/types/editor').CalloutPointerDirection) => void;
   setBlurRadius: (r: number) => void;
   setPixelSize: (s: number) => void;
   setHighlighterWidth: (w: number) => void;
@@ -257,6 +264,9 @@ const defaults: Record<string, any> = {
   textVerticalAlign: 'middle' as 'top' | 'middle' | 'bottom',
   opacity: 1,
   cornerRadius: 8,
+  pointerLength: 24,
+  pointerWidth: 20,
+  pointerDirection: 'bottom-left' as const,
   exportFormat: 'png' as ExportFormat,
   exportScale: 1,
   exportSelectionOnly: false,
@@ -715,6 +725,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   textVerticalAlign: persisted.textVerticalAlign ?? defaults.textVerticalAlign,
   opacity: persisted.opacity ?? defaults.opacity,
   cornerRadius: persisted.cornerRadius ?? defaults.cornerRadius,
+  pointerLength: persisted.pointerLength ?? defaults.pointerLength,
+  pointerWidth: persisted.pointerWidth ?? defaults.pointerWidth,
+  pointerDirection: persisted.pointerDirection ?? defaults.pointerDirection,
   blurRadius: persisted.blurRadius ?? defaults.blurRadius,
   pixelSize: persisted.pixelSize ?? defaults.pixelSize,
   highlighterWidth: persisted.highlighterWidth ?? defaults.highlighterWidth,
@@ -1235,6 +1248,20 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setCornerRadius: (radius) => {
     set((s) => ({ cornerRadius: radius, ...applyToSelection(s, 'cornerRadius', radius) }));
     savePersisted({ ...get(), cornerRadius: radius });
+  },
+  setPointerLength: (length) => {
+    const v = Math.max(8, Math.min(100, length));
+    set((s) => ({ pointerLength: v, ...applyToSelection(s, 'pointerLength', v) }));
+    savePersisted({ ...get(), pointerLength: v });
+  },
+  setPointerWidth: (width) => {
+    const v = Math.max(8, Math.min(60, width));
+    set((s) => ({ pointerWidth: v, ...applyToSelection(s, 'pointerWidth', v) }));
+    savePersisted({ ...get(), pointerWidth: v });
+  },
+  setPointerDirection: (dir) => {
+    set((s) => ({ pointerDirection: dir, ...applyToSelection(s, 'pointerDirection', dir) }));
+    savePersisted({ ...get(), pointerDirection: dir });
   },
   setBlurRadius: (r) => {
     const v = Math.max(2, Math.min(40, r));

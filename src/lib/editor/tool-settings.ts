@@ -32,7 +32,10 @@ export type SettingKey =
   | 'pixelSize'
   | 'highlighterWidth'
   | 'stepRadius'
-  | 'stepNumbering';
+  | 'stepNumbering'
+  | 'pointerLength'
+  | 'pointerWidth'
+  | 'pointerDirection';
 
 export type SettingSpec =
   | { kind: 'color'; key: SettingKey; label: string; allowTransparent?: boolean }
@@ -97,6 +100,15 @@ export const SETTING_SPECS: Record<SettingKey, SettingSpec> = {
     min: 0.1, max: 1, step: 0.05, format: (v) => `${Math.round(v * 100)}%`,
   },
   stepNumbering: { kind: 'action', key: 'stepNumbering', label: 'Numbering' },
+  pointerLength: {
+    kind: 'slider', key: 'pointerLength', label: 'Pointer length', railLabel: 'Length',
+    min: 8, max: 100, step: 2, scaled: true,
+  },
+  pointerWidth: {
+    kind: 'slider', key: 'pointerWidth', label: 'Pointer width', railLabel: 'Width',
+    min: 8, max: 60, step: 2, scaled: true,
+  },
+  pointerDirection: { kind: 'preset', key: 'pointerDirection', label: 'Pointer direction', railLabel: 'Direction' },
 };
 
 /**
@@ -124,7 +136,7 @@ export const TOOL_SETTINGS: Record<ToolType, SettingKey[]> = {
 
   text: ['strokeColor', 'fontFamily', 'fontStyle', 'textAlign', 'textVerticalAlign', 'fontSize', 'opacity'],
   step: ['strokeColor', 'stepRadius', 'stepNumbering', 'opacity'],
-  callout: ['strokeColor', 'fillColor', 'strokeWidth', 'strokeStyle', 'fillStyle', 'roughness', 'cornerRadius', 'opacity'],
+  callout: ['strokeColor', 'fillColor', 'strokeWidth', 'strokeStyle', 'fillStyle', 'roughness', 'cornerRadius', 'pointerLength', 'pointerWidth', 'pointerDirection', 'opacity'],
 
   magnifier: ['strokeColor', 'strokeWidth', 'strokeStyle', 'roughness', 'magnification', 'opacity'],
 

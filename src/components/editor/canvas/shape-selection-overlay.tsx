@@ -372,7 +372,7 @@ export default function ShapeSelectionOverlay({
     const co = el as CalloutElement;
     const cw = Math.max(1, baseBox.w);
     const ch = Math.max(1, baseBox.h);
-    const dir = co.pointerDirection ?? 'bottom';
+    const dir = co.pointerDirection ?? 'bottom-left';
     const offset = co.pointerOffset ?? 0.5;
     const pLen = co.pointerLength ?? 24;
     const pWid = co.pointerWidth ?? 20;
@@ -423,7 +423,7 @@ export default function ShapeSelectionOverlay({
         pointerOffset: co.pointerOffset ?? 0.5,
         pointerLength: co.pointerLength ?? 16,
         pointerWidth: co.pointerWidth ?? 20,
-        pointerDirection: (co.pointerDirection ?? 'bottom') as CalloutPointerDirection,
+        pointerDirection: (co.pointerDirection ?? 'bottom-left') as CalloutPointerDirection,
       },
     };
     setHandleActive(e.target as Konva.Circle);

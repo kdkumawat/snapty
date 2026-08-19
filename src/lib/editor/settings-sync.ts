@@ -41,6 +41,9 @@ export type ToolSettingsState = {
   startArrowhead: Arrowhead;
   endArrowhead: Arrowhead;
   arrowPath: 'straight' | 'elbow';
+  pointerLength: number;
+  pointerWidth: number;
+  pointerDirection: import('@/types/editor').CalloutPointerDirection;
 };
 
 type Patch = Partial<EditorElement> & Record<string, unknown>;
@@ -160,6 +163,16 @@ export function applySettingToElement(
     case 'stepNumbering':
       // Numbering is store-only; existing badges keep the number they were given.
       return null;
+    case 'pointerLength': {
+      const v = num(value);
+      return v === null ? null : { pointerLength: Math.max(8, v * s) };
+    }
+    case 'pointerWidth': {
+      const v = num(value);
+      return v === null ? null : { pointerWidth: Math.max(8, v * s) };
+    }
+    case 'pointerDirection':
+      return { pointerDirection: value as import('@/types/editor').CalloutPointerDirection };
   }
   return null;
 }
@@ -253,6 +266,17 @@ export function hydrateSettingsFromElement(
   }
   if (has('arrowPath')) {
     out.arrowPath = e.elbowed ? 'elbow' : 'straight';
+  }
+  if (has('pointerLength')) {
+    const v = num(e.pointerLength);
+    if (v !== null && v > 0) out.pointerLength = v / s;
+  }
+  if (has('pointerWidth')) {
+    const v = num(e.pointerWidth);
+    if (v !== null && v > 0) out.pointerWidth = v / s;
+  }
+  if (has('pointerDirection') && typeof e.pointerDirection === 'string') {
+    out.pointerDirection = e.pointerDirection as import('@/types/editor').CalloutPointerDirection;
   }
   return out;
 }

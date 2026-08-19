@@ -48,11 +48,11 @@ import MagnifierKonva from '@/components/editor/canvas/magnifier-konva';
 import DeviceFrameKonva from '@/components/editor/canvas/device-frame-konva';
 import ShapeSelectionOverlay, { isShapeOverlayType } from '@/components/editor/canvas/shape-selection-overlay';
 import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
-import { calloutPath } from '@/lib/editor/callout-pointer';
+import { calloutPath, directionFromClickToBox } from '@/lib/editor/callout-pointer';
 import { arrowHeadPoints, generateArrowHead, paintDrawable } from '@/lib/rough-renderer';
 import type { Drawable } from 'roughjs/bin/core';
 import type { RoughDrawInput } from '@/lib/rough-renderer';
-import { snapBounds } from '@/lib/editor/snap-guides';
+import { snapBounds, type Bounds } from '@/lib/editor/snap-guides';
 import { getElementBounds, boundsIntersect } from '@/lib/editor/selection';
 import { hydrateSettingsFromSelection } from '@/lib/editor/settings-sync';
 import { magnifierSourceCenter } from '@/lib/editor/magnifier-geometry';
@@ -62,7 +62,7 @@ import {
 import type {
   EditorElement, ShapeElement, ArrowElement, LineElement, FixedPointBinding,
   PencilElement, CircleElement, TextElement, StepElement, DiamondElement,
-  CalloutElement, MagnifierElement, ToolType,
+  CalloutElement, CalloutPointerDirection, MagnifierElement, ToolType,
 } from '@/types/editor';
 import {
   HANDWRITTEN_FONT, BADGE_FONT, TEXT_PADDING, TEXT_LINE_HEIGHT, fontFamilyForCanvas,
@@ -469,6 +469,31 @@ const EditorCanvas: React.FC = () => {
   const interactionLayerRef = useRef<Konva.Layer>(null);
   const draftLayerRef = useRef<DraftLayer | null>(null);
   const perfProbeRef = useRef<PerfProbe | null>(null);
+  /**
+   * During drag, `updateElementSilent` writes to the store on every pointermove,
+   * triggering a React re-render + Konva attribute sync 60+ times/sec.  Throttle
+   * these writes to once per animation frame so only one React pass happens per
+   * frame while the visual update stays imperative via Konva node attrs.
+   */
+  const silentRafRef = useRef<number | null>(null);
+  const pendingSilentRef = useRef<Map<string, Partial<EditorElement>>>(new Map());
+  /** Throttled `updateElementSilent` — buffers updates and flushes once per rAF. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const throttledSilentUpdate = useCallback((id: string, patch: any) => {
+    const pending = pendingSilentRef.current;
+    const prev = pending.get(id);
+    pending.set(id, prev ? { ...prev, ...patch } : patch);
+    if (silentRafRef.current != null) return; // already scheduled
+    silentRafRef.current = requestAnimationFrame(() => {
+      silentRafRef.current = null;
+      const batch = pendingSilentRef.current;
+      pendingSilentRef.current = new Map();
+      const st = useEditorStore.getState();
+      for (const [eid, patch] of batch) {
+        st.updateElementSilent(eid, patch);
+      }
+    });
+  }, []);
   useEffect(() => {
     const layer = interactionLayerRef.current;
     if (!layer) return;
@@ -484,6 +509,8 @@ const EditorCanvas: React.FC = () => {
   }, []);
   const middlePanRef = useRef<{ lastX: number; lastY: number } | null>(null);
   const altDuplicateRef = useRef<string | null>(null);
+  /** Cache element ID → Konva node to avoid tree traversal per frame. */
+  const nodeCacheRef = useRef<Map<string, Konva.Node>>(new Map());
   /** Last annotation mousedown, for time+position double-click detection. */
   const lastAnnotationTapRef = useRef<{ id: string; x: number; y: number; t: number } | null>(null);
   /**
@@ -641,6 +668,9 @@ const EditorCanvas: React.FC = () => {
   const opacity = useEditorStore((s) => s.opacity);
   const cornerRadius = useEditorStore((s) => s.cornerRadius);
   const elements = useEditorStore((s) => s.elements);
+  // Invalidate the Konva node cache when the elements array changes (add /
+  // remove / move) so stale references don't linger.
+  useEffect(() => { nodeCacheRef.current.clear(); }, [elements]);
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
   /** Multi-point polyline vertex-insertion gesture (midpoint ghost handles).
    *  Holds the working points array for the current drag; committed on end. */
@@ -1667,7 +1697,7 @@ const EditorCanvas: React.FC = () => {
       };
       draftLayerRef.current?.beginBox(geo, draftBoxStyleRef.current.style, base.id as string, handDrawn);
     } else if (s.activeTool === 'callout') {
-      const geo: DraftBoxGeo = { kind: 'callout', ox: pos.x, oy: pos.y, w: 0, h: 0 };
+      const geo: DraftBoxGeo = { kind: 'callout', ox: pos.x, oy: pos.y, w: 0, h: 0, extra: { pointerDirection: s.pointerDirection, pointerLength: s.pointerLength, pointerWidth: s.pointerWidth, pointerOffset: 0.5 } };
       draftBoxGeoRef.current = geo;
       draftBoxStyleRef.current = {
         id: base.id as string,
@@ -1679,10 +1709,15 @@ const EditorCanvas: React.FC = () => {
           strokeStyle: s.strokeStyle,
           fillStyle: s.fillStyle,
           roughness: s.roughness,
-          cornerRadius: s.cornerRadius * scale,
+          cornerRadius: Math.max(s.cornerRadius, 12) * scale,
           opacity: s.opacity,
         },
-        extra: {},
+        extra: {
+          pointerDirection: s.pointerDirection,
+          pointerLength: s.pointerLength * scale,
+          pointerWidth: s.pointerWidth * scale,
+          pointerOffset: 0.5,
+        },
       };
       draftLayerRef.current?.beginBox(geo, draftBoxStyleRef.current.style, base.id as string, handDrawn);
     } else {
@@ -1983,6 +2018,14 @@ const EditorCanvas: React.FC = () => {
       geo.w = w;
       geo.h = h;
       geo.centered = !!e?.evt?.altKey;
+      // For callout: dynamically recompute pointer direction to point toward the click origin
+      if (geo.kind === 'callout' && geo.extra) {
+        const bx = Math.min(geo.ox, geo.ox + w);
+        const by = Math.min(geo.oy, geo.oy + h);
+        geo.extra.pointerDirection = directionFromClickToBox(
+          geo.ox, geo.oy, bx, by, Math.abs(w), Math.abs(h),
+        ) as CalloutPointerDirection;
+      }
       draftLayerRef.current?.updateBox(geo);
       perfProbeRef.current?.tick(performance.now() - moveStart, 'box-draw');
     }
@@ -2165,7 +2208,16 @@ const EditorCanvas: React.FC = () => {
           fill: isEffect ? undefined : box.style.fill,
           strokeWidth: isEffect ? 0 : box.style.strokeWidth,
           cornerRadius: box.style.cornerRadius,
-          ...(box.type === 'callout' ? { pointerDirection: 'bottom' as const } : {}),
+          ...(box.type === 'callout' ? {
+            pointerDirection: directionFromClickToBox(
+              geo.ox, geo.oy,
+              Math.min(geo.ox, geo.ox + geo.w), Math.min(geo.oy, geo.oy + geo.h),
+              Math.abs(geo.w), Math.abs(geo.h),
+            ) as CalloutPointerDirection,
+            pointerLength: box.extra?.pointerLength,
+            pointerWidth: box.extra?.pointerWidth,
+            pointerOffset: box.extra?.pointerOffset ?? 0.5,
+          } : {}),
         } as ShapeElement | CalloutElement;
       }
       draftBoxGeoRef.current = null;
@@ -2849,14 +2901,20 @@ const EditorCanvas: React.FC = () => {
     targetY: number,
   ) => {
     if (!labelEl) return;
-    const stage = stageRef.current;
-    const node = stage ? findAnnotationNode(stage, labelEl.id) : undefined;
+    const cache = nodeCacheRef.current;
+    let node = cache.get(labelEl.id);
+    // Validate: if the node was removed from the stage, drop the stale entry.
+    if (node && !node.getStage()) { cache.delete(labelEl.id); node = undefined; }
+    if (!node) {
+      const stage = stageRef.current;
+      node = stage ? findAnnotationNode(stage, labelEl.id) : undefined;
+      if (node) cache.set(labelEl.id, node);
+    }
     if (!node) return;
     node.position({
       x: labelEl.x + (targetX - originX),
       y: labelEl.y + (targetY - originY),
     });
-    node.getLayer()?.batchDraw();
   };
 
   function handleDragMove(id: string, e: Konva.KonvaEventObject<DragEvent>) {
@@ -2881,6 +2939,9 @@ const EditorCanvas: React.FC = () => {
       // translate below is right for arrows too — the label's own
       // `labelOffset`/`labelOffsetY` re-anchor it at commit).
       glueAttachedLabelLive(attachedLabel, el.x, el.y, e.target.x(), e.target.y());
+      // Batch draw once for all imperative node updates this frame.
+      const layer = stageRef.current?.findOne('.annotation-layer') as Konva.Layer | undefined;
+      layer?.batchDraw();
       draftLayerRef.current?.clearGuides();
       return;
     }
@@ -2890,15 +2951,22 @@ const EditorCanvas: React.FC = () => {
       w: Math.abs((el as ShapeElement).width || 0),
       h: Math.abs((el as ShapeElement).height || 0),
     };
-    const others = s.elements
-      .filter((item) => item.id !== id)
-      .map((item) => getElementBounds(item, s.imageSize));
+    // Build snap references in-place — avoid allocating a filtered+mapped
+    // intermediate array on every pointermove frame.
+    const others: Bounds[] = [];
+    for (let i = 0; i < s.elements.length; i++) {
+      const item = s.elements[i];
+      if (item.id !== id) others.push(getElementBounds(item, s.imageSize));
+    }
     const snapped = snapBounds(moving, others);
     draftLayerRef.current?.showGuides(snapped.guides);
     e.target.position({ x: snapped.x, y: snapped.y });
     // Shape body drag: keep an attached label glued to the shape on every
     // frame, using the SNAPPED position so the label never lags the guides.
     glueAttachedLabelLive(attachedLabel, el.x, el.y, e.target.x(), e.target.y());
+    // Batch draw once for all imperative node updates this frame.
+    const layer = stageRef.current?.findOne('.annotation-layer') as Konva.Layer | undefined;
+    layer?.batchDraw();
   }
 
   // --- Element rendering ---
@@ -2934,32 +3002,35 @@ const EditorCanvas: React.FC = () => {
   ) => {
     const st = stageRef.current;
     if (!st) return;
-    const node = findAnnotationNode(st, id);
+    const cache = nodeCacheRef.current;
+    let node = cache.get(id);
+    if (node && !node.getStage()) { cache.delete(id); node = undefined; }
+    if (!node) { node = findAnnotationNode(st, id); if (node) cache.set(id, node); }
     if (!node) return;
     // A clipped arrow (attached label) renders as a Group of Line segments;
     // there is no single points-holding node to patch, so fall back to a
     // silent store update and let React re-render the clipped geometry.
     if (node.getClassName() === 'Group') {
-      const st = useEditorStore.getState();
-      st.updateElementSilent(id, { points } as Partial<EditorElement>);
+      throttledSilentUpdate(id, { points } as Partial<EditorElement>);
       // The attached label must follow on the SAME pass or it lags the bend
       // until commit: reflow it to the new path (labelOffset/labelOffsetY
       // preserved) and write both silently so React renders them together.
-      const parent = st.elements.find((x) => x.id === id);
+      const stStore = useEditorStore.getState();
+      const parent = stStore.elements.find((x) => x.id === id);
       if (parent?.groupId) {
-        const labelEl = st.elements.find(
+        const labelEl = stStore.elements.find(
           (x) => x.type === 'text' && x.groupId === parent.groupId,
         ) as TextElement | undefined;
         if (labelEl) {
-          const scale = getImageToolScale(st.imageSize.width, st.imageSize.height);
+          const scale = getImageToolScale(stStore.imageSize.width, stStore.imageSize.height);
           const anchor = labelAnchorForElement(
             { ...parent, points, bend: bendVal } as ArrowElement | LineElement,
-            st.imageSize,
+            stStore.imageSize,
             labelEl.fontSize ?? 24,
             scale,
             labelEl,
           );
-          st.updateElementSilent(labelEl.id, {
+          throttledSilentUpdate(labelEl.id, {
             x: anchor.x,
             y: anchor.y,
             width: anchor.width,
@@ -3023,15 +3094,20 @@ const EditorCanvas: React.FC = () => {
       (x) => x.type === 'text' && x.groupId === liveEl.groupId,
     ) as TextElement | undefined;
     if (!labelEl) return;
-    const stage = stageRef.current;
-    const node = stage ? findAnnotationNode(stage, labelEl.id) : undefined;
+    const cache = nodeCacheRef.current;
+    let node = cache.get(labelEl.id);
+    if (node && !node.getStage()) { cache.delete(labelEl.id); node = undefined; }
+    if (!node) {
+      const stage = stageRef.current;
+      node = stage ? findAnnotationNode(stage, labelEl.id) : undefined;
+      if (node) cache.set(labelEl.id, node);
+    }
     if (!node) return;
     const scale = getImageToolScale(st.imageSize.width, st.imageSize.height);
     const anchor = labelAnchorForElement(liveEl, st.imageSize, labelEl.fontSize ?? 24, scale, labelEl);
     const offX = node.offsetX() || 0;
     const offY = node.offsetY() || 0;
     node.position({ x: anchor.x + offX, y: anchor.y + offY });
-    node.getLayer()?.batchDraw();
   };
 
   /** Live pass during a shape resize/rotate: bound arrows + attached label. */
@@ -3448,7 +3524,7 @@ const EditorCanvas: React.FC = () => {
             height: radii.ry * 2,
           };
           if (commit) commitElementUpdate(mag.id, updates);
-          else updateElementSilent(mag.id, updates);
+          else throttledSilentUpdate(mag.id, updates);
         };
         return (
           <MagnifierKonva
@@ -3467,11 +3543,11 @@ const EditorCanvas: React.FC = () => {
             onTap={baseProps.onTap}
             onDragEnd={baseProps.onDragEnd}
             onDragMove={baseProps.onDragMove}
-            onPreviewOffsetMove={(offset) => updateElementSilent(mag.id, { previewOffset: offset })}
+            onPreviewOffsetMove={(offset) => throttledSilentUpdate(mag.id, { previewOffset: offset })}
             onPreviewOffsetCommit={(offset) => commitElementUpdate(mag.id, { previewOffset: offset })}
             onRadiiMove={(radii) => resizeToRadii(radii, false)}
             onRadiiCommit={(radii) => resizeToRadii(radii, true)}
-            onLeaderBendMove={(bend) => updateElementSilent(mag.id, { leaderBend: bend })}
+            onLeaderBendMove={(bend) => throttledSilentUpdate(mag.id, { leaderBend: bend })}
             onLeaderBendCommit={(bend) => commitElementUpdate(mag.id, { leaderBend: bend })}
           />
         );
@@ -3593,7 +3669,7 @@ const EditorCanvas: React.FC = () => {
             // path, after which the drag continues imperatively.
             const live = useEditorStore.getState().elements.find((x) => x.id === arrow.id);
             if (!(live as ArrowElement | undefined)?.bend) {
-              updateElementSilent(arrow.id, { bend: bendVal });
+              throttledSilentUpdate(arrow.id, { bend: bendVal });
             }
             applyArrowLineLive(arrow.id, [sx, sy, ex, ey], bendVal, arrow.strokeWidth ?? 2, true, arrow.strokeStyle);
           } else {
@@ -4131,7 +4207,7 @@ const EditorCanvas: React.FC = () => {
           } else if (handDrawn) {
             const live = useEditorStore.getState().elements.find((x) => x.id === line.id);
             if (!(live as LineElement | undefined)?.bend) {
-              updateElementSilent(line.id, { bend: bendVal });
+              throttledSilentUpdate(line.id, { bend: bendVal });
             }
             applyArrowLineLive(line.id, [sx, sy, ex, ey], bendVal, line.strokeWidth ?? 2, true, line.strokeStyle);
           } else {
@@ -4426,7 +4502,7 @@ const EditorCanvas: React.FC = () => {
             labelOffset: t,
             labelOffsetY: offsetY,
           });
-          updateElementSilent(textEl.id, {
+          throttledSilentUpdate(textEl.id, {
             x: anchor.x,
             y: anchor.y,
             width: anchor.width,
@@ -4584,8 +4660,8 @@ const EditorCanvas: React.FC = () => {
         const coFill = co.fill ?? '#3b82f6';
         const coStroke = co.stroke ?? 'none';
         const coStrokeW = co.strokeWidth ?? 0;
-        const coCornerRadius = co.cornerRadius ?? 8;
-        const pDir = co.pointerDirection ?? 'bottom';
+        const coCornerRadius = co.cornerRadius ?? 12;
+        const pDir = co.pointerDirection ?? 'bottom-left';
         const pOffset = co.pointerOffset ?? 0.5;
         const pLength = co.pointerLength ?? 24;
         const pWidth = co.pointerWidth ?? 20;

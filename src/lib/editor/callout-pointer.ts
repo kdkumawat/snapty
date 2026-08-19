@@ -335,3 +335,38 @@ export function calloutFullBounds(
     height: maxY - minY,
   };
 }
+
+
+/**
+ * Given where the user clicked (origin) and the resulting box dimensions,
+ * compute the pointer direction so the pointer points TOWARD the click origin.
+ * This gives a natural "this callout is pointing at the thing I clicked" feel.
+ */
+export function directionFromClickToBox(
+  originX: number, originY: number,
+  boxX: number, boxY: number, boxW: number, boxH: number,
+): CalloutPointerDirection {
+  // Center of the box
+  const cx = boxX + boxW / 2;
+  const cy = boxY + boxH / 2;
+  // Direction from box center toward the click origin
+  const dx = originX - cx;
+  const dy = originY - cy;
+
+  // If the click is essentially at the center, default to bottom-left
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return 'bottom-left';
+
+  const angle = Math.atan2(dy, dx); // radians, -PI..PI
+
+  // Snap to 8 directions based on angle sectors (45° each)
+  // Right = 0, Bottom = PI/2, Left = PI/-PI, Top = -PI/2
+  if (angle >= -Math.PI / 8 && angle < Math.PI / 8) return 'right';
+  if (angle >= Math.PI / 8 && angle < 3 * Math.PI / 8) return 'bottom-right';
+  if (angle >= 3 * Math.PI / 8 && angle < 5 * Math.PI / 8) return 'bottom';
+  if (angle >= 5 * Math.PI / 8 || angle < -5 * Math.PI / 8) return 'left';
+  if (angle >= -3 * Math.PI / 8 && angle < -Math.PI / 8) return 'top-right';
+  // Remaining sector
+  if (angle >= -5 * Math.PI / 8 && angle < -3 * Math.PI / 8) return 'top';
+  // top-left covers the rest
+  return 'top-left';
+}
