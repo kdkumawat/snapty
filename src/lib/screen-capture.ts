@@ -97,7 +97,6 @@ export async function captureScreenRegion(): Promise<CaptureResult> {
   try {
     // Prefer monitor; user can still pick window/tab in the picker.
     // Extra keys are Chromium hints - cast keeps TS happy across lib.dom versions.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     stream = await navigator.mediaDevices.getDisplayMedia({
       audio: false,
       video: {

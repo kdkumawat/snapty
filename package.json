@@ -11,12 +11,7 @@
     "cf:deploy": "npm run cf:build && npx wrangler pages deploy out",
     "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "pwa:assets": "node scripts/generate-icons.mjs && node scripts/generate-pwa-screenshots.mjs",
-    "start": "NODE_ENV=production node .next/standalone/server.js 2>&1 | tee server.log",
-    "lint": "eslint .",
-    "db:push": "prisma db push --accept-data-loss",
-    "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
-    "db:reset": "prisma migrate reset"
+    "lint": "eslint ."
   },
   "dependencies": {
     "@radix-ui/react-context-menu": "^2.2.15",
@@ -28,7 +23,6 @@
     "@radix-ui/react-switch": "^1.2.5",
     "@radix-ui/react-toast": "^1.2.14",
     "@radix-ui/react-tooltip": "^1.2.7",
-    "@tesseract.js-data/eng": "^1.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
@@ -44,7 +38,6 @@
     "roughjs": "^4.6.6",
     "sharp": "^0.34.3",
     "tailwind-merge": "^3.3.1",
-    "tailwindcss-animate": "^1.0.7",
     "tesseract.js": "^6.0.1",
     "zustand": "^5.0.6"
   },

@@ -201,7 +201,6 @@ export default function ShapeSelectionOverlay({
     };
     // Geometry deps: a resize/rotate commit rewrites x/y/size, so the
     // node→overlay offset must be re-derived from the fresh element.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [el.id, raw.x, raw.y, baseBox.w, baseBox.h]);
 
   const setHandleActive = (node: Konva.Circle) => {

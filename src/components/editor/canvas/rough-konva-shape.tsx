@@ -40,20 +40,14 @@ export default function RoughKonvaShape({
   showStartArrowhead,
   ...input
 }: RoughShapeProps) {
+  const pointsKey = input.points?.join(',') ?? '';
+
   const drawable = useMemo(
-    () => generateRoughDrawable({
-      ...input,
-      x: input.kind === 'line' || input.kind === 'arrow' || input.kind === 'linearPath' ? 0 : 0,
-      y: 0,
-      points: input.kind === 'line' || input.kind === 'arrow' || input.kind === 'linearPath'
-        ? input.points
-        : input.points,
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => generateRoughDrawable({ ...input, x: 0, y: 0 }),
     [
       input.kind, input.seed, input.stroke, input.fill, input.strokeWidth,
       input.strokeStyle, input.fillStyle, input.roughness, input.width, input.height,
-      input.cornerRadius, input.points?.join(','), input.arrowheadSize,
+      input.cornerRadius, pointsKey, input.arrowheadSize,
     ],
   );
 
@@ -63,8 +57,7 @@ export default function RoughKonvaShape({
       return generateArrowHead({ ...input, points: input.points });
     }
     return null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input.kind, input.seed, input.points?.join(','), input.stroke, input.strokeWidth, input.roughness, input.arrowheadSize, showArrowhead]);
+  }, [input.kind, input.seed, pointsKey, input.stroke, input.strokeWidth, input.roughness, input.arrowheadSize, showArrowhead]);
 
   const startHead = useMemo(() => {
     if (!showStartArrowhead || !input.points || input.points.length < 4) return null;
@@ -75,8 +68,7 @@ export default function RoughKonvaShape({
       seed: `${input.seed}-start`,
       arrowheadSize: input.arrowheadSize,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showStartArrowhead, input.seed, input.points?.join(','), input.stroke, input.strokeWidth, input.roughness, input.arrowheadSize]);
+  }, [showStartArrowhead, input.seed, pointsKey, input.stroke, input.strokeWidth, input.roughness, input.arrowheadSize]);
 
   const w = Math.abs(input.width || 0);
   const h = Math.abs(input.height || 0);
