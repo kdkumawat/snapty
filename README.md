@@ -53,9 +53,10 @@ The app opens at `http://localhost:3001`.
 ### Production Build
 
 ```bash
-bun run build
-bun start
+bun run build   # static export to out/
 ```
+
+Deploy to Cloudflare Pages with `bun run cf:deploy` (see [DEPLOYMENT.md](./DEPLOYMENT.md)).
 
 ## Direct Editor Link
 
@@ -79,25 +80,25 @@ Snapty works seamlessly with your OS screen capture tools:
 ```
 src/
 ├── app/
-│   ├── api/import-url/route.ts   # Image URL proxy API
-│   ├── globals.css                # Global styles + theme variables
-│   ├── layout.tsx                 # Root layout with SEO metadata + PWA
-│   └── page.tsx                   # Entry point
+│   ├── page.tsx                   # Landing page (/)
+│   ├── editor/page.tsx            # Editor route (/editor)
+│   ├── guide|info|privacy/        # Static content routes
+│   ├── globals.css                # Global styles + theme variables (Tailwind v4 CSS-first config)
+│   └── layout.tsx                 # Root layout with SEO metadata + PWA
 ├── components/
-│   ├── editor/
-│   │   ├── editor-canvas.tsx      # Konva canvas (main editing area)
-│   │   ├── editor-page.tsx        # Landing page + docs + editor shell
-│   │   ├── export-dialog.tsx      # Export dialog with canvas style support
-│   │   ├── help-dialog.tsx        # Keyboard shortcuts reference
-│   │   ├── properties-panel.tsx   # Right panel (colors, sizes, canvas style)
-│   │   ├── toolbar.tsx            # Left tool sidebar
-│   │   ├── top-bar.tsx            # Top bar (undo/redo/zoom/reset/export)
-│   │   └── welcome-screen.tsx     # Image upload/paste/drag-drop
-│   ├── scissor-logo.tsx           # Shared scissors SVG icon
-│   ├── json-ld.tsx                # Structured data for SEO
+│   ├── landing/                   # Marketing surface (owns /)
+│   ├── editor/                    # Editor UI, organized into subdirs
+│   │   ├── canvas/                # Konva canvas layers & shape rendering
+│   │   ├── chrome/                # Top bar / frame chrome
+│   │   ├── dialogs/               # Export, help, etc.
+│   │   ├── menus/                 # Context menus, command palette
+│   │   ├── panels/                # Properties/settings panels
+│   │   ├── toolbar/               # Left tool sidebar
+│   │   └── shell/                 # Page shell wiring everything together
 │   └── ui/                        # shadcn/ui components
 ├── hooks/
 │   └── use-keyboard-shortcuts.ts  # Keyboard shortcuts + clipboard paste
+├── lib/editor/                    # Annotation geometry/rendering helpers
 ├── store/
 │   └── editor-store.ts            # Zustand store (all editor state)
 └── types/
@@ -105,7 +106,6 @@ src/
 public/
 ├── manifest.json                  # PWA manifest
 ├── sw.js                          # Service worker (offline + cache)
-├── favicon.svg                    # App icon
 └── _headers                       # Cloudflare Pages headers
 ```
 

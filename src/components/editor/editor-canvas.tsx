@@ -478,7 +478,6 @@ const EditorCanvas: React.FC = () => {
   const silentRafRef = useRef<number | null>(null);
   const pendingSilentRef = useRef<Map<string, Partial<EditorElement>>>(new Map());
   /** Throttled `updateElementSilent` — buffers updates and flushes once per rAF. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const throttledSilentUpdate = useCallback((id: string, patch: any) => {
     const pending = pendingSilentRef.current;
     const prev = pending.get(id);
