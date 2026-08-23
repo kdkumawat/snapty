@@ -92,7 +92,7 @@ export function selectionHandleProps(variant: 'endpoint' | 'bend' | 'rotate' = '
     shadowBlur: 3,
     shadowOpacity: 0.16,
     shadowOffset: { x: 0, y: 0.5 },
-    hitStrokeWidth: variant === 'endpoint' ? 18 : 22,
+    hitStrokeWidth: variant === 'endpoint' ? 20 : 24,
     cursor: 'grab',
   };
 }

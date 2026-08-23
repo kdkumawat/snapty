@@ -173,6 +173,28 @@ export function toolHasSetting(type: ToolType, key: SettingKey): boolean {
   return (TOOL_SETTINGS[type] ?? []).includes(key);
 }
 
+export type SettingVisibilityCtx = {
+  handDrawn: boolean;
+  hasClosedLabel: boolean;
+  fillIsPainted: boolean;
+};
+
+/**
+ * Drop settings that cannot affect the current selection / tool.
+ * Registry still lists them so turning hand-drawn on (etc.) brings them back.
+ */
+export function visibleSettingsFor(
+  keys: SettingKey[],
+  ctx: SettingVisibilityCtx,
+): SettingKey[] {
+  return keys.filter((k) => {
+    if (k === 'roughness') return ctx.handDrawn;
+    if (k === 'fillStyle') return ctx.handDrawn && ctx.fillIsPainted;
+    if (k === 'textVerticalAlign') return ctx.hasClosedLabel;
+    return true;
+  });
+}
+
 /** Tools that show a settings surface with nothing selected (i.e. before drawing). */
 export const TOOLS_WITH_PANEL: ToolType[] = (Object.keys(TOOL_SETTINGS) as ToolType[])
   .filter((t) => (TOOL_SETTINGS[t] ?? []).length > 0);

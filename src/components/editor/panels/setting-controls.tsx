@@ -239,25 +239,16 @@ export function SettingControl({ spec }: { spec: SettingSpec }) {
 
     case 'fillColor':
       return (
-        <div className="space-y-1.5">
-          <div className="flex flex-wrap gap-1">
-            <ColorSwatch
-              color="transparent"
-              active={s.fillColor === 'transparent'}
-              onClick={() => s.setFillColor('transparent')}
-              label="Transparent"
-            />
-            {DEFAULT_COLORS.map((c) => (
-              <ColorSwatch key={c} color={c} active={s.fillColor === c} onClick={() => s.setFillColor(c)} />
-            ))}
-          </div>
-          <div className="flex gap-0.5 pt-1">
-            {FILL_STYLES.map(([v, label]) => (
-              <IconToggle key={v} active={s.fillStyle === v} label={label} onClick={() => s.setFillStyle(v)}>
-                <span className="text-[10px] font-medium">{label.slice(0, 1)}</span>
-              </IconToggle>
-            ))}
-          </div>
+        <div className="flex flex-wrap gap-1">
+          <ColorSwatch
+            color="transparent"
+            active={s.fillColor === 'transparent'}
+            onClick={() => s.setFillColor('transparent')}
+            label="Transparent"
+          />
+          {DEFAULT_COLORS.map((c) => (
+            <ColorSwatch key={c} color={c} active={s.fillColor === c} onClick={() => s.setFillColor(c)} />
+          ))}
         </div>
       );
 

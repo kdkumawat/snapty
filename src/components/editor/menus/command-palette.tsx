@@ -8,7 +8,7 @@ import {
   Minus, Pencil, Type, ListOrdered, Highlighter, Droplets, Grid3x3, Crop,
   Eraser, MonitorUp, FolderOpen, Download, Settings2, ImageOff, RotateCcw,
   Keyboard, Maximize2, ZoomIn, Undo2, Redo2, Trash2, Sun, Moon, Monitor,
-  Search, ImagePlus, ScanText,
+  Search, ImagePlus, ScanText, Save, FileJson,
 } from 'lucide-react';
 import { useEditorStore } from '@/store/editor-store';
 import type { ToolType } from '@/types/editor';
@@ -265,6 +265,29 @@ export default function CommandPalette() {
                   <Trash2 className="w-4 h-4" />
                 </span>
                 <p className="font-medium flex-1">Clear annotations</p>
+              </Command.Item>
+              <Command.Item value="Save project snapty" onSelect={() => run(() => {
+                void import('@/lib/editor/project-file').then((m) => m.downloadProject());
+                toastSuccess('Project saved', 'Downloaded .snapty file — reopen to continue editing');
+              })} className={itemClass}>
+                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
+                  <Save className="w-4 h-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">Save project</p>
+                  <p className="text-[11px] text-muted-foreground">Download .snapty (image + annotations)</p>
+                </div>
+              </Command.Item>
+              <Command.Item value="Open project snapty" onSelect={() => run(() => {
+                void import('@/lib/editor/project-file').then((m) => m.openProjectPicker());
+              })} className={itemClass}>
+                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
+                  <FileJson className="w-4 h-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">Open project</p>
+                  <p className="text-[11px] text-muted-foreground">Load .snapty file</p>
+                </div>
               </Command.Item>
             </Command.Group>
 

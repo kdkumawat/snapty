@@ -77,8 +77,34 @@ export function expandLabelPairs(
   return out;
 }
 
-function isClosedShape(el: EditorElement): boolean {
+export function isClosedShape(el: EditorElement): boolean {
   return CLOSED_SHAPES.has(el.type);
+}
+
+/**
+ * Which element id should own selection chrome after a click.
+ *
+ * Closed-shape + text pairs behave as one object (click either → the shape).
+ * Arrow/line labels stay independently selectable so they can slide on the path.
+ */
+export function selectionTargetForClick(
+  clicked: EditorElement,
+  elements: EditorElement[],
+): string {
+  if (!clicked.groupId || !isLabelPairGroup(clicked.groupId, elements)) return clicked.id;
+  const pair = elements.filter((el) => el.groupId === clicked.groupId);
+  const container = pair.find((el) => el.type !== 'text' && isClosedShape(el));
+  if (container) return container.id;
+  return clicked.id;
+}
+
+/** The non-clicked member of a shape↔label pair, or undefined. */
+export function labelPairPartner(
+  el: EditorElement,
+  elements: EditorElement[],
+): EditorElement | undefined {
+  if (!el.groupId || !isLabelPairGroup(el.groupId, elements)) return undefined;
+  return elements.find((other) => other.id !== el.id && other.groupId === el.groupId);
 }
 
 /** Inner box of a closed shape (bounds minus padding), used as the label area. */
@@ -317,7 +343,7 @@ export function createAttachedLabel(
   anchor: LabelAnchor,
   style: LabelStyle,
   existing?: Partial<
-    Pick<TextElement, 'text' | 'width' | 'padding' | 'lineHeight' | 'verticalAlign' | 'labelOffset'>
+    Pick<TextElement, 'text' | 'width' | 'padding' | 'lineHeight' | 'verticalAlign' | 'labelOffset' | 'labelOffsetY'>
   >,
 ): TextElement {
   return {
@@ -334,6 +360,7 @@ export function createAttachedLabel(
     height: anchor.height,
     verticalAlign: existing?.verticalAlign ?? 'middle',
     labelOffset: existing?.labelOffset ?? 0.5,
+    labelOffsetY: existing?.labelOffsetY,
     fill: style.fill,
     opacity: style.opacity,
     padding: existing?.padding ?? TEXT_PADDING,
