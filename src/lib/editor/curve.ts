@@ -63,6 +63,37 @@ export function bendFromHandle(
   return Math.max(-1, Math.min(1, next));
 }
 
+/** Point at fraction `t` on the quadratic (or the chord when bend is 0). */
+export function curvePoint(
+  sx: number, sy: number, ex: number, ey: number, bend = 0, t = 0.5,
+): Pt {
+  if (!bend) {
+    return { x: sx + (ex - sx) * t, y: sy + (ey - sy) * t };
+  }
+  const c = controlPoint(sx, sy, ex, ey, bend);
+  const u = 1 - t;
+  return {
+    x: u * u * sx + 2 * u * t * c.x + t * t * ex,
+    y: u * u * sy + 2 * u * t * c.y + t * t * ey,
+  };
+}
+
+/**
+ * Invert an on-curve handle (the visual midpoint at t=0.5) back to `bend`.
+ *
+ * The quadratic midpoint sits halfway from the chord mid to the control
+ * point, so reconstructing C = mid + 2·(P − mid) and feeding it to
+ * {@link bendFromHandle} keeps the same ±1 range as dragging the control
+ * point itself — without placing the grab dot off the stroke.
+ */
+export function bendFromCurveMid(
+  sx: number, sy: number, ex: number, ey: number, hx: number, hy: number,
+): number {
+  const midX = (sx + ex) / 2;
+  const midY = (sy + ey) / 2;
+  return bendFromHandle(sx, sy, ex, ey, midX + 2 * (hx - midX), midY + 2 * (hy - midY));
+}
+
 /**
  * Outgoing tangent at the start of the segment. Arrowheads must follow this,
  * not the chord: on a bent arrow the chord direction is visibly wrong.
@@ -169,6 +200,21 @@ export function polylinePathD(
     d += ` L ${originX + points[i]} ${originY + points[i + 1]}`;
   }
   return d;
+}
+
+/** Sample a quadratic curve as a polyline (for Konva Line tension-free rendering). */
+export function sampleQuadPolyline(
+  sx: number, sy: number, ex: number, ey: number, bend = 0, steps = 24,
+): number[] {
+  if (!bend) return [sx, sy, ex, ey];
+  const c = controlPoint(sx, sy, ex, ey, bend);
+  const pts: number[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    pts.push(u * u * sx + 2 * u * t * c.x + t * t * ex, u * u * sy + 2 * u * t * c.y + t * t * ey);
+  }
+  return pts;
 }
 
 /** SVG path data for the segment, in absolute coordinates. */

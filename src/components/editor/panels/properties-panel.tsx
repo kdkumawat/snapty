@@ -48,10 +48,11 @@ export default function FloatingPropertiesPanel() {
     <AnimatePresence>
       {visible && (
         <motion.div
-          initial={{ opacity: 0, x: -8 }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: -8 }}
-          transition={{ duration: 0.15 }}
+          initial={{ opacity: 0, x: -8, scale: 0.96 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          exit={{ opacity: 0, x: -8, scale: 0.96 }}
+          transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+          style={{ transformOrigin: 'top left' }}
           className="absolute top-[4.5rem] sm:top-[4.75rem] left-2 sm:left-3 z-[60] pointer-events-auto max-h-[calc(100dvh-7.5rem)]"
         >
           {useRail ? (

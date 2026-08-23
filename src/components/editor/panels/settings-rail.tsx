@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { createPortal } from 'react-dom';
+import { motion } from 'framer-motion';
 import { Trash2, Copy, Lock, Unlock, PanelLeftOpen } from 'lucide-react';
 import { FloatingSurface } from '@/components/editor/ui/floating-surface';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -60,18 +61,18 @@ function SettingPopover({
     : { position: 'fixed', top, right: 8, left: 'auto', zIndex: 300 };
 
   return createPortal(
-    <div
+    <motion.div
       ref={popoverRef}
       role="dialog"
       aria-label={spec.label}
-      style={style}
+      initial={{ opacity: 0, scale: 0.96 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+      style={{ ...style, transformOrigin: fitsRight ? 'top left' : 'top right' }}
       className={cn(
         'rounded-xl border border-border bg-surface p-3 shadow-[var(--floating-shadow)]',
         spec.kind === 'slider'
           ? 'flex flex-col items-center gap-2 w-auto'
-          // Fit the content: color grids need ~17rem, a 3-toggle preset needs
-          // far less. A fixed 16rem box left big empty margins next to small
-          // controls, and the label row + badge stretched the whole popover.
           : 'w-max min-w-[9rem] max-w-[min(18rem,calc(100vw-2rem))] space-y-2',
       )}
       onPointerDown={(e) => e.stopPropagation()}
@@ -93,7 +94,7 @@ function SettingPopover({
           <SettingControl spec={spec} />
         </>
       )}
-    </div>,
+    </motion.div>,
     document.body,
   );
 }

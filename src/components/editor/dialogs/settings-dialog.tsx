@@ -5,7 +5,7 @@ import { useTheme } from 'next-themes';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Sun, Moon, Monitor, Keyboard, Info, MonitorUp, FolderOpen,
-  Copy, Download, Share2, X,
+  Copy, Download, Share2, X, ChevronRight,
 } from 'lucide-react';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
@@ -43,7 +43,7 @@ function CompactToggle({
   info?: string;
 }) {
   const row = (
-    <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-secondary/25 px-3 py-2 cursor-pointer">
+    <div className="flex items-center justify-between gap-2 px-0.5 py-1.5 cursor-pointer">
       <span className="text-[13px] font-medium flex items-center gap-1.5 min-w-0">
         <span className="truncate">{label}</span>
         {info && (
@@ -205,7 +205,7 @@ export default function SettingsDialog() {
               )}
 
               <div className="space-y-2">
-                <Label className={sectionLabel}>Theme</Label>
+                <Label className={sectionLabel}>Look</Label>
                 <SegmentedControl<'light' | 'dark' | 'system'>
                   value={(mounted ? theme : 'system') as 'light' | 'dark' | 'system'}
                   onChange={setTheme}
@@ -216,67 +216,11 @@ export default function SettingsDialog() {
                     { value: 'system', label: 'System', icon: <Monitor className="w-3.5 h-3.5" /> },
                   ]}
                 />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className={sectionLabel}>General</Label>
                 <CompactToggle
                   label="Hand-drawn"
                   checked={handDrawn}
                   onChange={setHandDrawn}
-                  info="Sketchy Excalidraw-like strokes for shapes and freehand"
-                />
-                <CompactToggle
-                  label="Dot grid"
-                  checked={canvasStyle.gridEnabled}
-                  onChange={(v) => setCanvasStyle({ gridEnabled: v })}
-                  info="Workspace and exported screenshot grid"
-                />
-                <CompactToggle
-                  label="Lock image"
-                  checked={imageLocked}
-                  onChange={setImageLocked}
-                  info="Block replace, drop, and capture"
-                />
-                <CompactToggle
-                  label="Lock annotations"
-                  checked={annotationsLocked}
-                  onChange={setAnnotationsLocked}
-                  info="Freeze move, resize, and draw edits"
-                />
-                <CompactToggle
-                  label="Bind arrows"
-                  checked={bindingEnabled}
-                  onChange={setBindingEnabled}
-                  info="Arrow and line endpoints snap to shapes and follow them as they move, resize, or rotate. Turn off for free-floating arrows."
-                />
-                <CompactToggle
-                  label="Keep resolution"
-                  checked={keepOriginal}
-                  onChange={setKeepOriginal}
-                  info="Huge images (8K, 100MP) are downscaled to ~4096px for speed. Enable to keep full resolution."
-                />
-                <CompactToggle
-                  label="Usage analytics"
-                  checked={analyticsOn}
-                  onChange={(v) => {
-                    setAnalyticsOn(v);
-                    setAnalyticsConsent(v);
-                    toastSuccess(v ? 'Analytics on' : 'Analytics off', v ? 'Anonymous usage data shared' : 'No usage data is sent');
-                  }}
-                  info="Anonymous page views only. Your images never leave your device."
-                />
-                <CompactToggle
-                  label="Recovery prompt"
-                  checked={recoveryPrompt}
-                  onChange={(v) => {
-                    setRecoveryPrompt(v);
-                    setRecoveryPromptEnabled(v);
-                    toastSuccess(v ? 'Recovery prompt on' : 'Recovery prompt off', v
-                      ? 'You will be asked to recover drafts again'
-                      : 'Drafts are still saved - you just won\u2019t be asked');
-                  }}
-                  info="Ask to recover autosaved drafts when you return"
+                  info="Sketchy strokes for shapes and freehand"
                 />
                 <CompactToggle
                   label="Shadow"
@@ -377,58 +321,109 @@ export default function SettingsDialog() {
                 />
               </div>
 
-              <div className="pt-2 border-t border-border space-y-2">
-                <button
-                  type="button"
-                  className="w-full h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary transition-colors inline-flex items-center justify-center gap-2"
-                  onClick={() => {
-                    setOpen(false);
-                    setShowHelpDialog(true);
-                  }}
-                >
-                  <Keyboard className="w-4 h-4" />
-                  Keyboard shortcuts
-                </button>
-                <div className="grid grid-cols-2 gap-2">
+              <details className="group rounded-xl border border-border/80">
+                <summary className="flex items-center justify-between gap-2 px-3 py-2 cursor-pointer list-none text-[13px] font-medium [&::-webkit-details-marker]:hidden">
+                  Editor
+                  <ChevronRight className="w-3.5 h-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
+                </summary>
+                <div className="px-3 pb-2 space-y-0.5">
+                  <CompactToggle
+                    label="Dot grid"
+                    checked={canvasStyle.gridEnabled}
+                    onChange={(v) => setCanvasStyle({ gridEnabled: v })}
+                    info="Workspace and exported screenshot grid"
+                  />
+                  <CompactToggle
+                    label="Lock image"
+                    checked={imageLocked}
+                    onChange={setImageLocked}
+                    info="Block replace, drop, and capture"
+                  />
+                  <CompactToggle
+                    label="Lock annotations"
+                    checked={annotationsLocked}
+                    onChange={setAnnotationsLocked}
+                    info="Freeze move, resize, and draw edits"
+                  />
+                  <CompactToggle
+                    label="Bind arrows"
+                    checked={bindingEnabled}
+                    onChange={setBindingEnabled}
+                    info="Arrow and line endpoints snap to shapes and follow them"
+                  />
+                  <CompactToggle
+                    label="Keep resolution"
+                    checked={keepOriginal}
+                    onChange={setKeepOriginal}
+                    info="Keep full resolution on huge images instead of downscaling"
+                  />
+                </div>
+              </details>
+
+              <details className="group rounded-xl border border-border/80">
+                <summary className="flex items-center justify-between gap-2 px-3 py-2 cursor-pointer list-none text-[13px] font-medium [&::-webkit-details-marker]:hidden">
+                  Privacy & data
+                  <ChevronRight className="w-3.5 h-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
+                </summary>
+                <div className="px-3 pb-2 space-y-0.5">
+                  <CompactToggle
+                    label="Usage analytics"
+                    checked={analyticsOn}
+                    onChange={(v) => {
+                      setAnalyticsOn(v);
+                      setAnalyticsConsent(v);
+                      toastSuccess(v ? 'Analytics on' : 'Analytics off', v ? 'Anonymous usage data shared' : 'No usage data is sent');
+                    }}
+                    info="Anonymous page views only. Your images never leave your device."
+                  />
+                  <CompactToggle
+                    label="Recovery prompt"
+                    checked={recoveryPrompt}
+                    onChange={(v) => {
+                      setRecoveryPrompt(v);
+                      setRecoveryPromptEnabled(v);
+                      toastSuccess(v ? 'Recovery prompt on' : 'Recovery prompt off', v
+                        ? 'You will be asked to recover drafts again'
+                        : 'Drafts are still saved - you just won\u2019t be asked');
+                    }}
+                    info="Ask to recover autosaved drafts when you return"
+                  />
                   <button
                     type="button"
-                    className={cn(actionBtn, 'text-sm')}
+                    className="w-full h-8 mt-1 rounded-lg border border-border text-xs font-medium hover:bg-secondary transition-colors"
                     onClick={() => {
-                      setOpen(false);
-                      setInfoDialog('about');
+                      resetToolSettings();
+                      toastSuccess('Tools reset', 'Snapty defaults restored');
                     }}
                   >
-                    <Info className="w-4 h-4" />
-                    About
-                  </button>
-                  <button
-                    type="button"
-                    className={cn(actionBtn, 'text-sm')}
-                    onClick={() => {
-                      setOpen(false);
-                      setInfoDialog('privacy');
-                    }}
-                  >
-                    <Info className="w-4 h-4" />
-                    Privacy
+                    Reset tool defaults
                   </button>
                 </div>
-              </div>
+              </details>
 
-              <div className="pt-2 border-t border-border space-y-1.5 pb-4">
+              <div className="pt-1 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-muted-foreground pb-4">
                 <button
                   type="button"
-                  className="w-full h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary transition-colors"
-                  onClick={() => {
-                    resetToolSettings();
-                    toastSuccess('Tools reset', 'Snapty defaults restored');
-                  }}
+                  className="inline-flex items-center gap-1 hover:text-foreground"
+                  onClick={() => { setOpen(false); setShowHelpDialog(true); }}
                 >
-                  Reset tools
+                  <Keyboard className="w-3.5 h-3.5" />
+                  Shortcuts
                 </button>
-                <p className="text-[11px] text-muted-foreground leading-snug">
-                  Restores stroke color, width, fill, arrowheads, font size, sloppiness, and hand-drawn mode to Snapty defaults. Your image and annotations stay.
-                </p>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 hover:text-foreground"
+                  onClick={() => { setOpen(false); setInfoDialog('about'); }}
+                >
+                  About
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 hover:text-foreground"
+                  onClick={() => { setOpen(false); setInfoDialog('privacy'); }}
+                >
+                  Privacy
+                </button>
               </div>
             </div>
           </motion.aside>

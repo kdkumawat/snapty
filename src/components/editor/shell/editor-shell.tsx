@@ -152,22 +152,44 @@ export default function EditorShell() {
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif"
+          accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif,.snapty,.json"
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];
-            if (file) void import('@/lib/image-load').then(({ loadImageFileIntoEditor }) => loadImageFileIntoEditor(file));
+            if (file) {
+              if (file.name.endsWith('.snapty') || file.name.endsWith('.json')) {
+                void import('@/lib/editor/project-file').then(async (m) => {
+                  const res = await m.loadProjectFromFile(file);
+                  const { toastError, toastSuccess } = await import('@/lib/app-toast');
+                  if (res.ok) toastSuccess('Project opened', file.name);
+                  else toastError('Could not open project', res.error);
+                });
+              } else {
+                void import('@/lib/image-load').then(({ loadImageFileIntoEditor }) => loadImageFileIntoEditor(file));
+              }
+            }
             e.target.value = '';
           }}
         />
         <input
           ref={overlayInputRef}
           type="file"
-          accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif"
+          accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif,.snapty,.json"
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];
-            if (file) void import('@/lib/image-load').then(({ addImageOverlay }) => addImageOverlay(file));
+            if (file) {
+              if (file.name.endsWith('.snapty') || file.name.endsWith('.json')) {
+                void import('@/lib/editor/project-file').then(async (m) => {
+                  const res = await m.loadProjectFromFile(file);
+                  const { toastError, toastSuccess } = await import('@/lib/app-toast');
+                  if (res.ok) toastSuccess('Project opened', file.name);
+                  else toastError('Could not open project', res.error);
+                });
+              } else {
+                void import('@/lib/image-load').then(({ addImageOverlay }) => addImageOverlay(file));
+              }
+            }
             e.target.value = '';
           }}
         />

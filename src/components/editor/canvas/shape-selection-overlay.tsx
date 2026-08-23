@@ -146,6 +146,8 @@ export default function ShapeSelectionOverlay({
   const rotateRef = useRef<Konva.Circle | null>(null);
   const handleRefs = useRef<Partial<Record<OverlayAnchor, Konva.Circle | null>>>({});
   const dragRef = useRef<DragState | null>(null);
+  const calloutPendingRef = useRef<Partial<CalloutElement> | null>(null);
+  const calloutRafRef = useRef<number | null>(null);
 
   const raw = elementSelectionBox(el);
   const sx0 = el.scaleX ?? 1;
@@ -435,7 +437,6 @@ export default function ShapeSelectionOverlay({
     if (!P) return;
     const node = getNode(el.id);
     if (!node) return;
-    // Convert pointer to element-local coords (account for node position)
     const rad = (d.rotDeg * Math.PI) / 180;
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
@@ -446,8 +447,6 @@ export default function ShapeSelectionOverlay({
     const cw = d.calloutBase.width;
     const ch = d.calloutBase.height;
     const { direction, offset } = snapCalloutPointer(lx, ly, cw, ch);
-    // Compute pointer length from the distance between the drag tip
-    // and the nearest box boundary, clamped to [8, 100].
     let distFromEdge = 0;
     switch (direction) {
       case 'top': distFromEdge = -ly; break;
@@ -460,19 +459,34 @@ export default function ShapeSelectionOverlay({
       case 'bottom-right': distFromEdge = Math.hypot(lx - cw, ly - ch); break;
     }
     const newLength = Math.max(8, Math.min(100, Math.round(distFromEdge)));
-    useEditorStore.getState().updateElement(el.id, {
-      pointerDirection: direction,
-      pointerOffset: offset,
-      pointerLength: newLength,
-    } as Partial<CalloutElement>);
-    node.getLayer()?.batchDraw();
+    calloutPendingRef.current = { pointerDirection: direction, pointerOffset: offset, pointerLength: newLength };
+    if (calloutRafRef.current !== null) return;
+    calloutRafRef.current = requestAnimationFrame(() => {
+      calloutRafRef.current = null;
+      const pending = calloutPendingRef.current;
+      calloutPendingRef.current = null;
+      if (!pending) return;
+      useEditorStore.getState().updateElementSilent(el.id, pending as Partial<CalloutElement>);
+      node.getLayer()?.batchDraw();
+    });
   };
 
   const endCalloutPointer = (e: Konva.KonvaEventObject<DragEvent>) => {
-    moveCalloutPointer(e);
+    // Flush any pending silent update as a single commit
+    if (calloutRafRef.current !== null) {
+      cancelAnimationFrame(calloutRafRef.current);
+      calloutRafRef.current = null;
+    }
+    const pending = calloutPendingRef.current;
+    calloutPendingRef.current = null;
     dragRef.current = null;
     setHandleIdle(e.target as Konva.Circle);
-    onCommit(el.id, getNode(el.id)!);
+    if (pending) {
+      useEditorStore.getState().commitElementUpdate(el.id, pending as Partial<CalloutElement>);
+    } else {
+      const node = getNode(el.id);
+      if (node) onCommit(el.id, node);
+    }
   };
 
   if (baseBox.w < MIN_SIZE || baseBox.h < MIN_SIZE) return null;

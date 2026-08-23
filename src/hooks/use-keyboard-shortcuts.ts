@@ -124,6 +124,19 @@ export function useKeyboardShortcuts() {
         }
         return;
       }
+      if (isCtrl && !isShift && key === 's') {
+        e.preventDefault();
+        // Save project (.snapty) — faster than export if user wants to continue editing later
+        if (st.backgroundImage || st.elements.length) {
+          void import('@/lib/editor/project-file').then((m) => {
+            m.downloadProject();
+            toastSuccess('Project saved', 'Downloaded .snapty file — reopen to continue editing');
+          });
+        } else {
+          toastInfo('Nothing to save', 'Add an image or annotation first');
+        }
+        return;
+      }
       if (isCtrl && isShift && key === 's') {
         e.preventDefault();
         if (!isScreenCaptureSupported()) {

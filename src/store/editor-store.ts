@@ -6,7 +6,7 @@ import type {
 import { HANDWRITTEN_FONT } from '@/types/editor';
 import { trackPageView } from '@/lib/analytics';
 import { getElementBounds, unionBounds } from '@/lib/editor/selection';
-import { labelAnchorForElement, expandLabelPairs } from '@/lib/editor/text-labels';
+import { labelAnchorForElement, expandLabelPairs, labelPairPartner } from '@/lib/editor/text-labels';
 import { applySettingToElement } from '@/lib/editor/settings-sync';
 import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
 import type { SettingKey } from '@/lib/editor/tool-settings';
@@ -241,6 +241,8 @@ interface EditorState {
   getToolScale: () => number;
   /** Crop background image to rect (image coords) and shift annotations. */
   cropToRegion: (region: { x: number; y: number; width: number; height: number }) => void;
+  /** Restore a project snapshot (.snapty) including image and annotations. */
+  loadProject: (img: HTMLImageElement | null, snapshot: { imageDataURL: string | null; imageSize: { width: number; height: number }; elements: EditorElement[]; canvasStyle: CanvasStyle; stepCounter: number }) => void;
 }
 
 const initialCanvasStyle: CanvasStyle = {
@@ -248,7 +250,7 @@ const initialCanvasStyle: CanvasStyle = {
   shadowBlur: 20, shadowOffsetX: 0, shadowOffsetY: 4,
   shadowColor: 'rgba(0,0,0,0.3)', bgStyle: 'none',
   bgColor: '#ffffff', bgGradientStart: '#667eea', bgGradientEnd: '#764ba2',
-  deviceFrame: 'none', gridEnabled: true, transparentExport: false,
+  deviceFrame: 'none', gridEnabled: false, transparentExport: false,
 };
 
 const defaults: Record<string, any> = {
@@ -278,8 +280,8 @@ const defaults: Record<string, any> = {
   exportQuality: 92,
   panelCollapsed: false,
   strokeStyle: 'solid' as StrokeStyle,
-  fillStyle: 'hachure' as FillStyle,
-  roughness: 1.25,
+  fillStyle: 'none' as FillStyle,
+  roughness: 1.0,
   magnification: 2.25,
   endArrowhead: 'arrow' as Arrowhead,
   startArrowhead: 'none' as Arrowhead,
@@ -591,6 +593,11 @@ function applyToSelection(
 ): Partial<EditorState> {
   const ids = new Set(s.selectedElementIds);
   if (!ids.size) return {};
+  for (const el of s.elements) {
+    if (!ids.has(el.id)) continue;
+    const partner = labelPairPartner(el, s.elements);
+    if (partner) ids.add(partner.id);
+  }
   const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
   let changed = false;
   const els = s.elements.map((el) => {
@@ -923,9 +930,34 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         s.elements.filter((el) => ids.has(el.id) && el.groupId).map((el) => el.groupId as string),
       );
       if (!groupIds.size) return s;
-      const els = s.elements.map((el) =>
+      // Preserve label-pair attachments: collect pairs that would be destroyed
+      // so they can be re-formed after the user group is cleared.
+      const pairsToRestore: Array<[EditorElement, EditorElement]> = [];
+      for (const gid of groupIds) {
+        const members = s.elements.filter((el) => el.groupId === gid);
+        const textMembers = members.filter((el) => el.type === 'text');
+        const nonTextMembers = members.filter((el) => el.type !== 'text');
+        if (textMembers.length === 1 && nonTextMembers.length === 1 && members.length === 2) {
+          pairsToRestore.push([nonTextMembers[0], textMembers[0]]);
+        }
+      }
+      let els = s.elements.map((el) =>
         el.groupId && groupIds.has(el.groupId) ? { ...el, groupId: undefined } as EditorElement : el,
       );
+      // Re-form any destroyed label pairs with fresh groupIds so the text stays glued to its shape after ungrouping a larger group that had absorbed the pair.
+      if (pairsToRestore.length) {
+        const restoreMap = new Map<string, string>();
+        for (const [shape, label] of pairsToRestore) {
+          if (groupIds.has(shape.groupId as string)) {
+            const newGid = generateId();
+            restoreMap.set(shape.id, newGid);
+            restoreMap.set(label.id, newGid);
+          }
+        }
+        if (restoreMap.size) {
+          els = els.map((el) => restoreMap.has(el.id) ? { ...el, groupId: restoreMap.get(el.id) } as EditorElement : el);
+        }
+      }
       return pushHistory(s, els);
     });
   },
@@ -1602,6 +1634,32 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       setTimeout(() => get().resetView(), 30);
     };
     img.src = dataUrl;
+  },
+
+  loadProject: (img, snapshot) => {
+    const size = snapshot.imageSize;
+    const dataURL = snapshot.imageDataURL;
+    const canvasStyle = snapshot.canvasStyle ?? initialCanvasStyle;
+    const elements = snapshot.elements ?? [];
+    const stepCounter = typeof snapshot.stepCounter === 'number' ? snapshot.stepCounter : 1;
+    syncEditorRoute(true);
+    set({
+      backgroundImage: img,
+      imageDataURL: dataURL,
+      imageSize: size,
+      elements,
+      selectedElementIds: [],
+      canvasStyle,
+      stepCounter,
+      isEditorLaunched: true,
+      imageLoading: false,
+      zoom: 1,
+      stagePosition: { x: 0, y: 0 },
+      ...emptyHistory(dataURL, size, undefined, stepCounter, canvasStyle),
+      _history: [makeSnapshot(elements, dataURL, size, undefined, stepCounter, canvasStyle)],
+      _historyIndex: 0,
+    });
+    setTimeout(() => get().resetView(), 30);
   },
 }));
 
