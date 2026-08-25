@@ -256,7 +256,9 @@ function SupportMock() {
 function PrivacyMock() {
   return (
     <BrowserChrome title="metabase.internal / Revenue · This quarter">
-      <div className="absolute inset-0 p-3.5 grid grid-cols-3 gap-2.5 content-start">
+      {/* pt-7 leaves room for the "MRR is off" callout above the first card;
+          overflow-hidden on BrowserChrome's content area would otherwise clip it. */}
+      <div className="absolute inset-0 pt-7 px-3.5 pb-3.5 grid grid-cols-3 gap-2.5 content-start">
         <div className="relative rounded-xl border border-stone-200 p-3 bg-white">
           <div
             className="absolute inset-2 rounded-lg border-2 pointer-events-none"

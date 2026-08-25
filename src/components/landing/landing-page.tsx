@@ -8,12 +8,13 @@ import ScissorLogo from '@/components/scissor-logo';
 import { useTheme } from 'next-themes';
 import {
   Sun, Moon, Monitor, Github, ArrowRight, Keyboard, Shield, Zap,
-  ScanSearch, Type, MousePointer2, Download,
+  ScanSearch, Type, MousePointer2, Download, Sparkles, Loader2,
 } from 'lucide-react';
 import LandingScenarioDemo from '@/components/landing/landing-scenario-demo';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { Kbd } from '@/components/editor/ui/kbd';
 import { toastInfo } from '@/lib/app-toast';
+import { loadSampleImageIntoEditor } from '@/lib/editor/sample-image';
 
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
@@ -67,7 +68,19 @@ const capabilities = [
 export default function LandingPage() {
   const router = useRouter();
   const reducedMotion = useReducedMotion();
+  const [sampleBusy, setSampleBusy] = React.useState(false);
   const openEditor = () => router.push('/editor');
+
+  const handleTrySample = async () => {
+    if (sampleBusy) return;
+    setSampleBusy(true);
+    try {
+      const ok = await loadSampleImageIntoEditor();
+      if (ok) router.push('/editor');
+    } finally {
+      setSampleBusy(false);
+    }
+  };
 
   const handlePasteClick = async () => {
     // Try to read an image straight from the clipboard; only fall back to the
@@ -181,6 +194,17 @@ export default function LandingPage() {
               >
                 Paste A Screenshot
                 <Kbd>Ctrl+V</Kbd>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleTrySample()}
+                disabled={sampleBusy}
+                className="h-12 px-5 inline-flex items-center gap-2 rounded-full text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors disabled:opacity-60"
+              >
+                {sampleBusy
+                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                  : <Sparkles className="w-4 h-4 text-accent" />}
+                {sampleBusy ? 'Loading sample…' : 'Try a sample'}
               </button>
             </motion.div>
 
