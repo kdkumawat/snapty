@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
 
 type Kind = 'bug' | 'settings' | 'support' | 'privacy';
 
@@ -309,25 +310,55 @@ const MOCKS: Record<Kind, React.FC> = {
 
 export default function LandingScenarioDemo() {
   const [index, setIndex] = useState(0);
+  const reducedMotion = useReducedMotion();
+  // Auto-rotation runs only when the demo is on-screen, the user is not
+  // hovering/focusing it, and the user has not requested reduced motion.
+  const [paused, setPaused] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
   const scenario = SCENARIOS[index];
   const Mock = MOCKS[scenario.id];
 
   useEffect(() => {
+    if (reducedMotion || paused) return;
     const id = window.setInterval(() => {
       setIndex((i) => (i + 1) % SCENARIOS.length);
     }, 5600);
     return () => window.clearInterval(id);
-  }, []);
+  }, [reducedMotion, paused]);
+
+  // Pause when the demo leaves the viewport (e.g. user scrolled past).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || reducedMotion) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) setPaused(!e.isIntersecting);
+      },
+      { threshold: 0.25 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [reducedMotion]);
 
   return (
-    <div className="relative w-full max-w-2xl mx-auto">
-      <AnimatePresence mode="wait">
+    <div
+      ref={containerRef}
+      role="group"
+      aria-roledescription="carousel"
+      aria-label="Snapty usage scenarios"
+      className="relative w-full max-w-2xl mx-auto"
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={() => setPaused(false)}
+    >
+      <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={scenario.id}
-          initial={{ opacity: 0, y: 12 }}
+          initial={reducedMotion ? false : { opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -8 }}
-          transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+          exit={reducedMotion ? undefined : { opacity: 0, y: -8 }}
+          transition={{ duration: reducedMotion ? 0 : 0.4, ease: [0.22, 1, 0.36, 1] }}
           className="text-center mb-5"
         >
           <p className="text-base sm:text-lg font-semibold tracking-tight text-foreground">
@@ -341,14 +372,15 @@ export default function LandingScenarioDemo() {
 
       <div className="relative rounded-2xl border border-border bg-surface shadow-[var(--floating-shadow)] overflow-hidden aspect-[16/10]">
         <div className="absolute inset-0 bg-[#ebe9e7] canvas-dot-grid opacity-90" />
-        <AnimatePresence mode="wait">
+        <AnimatePresence mode="wait" initial={false}>
           <motion.div
             key={scenario.id}
-            initial={{ opacity: 0 }}
+            initial={reducedMotion ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.35 }}
+            exit={reducedMotion ? undefined : { opacity: 0 }}
+            transition={{ duration: reducedMotion ? 0 : 0.35 }}
             className="absolute inset-0"
+            aria-hidden
           >
             <Mock />
           </motion.div>
@@ -363,6 +395,7 @@ export default function LandingScenarioDemo() {
             role="tab"
             aria-selected={i === index}
             aria-label={s.title}
+            tabIndex={0}
             onClick={() => setIndex(i)}
             className={cn(
               'h-1.5 rounded-full transition-all duration-300',
