@@ -1,102 +1,115 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
-import { X, RefreshCw } from 'lucide-react';
+import { useEffect, useRef } from 'react';
+import { RefreshCw } from 'lucide-react';
+import { toast } from '@/hooks/use-toast';
+import { ToastAction } from '@/components/ui/toast';
+
+/**
+ * Production-grade "new version available" prompt.
+ *
+ * Detection: poll /version.json (a tiny static asset written at build time by
+ * scripts/write-version.mjs) on mount and whenever the tab regains focus. The
+ * first sha the user ever sees is recorded in localStorage; any later sha that
+ * differs triggers exactly one toast until the user reloads.
+ *
+ * Compared to the previous service-worker-driven approach this is:
+ *   - Reliable on Cloudflare Pages (no SW cache racing the deploy)
+ *   - Cheap (one ~40-byte JSON fetch per focus, no interval)
+ *   - Work-loss safe (the toast offers a Reload button instead of auto-reload)
+ */
+
+const VERSION_URL = '/version.json';
+const SEEN_KEY = 'snapty-seen-version';
+const POLL_DELAY_MS = 1500;
+
+type VersionPayload = { sha?: string; builtAt?: string };
+
+function isVersionPayload(v: unknown): v is VersionPayload {
+  return !!v && typeof v === 'object' && 'sha' in v;
+}
 
 export default function UpdateToast() {
-  const [show, setShow] = useState(false);
+  // Track which sha we already announced so polling doesn't fire duplicate
+  // toasts, and which sha is the user's "last seen" baseline.
+  const announcedShaRef = useRef<string | null>(null);
+  const seenBaselineRef = useRef<string | null>(null);
+  const initialCheckDoneRef = useRef(false);
 
   useEffect(() => {
-    if (!('serviceWorker' in navigator)) return;
-    // Avoid stale SW caches fighting Turbopack HMR during local development
-    if (process.env.NODE_ENV === 'development') {
-      void navigator.serviceWorker.getRegistrations().then((regs) => {
-        for (const reg of regs) void reg.unregister();
-      });
-      return;
-    }
+    if (typeof window === 'undefined') return;
 
-    let isMounted = true;
-    const showToast = () => {
-      if (isMounted) setShow(true);
-    };
+    let cancelled = false;
+    const seenRaw = (() => {
+      try { return window.localStorage.getItem(SEEN_KEY); } catch { return null; }
+    })();
+    seenBaselineRef.current = seenRaw;
+    announcedShaRef.current = seenRaw;
 
-    const registerServiceWorker = async () => {
+    const checkForUpdate = async () => {
+      if (cancelled) return;
       try {
-        const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        const res = await fetch(VERSION_URL, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data: unknown = await res.json();
+        if (!isVersionPayload(data) || !data.sha) return;
+        const serverSha = data.sha;
 
-        if (registration.waiting) {
-          showToast();
+        // First observation on this device: just record the baseline so the
+        // very first load after a deploy never spuriously toasts.
+        if (!initialCheckDoneRef.current) {
+          initialCheckDoneRef.current = true;
+          seenBaselineRef.current = serverSha;
+          announcedShaRef.current = serverSha;
+          try { window.localStorage.setItem(SEEN_KEY, serverSha); } catch { /* ignore */ }
+          return;
         }
 
-        registration.addEventListener('updatefound', () => {
-          const newWorker = registration.installing;
-          if (!newWorker) return;
+        if (serverSha === announcedShaRef.current) return;
+        announcedShaRef.current = serverSha;
+        // Persist the new baseline immediately so re-focuses don't re-fire.
+        try { window.localStorage.setItem(SEEN_KEY, serverSha); } catch { /* ignore */ }
 
-          newWorker.addEventListener('statechange', () => {
-            if (newWorker.state === 'installed' || newWorker.state === 'activated') {
-              showToast();
-            }
-          });
+        toast({
+          title: 'Update available',
+          description: 'A new version of Snapty is ready. Reload to get the latest.',
+          duration: Number.POSITIVE_INFINITY,
+          action: (
+            <ToastAction
+              altText="Reload to update"
+              onClick={() => {
+                // Bust the static asset cache so the reload actually fetches
+                // the new HTML bundle instead of a Cloudflare-cached copy.
+                window.location.reload();
+              }}
+              className="gap-1.5"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Reload
+            </ToastAction>
+          ),
         });
-
-        await registration.update();
-        if (registration.waiting) {
-          showToast();
-        }
       } catch {
-        // Ignore registration failures; the app can still run without the update prompt.
+        // Network failure or parse error — try again on next focus.
       }
     };
 
-    const handleControllerChange = () => {
-      window.location.reload();
+    // Tiny delay lets the page reach `complete` so the very first poll doesn't
+    // race the prebuild-written version.json when running `next dev`.
+    const initialTimer = window.setTimeout(checkForUpdate, POLL_DELAY_MS);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void checkForUpdate();
     };
-
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'NEW_VERSION_READY') {
-        showToast();
-      }
-    };
-
-    void registerServiceWorker();
-    navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
-    navigator.serviceWorker.addEventListener('message', handleMessage);
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', onVisibility);
 
     return () => {
-      isMounted = false;
-      navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange);
-      navigator.serviceWorker.removeEventListener('message', handleMessage);
+      cancelled = true;
+      window.clearTimeout(initialTimer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', onVisibility);
     };
   }, []);
 
-  const handleRefresh = useCallback(() => {
-    setShow(false);
-    const refreshApp = () => window.location.reload();
-
-    navigator.serviceWorker.getRegistration().then((registration) => {
-      if (registration?.waiting) {
-        registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-      } else if (navigator.serviceWorker.controller) {
-        navigator.serviceWorker.controller.postMessage({ type: 'SKIP_WAITING' });
-      }
-      window.setTimeout(refreshApp, 250);
-    }).catch(() => {
-      refreshApp();
-    });
-  }, []);
-
-  if (!show) return null;
-
-  return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9999] bg-accent text-accent-foreground px-4 py-2.5 rounded-lg shadow-lg flex items-center gap-3 text-sm font-medium animate-in fade-in-0 slide-in-from-bottom-4">
-      <span>A new version is available</span>
-      <button onClick={handleRefresh} className="inline-flex items-center gap-1.5 bg-white/20 hover:bg-white/30 rounded-md px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer">
-        <RefreshCw className="w-3 h-3" />Refresh
-      </button>
-      <button onClick={() => setShow(false)} className="p-0.5 hover:bg-white/20 rounded transition-colors cursor-pointer">
-        <X className="w-3.5 h-3.5" />
-      </button>
-    </div>
-  );
+  return null;
 }
