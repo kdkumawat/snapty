@@ -89,6 +89,13 @@ export interface BaseElement {
   draggable?: boolean;
   locked?: boolean;
   groupId?: string;
+  /**
+   * Explicit container binding. For text elements, this is the shape the
+   * text lives inside. Replaces the legacy `groupId`-pair detection for
+   * label/inside-shape relationships. Read path:
+   * `el.containerId ?? findPartnerByGroupId(el)`.
+   */
+  containerId?: string;
   strokeStyle?: StrokeStyle;
   fillStyle?: FillStyle;
   roughness?: number;
@@ -106,6 +113,13 @@ export interface ShapeElement extends BaseElement {
   blurRadius?: number;
   pixelSize?: number;
   imageDataURL?: string;
+  /**
+   * IDs of text elements bound to this shape (text living inside it, or
+   * standalone labels on it). Back-reference to `TextElement.containerId`.
+   * Derived at runtime if absent: every text whose `containerId === id`.
+   * Order = z-stacking.
+   */
+  labelIds?: string[];
 }
 
 export interface DiamondElement extends BaseElement {
@@ -115,6 +129,7 @@ export interface DiamondElement extends BaseElement {
   fill?: string;
   stroke?: string;
   strokeWidth?: number;
+  labelIds?: string[];
 }
 
 export interface ArrowElement extends BaseElement {
@@ -196,6 +211,7 @@ export interface CircleElement extends BaseElement {
   fill?: string;
   stroke?: string;
   strokeWidth?: number;
+  labelIds?: string[];
 }
 
 export interface TextElement extends BaseElement {
@@ -359,6 +375,7 @@ export interface CalloutElement extends BaseElement {
    * Defaults to 20 (scaled by image tool scale).
    */
   pointerWidth?: number;
+  labelIds?: string[];
 }
 
 export interface MagnifierElement extends BaseElement {

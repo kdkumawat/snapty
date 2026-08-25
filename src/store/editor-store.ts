@@ -7,6 +7,7 @@ import { HANDWRITTEN_FONT } from '@/types/editor';
 import { trackPageView } from '@/lib/analytics';
 import { getElementBounds, unionBounds } from '@/lib/editor/selection';
 import { labelAnchorForElement, expandLabelPairs, labelPairPartner } from '@/lib/editor/text-labels';
+import { reflowAllContainerText as reflowAllContainerTextFn } from '@/lib/editor/container-reflow';
 import { applySettingToElement } from '@/lib/editor/settings-sync';
 import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
 import type { SettingKey } from '@/lib/editor/tool-settings';
@@ -243,6 +244,50 @@ interface EditorState {
   cropToRegion: (region: { x: number; y: number; width: number; height: number }) => void;
   /** Restore a project snapshot (.snapty) including image and annotations. */
   loadProject: (img: HTMLImageElement | null, snapshot: { imageDataURL: string | null; imageSize: { width: number; height: number }; elements: EditorElement[]; canvasStyle: CanvasStyle; stepCounter: number }) => void;
+
+  // ── Slice A: Excalidraw-parity state + actions ──────────────────────────
+
+  /** ID of the element currently under the pointer in select/hand mode. */
+  hoveredId: string | null;
+  setHoveredId: (id: string | null) => void;
+
+  /** Pre-drag bounds snapshot of the multi-select, for the drag-ghost outline. */
+  multiSelectGhost: { id: string; box: { x: number; y: number; w: number; h: number } }[] | null;
+  beginMultiSelectDrag: () => void;
+  endMultiSelectDrag: () => void;
+
+  /** Reflow every container-bound text for a shape (multi-label aware). */
+  reflowAllContainerText: (shapeId: string) => void;
+
+  /** Update a text element's measured {width, height} as one undo step. */
+  commitTextReflow: (id: string, layout: { width: number; height: number; lines: string[] }) => void;
+
+  /** Live preview while typing in the inline editor; no history push. */
+  updateTextSilent: (id: string, updates: Partial<EditorElement>) => void;
+
+  /** Bind an existing text element to a shape (writes containerId + labelIds). */
+  bindTextToContainer: (textId: string, containerId: string) => void;
+
+  /** Drop the container binding on a text + remove it from the shape's labelIds. */
+  unbindTextFromContainer: (textId: string) => void;
+
+  /** Add a second (or Nth) label to a shape; returns the new label's id. */
+  addLabelToShape: (shapeId: string, opts?: { offset?: { x: number; y: number } }) => string;
+
+  /** Remove a label entirely; the parent shape's labelIds is cleaned. */
+  removeLabelFromShape: (shapeId: string, labelId: string) => void;
+
+  /** Move a label within a shape's `labelIds` array (z-order). */
+  reorderLabels: (shapeId: string, labelId: string, toIndex: number) => void;
+
+  /** Invert the current selection. Cmd/Ctrl+Shift+A. */
+  invertSelection: () => void;
+
+  /** Tab/Shift+Tab — cycle selection by z-order (top → bottom, then wrap). */
+  cycleSelection: (direction: 1 | -1) => void;
+
+  /** Cmd/Ctrl+Shift+D — duplicate the selection in place (no offset). */
+  duplicateInPlace: () => void;
 }
 
 const initialCanvasStyle: CanvasStyle = {
@@ -476,16 +521,22 @@ function reflowAttachedLabel(
   imageSize: { width: number; height: number },
 ): EditorElement[] {
   const shape = elements.find((el) => el.id === shapeId);
-  if (!shape || shape.type === 'text' || !shape.groupId) return elements;
-  const label = elements.find(
-    (el) => el.type === 'text' && el.groupId === shape.groupId,
+  if (!shape || shape.type === 'text') return elements;
+  // Prefer the explicit containerId binding; fall back to groupId-pair.
+  let label = elements.find(
+    (el) => el.type === 'text' && el.containerId === shapeId,
   ) as TextElement | undefined;
+  if (!label && shape.groupId) {
+    label = elements.find(
+      (el) => el.type === 'text' && el.groupId === shape.groupId,
+    ) as TextElement | undefined;
+  }
   if (!label) return elements;
   const scale = getImageToolScale(imageSize.width, imageSize.height);
   const anchor = labelAnchorForElement(shape, imageSize, label.fontSize ?? 24, scale, label);
   const rotation = (shape as { rotation?: number }).rotation ?? 0;
   return elements.map((el) =>
-    el.id === label.id
+    el.id === label!.id
       ? {
           ...el,
           x: anchor.x,
@@ -896,9 +947,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const shape = s.elements.find((el) => el.id === shapeId);
       const groupId = shape?.groupId ?? textEl.groupId;
       const els = s.elements.map((el) =>
-        el.id === shapeId ? { ...el, groupId } as EditorElement : el
+        el.id === shapeId ? {
+          ...el,
+          groupId,
+          labelIds: [...((el as { labelIds?: string[] }).labelIds ?? []), textEl.id],
+        } as EditorElement : el
       );
-      return pushHistory(s, [...els, { ...textEl, groupId }]);
+      return pushHistory(s, [...els, { ...textEl, groupId, containerId: shapeId }]);
     });
   },
   groupSelected: () => {
@@ -1434,6 +1489,260 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
   setSelectedElementIds: (ids) => set({ selectedElementIds: ids }),
   clearElements: () => set((s) => ({ ...pushHistory(s, []), selectedElementIds: [] })),
+
+  // ── Slice A: Excalidraw-parity actions ──────────────────────────────────
+
+  hoveredId: null,
+  setHoveredId: (id) => set({ hoveredId: id }),
+
+  /** Snapshot of the multi-select bounds before the current drag began. */
+  multiSelectGhost: null,
+  beginMultiSelectDrag: () => {
+    set((s) => {
+      if (s.selectedElementIds.length < 2) return s;
+      const byId = new Map(s.elements.map((el) => [el.id, el] as const));
+      const boxes: { id: string; box: { x: number; y: number; w: number; h: number } }[] = [];
+      for (const id of s.selectedElementIds) {
+        const el = byId.get(id);
+        if (!el) continue;
+        const b = getElementBounds(el, s.imageSize);
+        boxes.push({ id, box: { x: b.x, y: b.y, w: b.w, h: b.h } });
+      }
+      return { multiSelectGhost: boxes };
+    });
+  },
+  endMultiSelectDrag: () => set({ multiSelectGhost: null }),
+
+  /** Reflow every container-bound text for a shape (multi-label aware). */
+  reflowAllContainerText: (shapeId) => {
+    set((s) => {
+      const next = reflowAllContainerTextFn(s.elements, shapeId, { imageSize: s.imageSize });
+      if (next === s.elements) return s;
+      return pushHistory(s, next);
+    });
+  },
+
+  /** Update a text element's measured {width, height, lines} as one undo step. */
+  commitTextReflow: (id, layout) => {
+    set((s) => {
+      const els = s.elements.map((el) =>
+        el.id === id
+          ? ({ ...el, width: layout.width, height: layout.height } as EditorElement)
+          : el,
+      );
+      return pushHistory(s, els);
+    });
+  },
+
+  /** Live preview while typing in the inline editor; no history push. */
+  updateTextSilent: (id, updates) => {
+    set((s) => ({
+      elements: s.elements.map((el) =>
+        el.id === id ? ({ ...el, ...updates } as EditorElement) : el,
+      ),
+    }));
+  },
+
+  /** Bind an existing text element to a shape (writes containerId + labelIds). */
+  bindTextToContainer: (textId, containerId) => {
+    set((s) => {
+      const els = s.elements.map((el) => {
+        if (el.id === textId) return { ...el, containerId } as EditorElement;
+        if (el.id === containerId) {
+          const ids = (el as { labelIds?: string[] }).labelIds ?? [];
+          if (ids.includes(textId)) return el;
+          return { ...el, labelIds: [...ids, textId] } as EditorElement;
+        }
+        return el;
+      });
+      return pushHistory(s, els);
+    });
+  },
+
+  /** Drop the container binding on a text + remove it from the shape's labelIds. */
+  unbindTextFromContainer: (textId) => {
+    set((s) => {
+      const text = s.elements.find((el) => el.id === textId);
+      const containerId = text?.containerId;
+      const els = s.elements.map((el) => {
+        if (el.id === textId) {
+          const { containerId: _drop, ...rest } = el as TextElement & { containerId?: string };
+          return rest as EditorElement;
+        }
+        if (el.id === containerId) {
+          const ids = ((el as { labelIds?: string[] }).labelIds ?? []).filter(
+            (id) => id !== textId,
+          );
+          return { ...el, labelIds: ids } as EditorElement;
+        }
+        return el;
+      });
+      return pushHistory(s, els);
+    });
+  },
+
+  /**
+   * Add a SECOND (or third…) label to a shape that already has one. Returns
+   * the new label's id. The new label is placed at `offset` from the
+   * shape's top-left and inherits the current style defaults.
+   */
+  addLabelToShape: (shapeId, opts) => {
+    const newId = generateId();
+    set((s) => {
+      const shape = s.elements.find((el) => el.id === shapeId);
+      if (!shape) return s;
+      const scale = getImageToolScale(s.imageSize.width, s.imageSize.height);
+      const offset = opts?.offset ?? { x: 16, y: 16 };
+      // Use the existing label's fontSize/fontFamily if any, else defaults.
+      const existing = s.elements.find(
+        (el) => el.type === 'text' && el.containerId === shapeId,
+      ) as TextElement | undefined;
+      const fontSize = existing?.fontSize ?? s.fontSize ?? 20;
+      const anchor = labelAnchorForElement(
+        shape, s.imageSize, fontSize, scale, existing,
+      );
+      const labelText: TextElement = {
+        id: newId,
+        type: 'text',
+        x: anchor.x + offset.x,
+        y: anchor.y + offset.y,
+        text: '',
+        fontSize,
+        fontFamily: existing?.fontFamily ?? s.fontFamily,
+        fontStyle: existing?.fontStyle ?? s.fontStyle,
+        fill: existing?.fill ?? s.strokeColor,
+        align: 'center',
+        width: Math.max(48, anchor.width - offset.x * 2),
+        height: fontSize * 1.4,
+        padding: 4,
+        lineHeight: 1.25,
+        containerId: shapeId,
+        groupId: shape.groupId,
+      };
+      const els = s.elements.map((el) => {
+        if (el.id === shapeId) {
+          const ids = (el as { labelIds?: string[] }).labelIds ?? [];
+          return { ...el, labelIds: [...ids, newId] } as EditorElement;
+        }
+        return el;
+      });
+      return pushHistory(s, [...els, labelText]);
+    });
+    return newId;
+  },
+
+  /** Remove a label entirely; the parent shape keeps its `labelIds` clean. */
+  removeLabelFromShape: (shapeId, labelId) => {
+    set((s) => {
+      const els = s.elements
+        .filter((el) => el.id !== labelId)
+        .map((el) => {
+          if (el.id === shapeId) {
+            const ids = ((el as { labelIds?: string[] }).labelIds ?? []).filter(
+              (id) => id !== labelId,
+            );
+            return { ...el, labelIds: ids } as EditorElement;
+          }
+          return el;
+        });
+      return {
+        ...pushHistory(s, els),
+        selectedElementIds: s.selectedElementIds.filter((id) => id !== labelId),
+      };
+    });
+  },
+
+  /** Move a label within a shape's `labelIds` array (z-order). */
+  reorderLabels: (shapeId, labelId, toIndex) => {
+    set((s) => {
+      const els = s.elements.map((el) => {
+        if (el.id !== shapeId) return el;
+        const ids = ((el as { labelIds?: string[] }).labelIds ?? []).slice();
+        const from = ids.indexOf(labelId);
+        if (from < 0) return el;
+        ids.splice(from, 1);
+        ids.splice(Math.max(0, Math.min(toIndex, ids.length)), 0, labelId);
+        return { ...el, labelIds: ids } as EditorElement;
+      });
+      return pushHistory(s, els);
+    });
+  },
+
+  /** Invert the current selection. Cmd/Ctrl+Shift+A. */
+  invertSelection: () => {
+    set((s) => {
+      const sel = new Set(s.selectedElementIds);
+      const next = s.elements
+        .filter((el) => !sel.has(el.id))
+        .map((el) => el.id);
+      return { selectedElementIds: next };
+    });
+  },
+
+  /** Tab/Shift+Tab — cycle selection by z-order (top → bottom, then wrap). */
+  cycleSelection: (direction) => {
+    set((s) => {
+      if (s.elements.length === 0) return s;
+      const ordered = s.elements.slice().reverse().map((el) => el.id); // top first
+      if (s.selectedElementIds.length === 0) {
+        return { selectedElementIds: direction > 0 ? [ordered[0]!] : [ordered[ordered.length - 1]!] };
+      }
+      const current = new Set(s.selectedElementIds);
+      // Find the highest z-order selected element.
+      const currentTop = ordered.find((id) => current.has(id)) ?? ordered[0]!;
+      const idx = ordered.indexOf(currentTop);
+      let nextIdx = idx + direction;
+      if (nextIdx < 0) nextIdx = ordered.length - 1;
+      if (nextIdx >= ordered.length) nextIdx = 0;
+      return { selectedElementIds: [ordered[nextIdx]!] };
+    });
+  },
+
+  /** Cmd/Ctrl+Shift+D — duplicate the selection in place (no offset). */
+  duplicateInPlace: () => {
+    set((s) => {
+      if (!s.selectedElementIds.length) return s;
+      const ids = new Set(expandLabelPairs(s.elements, s.selectedElementIds));
+      const idMap = new Map<string, string>();
+      const now = Date.now().toString(36);
+      let i = 0;
+      const clones: EditorElement[] = [];
+      for (const el of s.elements) {
+        if (!ids.has(el.id)) continue;
+        const newId = `${el.id}-dup-${now}-${i++}`;
+        idMap.set(el.id, newId);
+        // Rewrite groupId for the new clone (don't reuse the original group's id
+        // — would interfere with the originals). containerId + labelIds remap
+        // below.
+        const clone: EditorElement = { ...el, id: newId } as EditorElement;
+        clones.push(clone);
+      }
+      // Second pass: remap containerId + labelIds so internal pair links
+      // survive the duplicate.
+      const remapped = clones.map((c) => {
+        const textEl = c as TextElement;
+        const newContainer = textEl.containerId ? idMap.get(textEl.containerId) : undefined;
+        const newGroup = (c as { groupId?: string }).groupId ?? generateId();
+        return {
+          ...c,
+          groupId: newGroup,
+          containerId: newContainer,
+        } as EditorElement;
+      });
+      // For shapes that had labelIds, remap them to point at the new label clones.
+      const finalRemapped = remapped.map((c) => {
+        const ids = (c as { labelIds?: string[] }).labelIds;
+        if (!ids) return c;
+        const remappedIds = ids.map((id) => idMap.get(id) ?? id);
+        return { ...c, labelIds: remappedIds } as EditorElement;
+      });
+      const newSelected = Array.from(idMap.values());
+      return {
+        ...pushHistory(s, [...s.elements, ...finalRemapped]),
+        selectedElementIds: newSelected,
+      };
+    });
+  },
 
   bringForward: (id) => set((s) => {
     const ids = new Set(clusterMemberIds(s.elements, id));

@@ -37,6 +37,9 @@ const CLOSED_SHAPES = new Set(['rectangle', 'rounded-rect', 'circle', 'diamond',
  * True when `groupId` describes a shape↔label pair: exactly one text member
  * and one non-text member sharing the group. User groups with more members
  * (or no text) are not pairs and keep whole-group selection semantics.
+ *
+ * Legacy detection path — new code should prefer `isContainerText` /
+ * `resolveContainerShape` for the explicit `containerId` relationship.
  */
 export function isLabelPairGroup(groupId: string, elements: EditorElement[]): boolean {
   let text = 0;
@@ -50,6 +53,22 @@ export function isLabelPairGroup(groupId: string, elements: EditorElement[]): bo
 }
 
 /**
+ * Fast-path: a text element is a container label when it has `containerId`
+ * set. Falls back to the legacy groupId pair when not (so old projects keep
+ * rendering without migration).
+ */
+export function isContainerText(
+  el: EditorElement,
+  elements: EditorElement[],
+): boolean {
+  if (el.type !== 'text') return false;
+  if (el.containerId) {
+    return elements.some((other) => other.id === el.containerId);
+  }
+  return !!el.groupId && isLabelPairGroup(el.groupId, elements);
+}
+
+/**
  * Expand a set of element ids to include the partner of any shape↔label pair.
  *
  * - `fromShapeOnly` (delete/eraser): removing a shape also removes its label,
@@ -57,6 +76,9 @@ export function isLabelPairGroup(groupId: string, elements: EditorElement[]): bo
  *   non-text member pulls its text partner in.
  * - Otherwise (duplicate/copy): either member pulls the whole pair, since a
  *   clone/paste of one half must never strand the other.
+ *
+ * Honours both the explicit `containerId` binding and the legacy
+ * `groupId`-pair detection so old projects still work.
  */
 export function expandLabelPairs(
   elements: EditorElement[],
@@ -65,13 +87,46 @@ export function expandLabelPairs(
 ): Set<string> {
   const out = new Set(ids);
   const byId = new Map(elements.map((el) => [el.id, el]));
+  // Build the full container relationship in one pass so we can resolve
+  // any element (text or shape) to its label-partners in O(1).
+  const textByContainer = new Map<string, string[]>();
+  const legacyPairByMember = new Map<string, string>();
+  for (const el of elements) {
+    if (el.type === 'text' && el.containerId) {
+      const list = textByContainer.get(el.containerId) ?? [];
+      list.push(el.id);
+      textByContainer.set(el.containerId, list);
+    }
+  }
+  for (const el of elements) {
+    if (el.type === 'text' && el.groupId && isLabelPairGroup(el.groupId, elements)) {
+      for (const other of elements) {
+        if (other.id !== el.id && other.groupId === el.groupId) {
+          legacyPairByMember.set(el.id, other.id);
+          legacyPairByMember.set(other.id, el.id);
+        }
+      }
+    }
+  }
+
   for (const id of ids) {
     const el = byId.get(id);
-    if (!el || !el.groupId) continue;
+    if (!el) continue;
     if (fromShapeOnly && el.type === 'text') continue;
-    if (!isLabelPairGroup(el.groupId, elements)) continue;
-    for (const other of elements) {
-      if (other.id !== id && other.groupId === el.groupId) out.add(other.id);
+
+    // containerId path: the shape pulls ALL of its labels in.
+    if (el.type !== 'text' && textByContainer.has(el.id)) {
+      for (const labelId of textByContainer.get(el.id)!) out.add(labelId);
+    }
+    if (el.type === 'text' && el.containerId) {
+      // text pulling its container: only on copy/duplicate, not on delete.
+      if (!fromShapeOnly) out.add(el.containerId);
+    }
+    // legacy groupId pair
+    if (el.groupId) {
+      if (!isLabelPairGroup(el.groupId, elements)) continue;
+      const partner = legacyPairByMember.get(id);
+      if (partner) out.add(partner);
     }
   }
   return out;
@@ -86,11 +141,17 @@ export function isClosedShape(el: EditorElement): boolean {
  *
  * Closed-shape + text pairs behave as one object (click either → the shape).
  * Arrow/line labels stay independently selectable so they can slide on the path.
+ * Honours the explicit `containerId` first, then falls back to the legacy
+ * `groupId`-pair detection.
  */
 export function selectionTargetForClick(
   clicked: EditorElement,
   elements: EditorElement[],
 ): string {
+  // containerId path: clicking a label routes to its container.
+  if (clicked.type === 'text' && clicked.containerId) {
+    return clicked.containerId;
+  }
   if (!clicked.groupId || !isLabelPairGroup(clicked.groupId, elements)) return clicked.id;
   const pair = elements.filter((el) => el.groupId === clicked.groupId);
   const container = pair.find((el) => el.type !== 'text' && isClosedShape(el));
@@ -103,6 +164,21 @@ export function labelPairPartner(
   el: EditorElement,
   elements: EditorElement[],
 ): EditorElement | undefined {
+  // containerId path: text → its container; container → its primary label.
+  if (el.containerId) {
+    const partner = elements.find((other) => other.id === el.containerId);
+    if (partner) return partner;
+  }
+  if (el.type === 'text' && el.containerId) {
+    return elements.find((other) => other.id === el.containerId);
+  }
+  if (el.type !== 'text') {
+    const labelIds = (el as { labelIds?: string[] }).labelIds;
+    if (labelIds?.length) {
+      const first = elements.find((other) => other.id === labelIds[0]);
+      if (first) return first;
+    }
+  }
   if (!el.groupId || !isLabelPairGroup(el.groupId, elements)) return undefined;
   return elements.find((other) => other.id !== el.id && other.groupId === el.groupId);
 }
@@ -336,6 +412,11 @@ export type LabelStyle = {
 /**
  * Build a TextElement for an attached label. Callers wrap it in a single
  * undo step together with the groupId assignment on the shape.
+ *
+ * Writes both `containerId` (the explicit back-reference) and `groupId`
+ * (the user-group mechanism + the legacy label-pair fallback). Reading
+ * code prefers `containerId`; old projects without it still resolve via
+ * the groupId-pair path.
  */
 export function createAttachedLabel(
   id: string,
@@ -344,7 +425,7 @@ export function createAttachedLabel(
   style: LabelStyle,
   existing?: Partial<
     Pick<TextElement, 'text' | 'width' | 'padding' | 'lineHeight' | 'verticalAlign' | 'labelOffset' | 'labelOffsetY'>
-  >,
+  > & { containerId?: string },
 ): TextElement {
   return {
     id,
@@ -366,6 +447,7 @@ export function createAttachedLabel(
     padding: existing?.padding ?? TEXT_PADDING,
     lineHeight: existing?.lineHeight ?? TEXT_LINE_HEIGHT,
     groupId,
+    containerId: existing?.containerId,
   };
 }
 
