@@ -4,6 +4,7 @@ import { ThemeProvider } from "next-themes";
 import "./globals.css";
 import UpdateToast from "@/components/update-toast";
 import JsonLd from "@/components/json-ld";
+import { SkipLink } from "@/components/skip-link";
 import { Toaster } from "@/components/ui/toaster";
 import GoogleAnalytics from "@/components/google-analytics";
 
@@ -77,12 +78,21 @@ export const metadata: Metadata = {
     type: "website",
     siteName: "Snapty",
     locale: "en_US",
+    images: [
+      {
+        url: "/og-image.svg",
+        width: 1200,
+        height: 630,
+        alt: "Snapty - browser screenshot editor",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "Snapty: Free Browser Screenshot Editor",
     description:
       "Professional screenshot annotations in seconds. No installation needed.",
+    images: ["/og-image.svg"],
   },
   robots: {
     index: true,
@@ -115,6 +125,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} ${caveat.variable} antialiased`}
       >
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+          <SkipLink />
           <JsonLd />
           {/* Single full-viewport shell - keeps PWA/editor from sharing height with sibling nodes */}
           <div data-snapty-root className="bg-canvas text-foreground">

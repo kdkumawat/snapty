@@ -12,7 +12,7 @@
  * source live while drawing, dragging and resizing instead of catching up afterwards.
  * Supports hand-drawn rings via Rough when enabled.
  */
-import React, { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { Group, Ellipse, Line, Circle, Rect, Image as KonvaImage } from 'react-konva';
 import type Konva from 'konva';
 import type { MagnifierElement } from '@/types/editor';
@@ -45,10 +45,10 @@ type Props = {
   onPreviewOffsetMove?: (offset: { x: number; y: number }) => void;
   /** Commit the bubble placement as a single undo step. */
   onPreviewOffsetCommit?: (offset: { x: number; y: number }) => void;
-  /** Live update while resizing the source ellipse (radii in image units). */
-  onRadiiMove?: (radii: { rx: number; ry: number }) => void;
-  /** Commit the source radii as a single undo step. */
-  onRadiiCommit?: (radii: { rx: number; ry: number }) => void;
+  /** Live update while resizing the source bbox (radii + new top-left). */
+  onRadiiMove?: (radii: { rx: number; ry: number; topLeftX: number; topLeftY: number }) => void;
+  /** Commit the source bbox as a single undo step. */
+  onRadiiCommit?: (radii: { rx: number; ry: number; topLeftX: number; topLeftY: number }) => void;
   /** Live update while bending the leader line (0 = straight, ±1 = full curve). */
   onLeaderBendMove?: (bend: number) => void;
   /** Commit the leader bend as a single undo step. */
@@ -257,22 +257,36 @@ function useHandleDrag(
 }
 
 /**
- * Source radii implied by dragging a corner handle to `local`. Resizing is
- * center-fixed so the magnified region does not slide out from under the ring.
- * Each axis is independent, so corners can shape an ellipse.
+ * Source bbox implied by dragging a corner handle to `local`. Resizing is
+ * opposite-corner-fixed (the same model as the shared Transformer for normal
+ * ellipses): the corner you are NOT dragging stays put, the dragged corner
+ * follows the cursor, and the source center moves as the bbox grows or
+ * shrinks. Each axis is independent, so corners can shape an ellipse.
+ *
+ * Returns the new top-left of the source box plus the new radii, so the
+ * caller can write all four bbox fields back in one update.
  */
 function radiiFromCorner(
   local: { x: number; y: number },
-  w: number,
-  h: number,
-): { rx: number; ry: number } {
-  // Corner handles sit SELECT_PAD outside the ellipse, so subtract that offset
-  // before converting the pointer into radii. Without it the handle is always
+  fx: 0 | 1,
+  fy: 0 | 1,
+  originW: number,
+  originH: number,
+): { rx: number; ry: number; topLeftX: number; topLeftY: number } {
+  // Handle sits SELECT_PAD outside the bbox corner, so subtract that offset
+  // before computing the new bbox width. Without it the handle is always
   // rendered ahead of the cursor while resizing, which reads as a laggy drag.
-  return {
-    rx: Math.max(8, Math.abs(local.x - w / 2) - SELECT_PAD),
-    ry: Math.max(8, Math.abs(local.y - h / 2) - SELECT_PAD),
-  };
+  const dragX = local.x - (fx ? SELECT_PAD : -SELECT_PAD);
+  const dragY = local.y - (fy ? SELECT_PAD : -SELECT_PAD);
+  // The opposite bbox corner is captured on pointerdown so it stays put
+  // through the drag, matching how a normal ellipse is resized.
+  const oppX = (1 - fx) * originW;
+  const oppY = (1 - fy) * originH;
+  const topLeftX = Math.min(dragX, oppX);
+  const topLeftY = Math.min(dragY, oppY);
+  const rx = Math.max(8, Math.abs(dragX - oppX) / 2);
+  const ry = Math.max(8, Math.abs(dragY - oppY) / 2);
+  return { rx, ry, topLeftX, topLeftY };
 }
 
 export default function MagnifierKonva({
@@ -434,11 +448,73 @@ export default function MagnifierKonva({
     ),
   );
 
-  const onCornerDrag = useHandleDrag(
-    groupRef,
-    useCallback((local) => onRadiiMove?.(radiiFromCorner(local, w, h)), [onRadiiMove, w, h]),
-    useCallback((local) => onRadiiCommit?.(radiiFromCorner(local, w, h)), [onRadiiCommit, w, h]),
+  // Corner handles are static at SELECT_PAD outside the bbox; without help
+  // the visible handle stays put while the ellipse grows, so the cursor
+  // outruns the handle and the drag reads as laggy. We track which corner is
+  // being dragged and pin that one to the live pointer position via a ref +
+  // useLayoutEffect so the Konva node is updated synchronously after the
+  // render (before paint) - no one-frame React delay. The other three keep
+  // their initial anchors. Drag origin is captured on pointerdown so the
+  // center stays put even as the store pushes new w/h through every rAF tick.
+  const draggingCornerRef = useRef<{ fx: 0 | 1; fy: 0 | 1 } | null>(null);
+  const dragHandleLocalRef = useRef<{ x: number; y: number } | null>(null);
+  const handleNodesRef = useRef<(Konva.Circle | null)[]>([null, null, null, null]);
+  const dragOriginRef = useRef<{ w: number; h: number } | null>(null);
+  const [, forceRender] = useReducer((x: number) => x + 1, 0);
+
+  const onCornerMoveSmooth = useCallback(
+    (local: { x: number; y: number }) => {
+      dragHandleLocalRef.current = local;
+      const corner = draggingCornerRef.current;
+      if (!corner) return;
+      const origin = dragOriginRef.current ?? { w, h };
+      onRadiiMove?.(radiiFromCorner(local, corner.fx, corner.fy, origin.w, origin.h));
+    },
+    [onRadiiMove, w, h],
   );
+  const onCornerCommitSmooth = useCallback(
+    (local: { x: number; y: number }) => {
+      const corner = draggingCornerRef.current;
+      draggingCornerRef.current = null;
+      dragHandleLocalRef.current = null;
+      dragOriginRef.current = null;
+      // Re-render so the handle snaps back to its prop-driven initial position.
+      forceRender();
+      if (!corner) return;
+      const origin = { w, h };
+      onRadiiCommit?.(radiiFromCorner(local, corner.fx, corner.fy, origin.w, origin.h));
+    },
+    [onRadiiCommit, w, h],
+  );
+  const baseCornerDrag = useHandleDrag(groupRef, onCornerMoveSmooth, onCornerCommitSmooth);
+  const cornerDragProps = useCallback(
+    (fx: 0 | 1, fy: 0 | 1) => ({
+      onPointerDown: (e: Konva.KonvaEventObject<PointerEvent>) => {
+        dragOriginRef.current = { w, h };
+        draggingCornerRef.current = { fx, fy };
+        dragHandleLocalRef.current = {
+          x: fx ? w + SELECT_PAD : -SELECT_PAD,
+          y: fy ? h + SELECT_PAD : -SELECT_PAD,
+        };
+        baseCornerDrag.onPointerDown(e);
+      },
+      onMouseDown: baseCornerDrag.onMouseDown,
+      onTouchStart: baseCornerDrag.onTouchStart,
+    }),
+    [baseCornerDrag, w, h],
+  );
+
+  // Apply the live handle position synchronously after every render, before
+  // the browser paints. Runs without deps so the Konva node is repositioned
+  // even on the renders triggered by the store's rAF-throttled updates.
+  useLayoutEffect(() => {
+    const drag = draggingCornerRef.current;
+    const local = dragHandleLocalRef.current;
+    if (!drag || !local) return;
+    const idx = drag.fy * 2 + drag.fx;
+    const node = handleNodesRef.current[idx];
+    if (node) node.position(local);
+  });
 
   return (
     <Group
@@ -662,16 +738,20 @@ export default function MagnifierKonva({
             listening={false}
             perfectDrawEnabled={false}
           />
-          {canResize && CORNERS.map(([fx, fy]) => (
-            <Circle
-              key={`${el.id}-rs${fx}${fy}`}
-              x={fx ? w + SELECT_PAD : -SELECT_PAD}
-              y={fy ? h + SELECT_PAD : -SELECT_PAD}
-              {...handle}
-              {...onCornerDrag}
-              {...hoverEvents}
-            />
-          ))}
+          {canResize && CORNERS.map(([fx, fy]) => {
+            const idx = fy * 2 + fx;
+            return (
+              <Circle
+                key={`${el.id}-rs${fx}${fy}`}
+                ref={(node) => { handleNodesRef.current[idx] = node; }}
+                x={fx ? w + SELECT_PAD : -SELECT_PAD}
+                y={fy ? h + SELECT_PAD : -SELECT_PAD}
+                {...handle}
+                {...cornerDragProps(fx, fy)}
+                {...hoverEvents}
+              />
+            );
+          })}
         </>
       )}
     </Group>

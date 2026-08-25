@@ -109,6 +109,8 @@ export default function EmptyState() {
   return (
     <div
       className="absolute inset-0 z-10 flex items-center justify-center p-6 bg-canvas"
+      role="region"
+      aria-label="Image drop area"
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => {
@@ -139,12 +141,22 @@ export default function EmptyState() {
         </div>
 
         <div className="rounded-2xl border border-border bg-surface/90 backdrop-blur shadow-[var(--floating-shadow)] p-1.5">
-          <button type="button" className={rowClass} onClick={() => fileInputRef.current?.click()}>
+          <button
+            type="button"
+            className={rowClass}
+            onClick={() => fileInputRef.current?.click()}
+            aria-keyshortcuts={`${modKey}+O`}
+          >
             <FolderOpen className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
             <span className="flex-1 font-hand text-[1.1rem]">Open</span>
             <Kbd>{modKey}+O</Kbd>
           </button>
-          <button type="button" className={rowClass} onClick={() => void handlePaste()}>
+          <button
+            type="button"
+            className={rowClass}
+            onClick={() => void handlePaste()}
+            aria-keyshortcuts={`${modKey}+V`}
+          >
             <Clipboard className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
             <span className="flex-1 font-hand text-[1.1rem]">Paste</span>
             <Kbd>{modKey}+V</Kbd>
@@ -155,6 +167,7 @@ export default function EmptyState() {
               className={rowClass}
               disabled={captureBusy}
               onClick={() => void handleCapture()}
+              aria-keyshortcuts={`${modKey}+Shift+S`}
             >
               {captureBusy
                 ? <Loader2 className="w-[18px] h-[18px] animate-spin text-muted-foreground shrink-0" />
@@ -163,7 +176,12 @@ export default function EmptyState() {
               <Kbd>{modKey}+Shift+S</Kbd>
             </button>
           )}
-          <button type="button" className={rowClass} onClick={() => setShowHelpDialog(true)}>
+          <button
+            type="button"
+            className={rowClass}
+            onClick={() => setShowHelpDialog(true)}
+            aria-keyshortcuts="?"
+          >
             <HelpCircle className="w-[18px] h-[18px] text-muted-foreground shrink-0" strokeWidth={1.75} />
             <span className="flex-1 font-hand text-[1.1rem]">Help</span>
             <Kbd>?</Kbd>

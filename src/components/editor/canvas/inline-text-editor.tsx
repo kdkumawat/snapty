@@ -150,6 +150,9 @@ export default function InlineTextEditor({
     >
       <div
         ref={editorRef}
+        role="textbox"
+        aria-multiline="true"
+        aria-label="Text annotation"
         contentEditable
         suppressContentEditableWarning
         spellCheck={false}

@@ -216,17 +216,46 @@ export function ToolbarTips() {
   if (modalOpen) return null;
 
   return (
-    <div className="absolute top-[3.85rem] left-1/2 -translate-x-1/2 z-[40] pointer-events-none max-w-[min(36rem,calc(100vw-2rem))] px-2">
-      <motion.p
-        key={tipKey}
-        initial={{ opacity: 0, y: -3 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0 }}
-        transition={{ duration: 0.12 }}
-        className="text-center text-[10px] sm:text-[11px] text-muted-foreground/90 py-0.5 leading-snug"
+    <>
+      {/* Screen-reader live region: mirror the visible tip so assistive tech
+          announces the current tool and how to use it. The element is always
+          in the DOM (a polite live region needs a stable node) and the text
+          is flattened to a string so it announces cleanly. */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
       >
-        {tip}
-      </motion.p>
-    </div>
+        {flattenTip(tip)}
+      </div>
+      <div className="absolute top-[3.85rem] left-1/2 -translate-x-1/2 z-[40] pointer-events-none max-w-[min(36rem,calc(100vw-2rem))] px-2">
+        <motion.p
+          key={tipKey}
+          initial={{ opacity: 0, y: -3 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.12 }}
+          className="text-center text-[10px] sm:text-[11px] text-muted-foreground/90 py-0.5 leading-snug"
+        >
+          {tip}
+        </motion.p>
+      </div>
+    </>
   );
+}
+
+/**
+ * Walk the React node tree and collect plain text so the live region announces
+ * something like "Drag to draw. A cycles stroke style." instead of "[object]".
+ */
+function flattenTip(node: React.ReactNode): string {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(flattenTip).join(' ');
+  if (React.isValidElement(node)) {
+    const props = node.props as { children?: React.ReactNode };
+    return flattenTip(props.children);
+  }
+  return '';
 }
