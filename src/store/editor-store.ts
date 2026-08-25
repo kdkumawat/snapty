@@ -54,6 +54,90 @@ function savePersisted(state: Record<string, any>) {
   } catch { /* quota exceeded */ }
 }
 
+// ── Project autosave (image + annotations + canvas style) ─────────────────
+//
+// Kept in a separate localStorage key from `snapty-settings` so cheap setting
+// writes (called on every color/slider change) don't repeatedly serialize the
+// much larger project payload, and so quota pressure on screenshots can't
+// evict the user's tool preferences.
+
+const PROJECT_KEY = 'snapty-project';
+const SCHEMA_VERSION = 2;
+const PROJECT_SAVE_DEBOUNCE_MS = 500;
+
+type PersistedProject = {
+  v: typeof SCHEMA_VERSION;
+  imageDataURL: string | null;
+  imageSize: { width: number; height: number };
+  elements: EditorElement[];
+  canvasStyle: CanvasStyle;
+  stepCounter: number;
+};
+
+function loadProjectFromStorage(): PersistedProject | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(PROJECT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.v !== SCHEMA_VERSION) return null;
+    return parsed as PersistedProject;
+  } catch {
+    return null;
+  }
+}
+
+function buildProjectPayload(state: Record<string, any>): PersistedProject {
+  return {
+    v: SCHEMA_VERSION,
+    imageDataURL: state.imageDataURL ?? null,
+    imageSize: state.imageSize ?? { width: 0, height: 0 },
+    elements: state.elements ?? [],
+    canvasStyle: state.canvasStyle ?? initialCanvasStyle,
+    stepCounter: typeof state.stepCounter === 'number' ? state.stepCounter : 0,
+  };
+}
+
+function writeProject(payload: PersistedProject) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(PROJECT_KEY, JSON.stringify(payload));
+  } catch (err) {
+    // QuotaExceededError: drop the (often MB-sized) image and retry so the
+    // user's annotations still survive a refresh. Settings stay in their
+    // own key and are unaffected.
+    const isQuota = err instanceof DOMException
+      && (err.name === 'QuotaExceededError' || err.code === 22);
+    if (isQuota && payload.imageDataURL) {
+      try {
+        localStorage.setItem(PROJECT_KEY, JSON.stringify({ ...payload, imageDataURL: null }));
+      } catch {
+        // Hard failure - leave settings intact, give up on the project snapshot.
+      }
+    }
+  }
+}
+
+function saveProjectNow(state: Record<string, any>) {
+  // Flush any pending debounced write first so the immediate write wins.
+  if (pendingProjectSave !== null) {
+    clearTimeout(pendingProjectSave);
+    pendingProjectSave = null;
+  }
+  writeProject(buildProjectPayload(state));
+}
+
+let pendingProjectSave: ReturnType<typeof setTimeout> | null = null;
+function scheduleProjectSave(state: Record<string, any>) {
+  if (typeof window === 'undefined') return;
+  if (pendingProjectSave !== null) clearTimeout(pendingProjectSave);
+  const snapshot = state;
+  pendingProjectSave = setTimeout(() => {
+    pendingProjectSave = null;
+    writeProject(buildProjectPayload(snapshot));
+  }, PROJECT_SAVE_DEBOUNCE_MS);
+}
+
 /** Scale tool sizes so annotations stay readable on large screenshots. */
 export function getImageToolScale(width: number, height: number): number {
   const longest = Math.max(width, height);
@@ -159,6 +243,10 @@ interface EditorState {
 
   launchEditor: () => void;
   setImageLoading: (loading: boolean) => void;
+  /** Decode the persisted imageDataURL into backgroundImage on client mount. */
+  hydrateFromStorage: () => void;
+  /** Remove the autosaved project (image + annotations + canvas style). */
+  clearPersistedProject: () => void;
   setBackgroundImage: (img: HTMLImageElement, opts?: { clearAnnotations?: boolean }) => void;
   clearImage: () => void;
   replaceImage: () => void;
@@ -341,6 +429,7 @@ function normalizeExportQuality(q: unknown): number {
 }
 
 const persisted = loadPersisted();
+const projectPersisted = loadProjectFromStorage();
 const editorPath = '/editor';
 const infoPath = '/';
 
@@ -716,6 +805,7 @@ function applyHistorySnapshot(
       canvasStyle: snap.canvasStyle,
       ...counterPatch,
     });
+    scheduleProjectSave({ ...get() });
     return;
   }
 
@@ -732,6 +822,7 @@ function applyHistorySnapshot(
       ...toolPatch,
       ...counterPatch,
     });
+    scheduleProjectSave({ ...get() });
     return;
   }
 
@@ -750,6 +841,7 @@ function applyHistorySnapshot(
       ...counterPatch,
     });
     setTimeout(() => get().resetView(), 30);
+    scheduleProjectSave({ ...get() });
   };
   img.onerror = () => {
     if (gen !== historyApplyGen) return;
@@ -761,6 +853,7 @@ function applyHistorySnapshot(
       ...toolPatch,
       ...counterPatch,
     });
+    scheduleProjectSave({ ...get() });
   };
   img.src = snap.imageDataURL;
 }
@@ -768,8 +861,8 @@ function applyHistorySnapshot(
 export const useEditorStore = create<EditorState>((set, get) => ({
   isEditorLaunched: shouldAutoLaunch,
   backgroundImage: null,
-  imageDataURL: null,
-  imageSize: { width: 0, height: 0 },
+  imageDataURL: projectPersisted?.imageDataURL ?? null,
+  imageSize: projectPersisted?.imageSize ?? { width: 0, height: 0 },
   zoom: 1,
   stagePosition: { x: 0, y: 0 },
   activeTool: persisted.activeTool ?? defaults.activeTool,
@@ -789,14 +882,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   blurRadius: persisted.blurRadius ?? defaults.blurRadius,
   pixelSize: persisted.pixelSize ?? defaults.pixelSize,
   highlighterWidth: persisted.highlighterWidth ?? defaults.highlighterWidth,
-  elements: [],
+  elements: projectPersisted?.elements ?? [],
   selectedElementIds: [],
-  stepCounter: persisted.stepStartNumber ?? defaults.stepStartNumber,
+  stepCounter: projectPersisted?.stepCounter ?? persisted.stepStartNumber ?? defaults.stepStartNumber,
   stepStartNumber: persisted.stepStartNumber ?? defaults.stepStartNumber,
   stepRadius: persisted.stepRadius ?? defaults.stepRadius,
-  ...emptyHistory(),
+  ...emptyHistory(projectPersisted?.imageDataURL ?? null, projectPersisted?.imageSize ?? { width: 0, height: 0 }),
   canvasStyle: {
     ...initialCanvasStyle,
+    ...(projectPersisted?.canvasStyle ?? {}),
     gridEnabled: persisted.gridEnabled ?? initialCanvasStyle.gridEnabled,
     transparentExport: persisted.transparentExport ?? initialCanvasStyle.transparentExport,
   },
@@ -1106,6 +1200,35 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setImageLoading: (loading) => set({ imageLoading: loading }),
 
+  /**
+   * Decode a stored imageDataURL into the backgroundImage HTMLImageElement.
+   * Called once on client mount after the store hydrates from localStorage,
+   * because HTMLImageElement cannot be constructed during SSR.
+   */
+  hydrateFromStorage: () => {
+    const s = get();
+    if (!s.imageDataURL || s.backgroundImage) return;
+    const img = new Image();
+    img.onload = () => {
+      // Guard against a newer image being loaded while the old one decoded.
+      if (get().imageDataURL !== s.imageDataURL) return;
+      set({ backgroundImage: img });
+    };
+    img.onerror = () => {
+      // Stored URL is unrecoverable; drop it so the user sees the empty state
+      // instead of a perpetual skeleton. Keep their annotations and settings.
+      set({ imageDataURL: null, imageSize: { width: 0, height: 0 } });
+      saveProjectNow({ ...get() });
+    };
+    img.src = s.imageDataURL;
+  },
+
+  /** Wipe the autosaved project (image + annotations + canvas style). */
+  clearPersistedProject: () => {
+    if (typeof window === 'undefined') return;
+    try { localStorage.removeItem(PROJECT_KEY); } catch { /* ignore */ }
+  },
+
   // Replace/load image. Preserves active tool and all drawing settings.
   // Clears annotations by default (new screenshot = fresh canvas).
   setBackgroundImage: (img, opts) => {
@@ -1142,13 +1265,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // fitted position (the canvas effect's deferred re-fit still covers the
     // not-yet-laid-out case).
     get().resetView();
+    // Persist immediately so a refresh before the debounce fires still
+    // restores the freshly loaded image + cleared annotations.
+    saveProjectNow({ ...get() });
   },
 
   clearImage: () => {
     void import('@/lib/editor/annotation-clipboard').then((m) => m.clearAnnotationClipboard());
     // In PWA, stay in editor rather than bouncing to landing
     if (isStandalonePwa()) {
-      return set({
+      set({
         backgroundImage: null,
         imageDataURL: null,
         imageSize: { width: 0, height: 0 },
@@ -1158,9 +1284,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         zoom: 1, stagePosition: { x: 0, y: 0 },
         isEditorLaunched: true,
       });
+      saveProjectNow({ ...get() });
+      return;
     }
     syncEditorRoute(false);
-    return set({
+    set({
       backgroundImage: null,
       imageDataURL: null,
       imageSize: { width: 0, height: 0 },
@@ -1170,6 +1298,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       zoom: 1, stagePosition: { x: 0, y: 0 },
       isEditorLaunched: false,
     });
+    saveProjectNow({ ...get() });
   },
 
   // Clear image to show empty state WITHOUT resetting tool or style settings
@@ -1178,7 +1307,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     syncEditorRoute(true);
     void import('@/lib/editor/annotation-clipboard').then((m) => m.clearAnnotationClipboard());
     void import('@/lib/editor/autosave').then(({ clearAutosave }) => clearAutosave());
-    return set({
+    set({
       backgroundImage: null,
       imageDataURL: null,
       imageSize: { width: 0, height: 0 },
@@ -1188,6 +1317,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       zoom: 1, stagePosition: { x: 0, y: 0 },
       // intentionally keep activeTool, colors, sizes, canvasStyle
     });
+    saveProjectNow({ ...get() });
   },
 
   setZoom: (zoom) => set({ zoom: Math.max(0.1, Math.min(5, zoom)) }),
@@ -1294,6 +1424,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (moved && isBindableElement(moved)) next = recomputeBindings(next, id, s.imageSize);
       return pushHistory(s, next);
     });
+    scheduleProjectSave({ ...get() });
   },
   setStrokeColor: (color) => {
     set((s) => ({ strokeColor: color, ...applyToSelection(s, 'strokeColor', color) }));
@@ -1424,9 +1555,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         ...pushHistory({ ...s, stepCounter }, [...s.elements, element]),
       };
     });
+    scheduleProjectSave({ ...get() });
   },
   addElements: (elements) => {
     set((s) => pushHistory(s, [...s.elements, ...elements]));
+    scheduleProjectSave({ ...get() });
   },
   updateElement: (id, updates) => {
     set((s) => {
@@ -1446,6 +1579,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (isBindableElement(moved)) next = recomputeBindings(next, id, s.imageSize);
       return pushHistory(s, next);
     });
+    scheduleProjectSave({ ...get() });
   },
   updateSelectedElements: (updates) => {
     set((s) => {
@@ -1455,6 +1589,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       );
       return pushHistory(s, els);
     });
+    scheduleProjectSave({ ...get() });
   },
   nudgeSelected: (dx, dy) => {
     set((s) => {
@@ -1486,9 +1621,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         selectedElementIds: s.selectedElementIds.filter((id) => !removed.has(id)),
       };
     });
+    scheduleProjectSave({ ...get() });
   },
   setSelectedElementIds: (ids) => set({ selectedElementIds: ids }),
-  clearElements: () => set((s) => ({ ...pushHistory(s, []), selectedElementIds: [] })),
+  clearElements: () => {
+    set((s) => ({ ...pushHistory(s, []), selectedElementIds: [] }));
+    scheduleProjectSave({ ...get() });
+  },
 
   // ── Slice A: Excalidraw-parity actions ──────────────────────────────────
 
@@ -1816,6 +1955,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // Re-fit so the framed image stays centered when padding changes
       setTimeout(() => get().resetView(), 0);
     }
+    scheduleProjectSave({ ...get() });
   },
   setExportFormat: (format) => { set({ exportFormat: format }); savePersisted({ ...get(), exportFormat: format }); },
   setExportQuality: (quality) => {
@@ -1846,6 +1986,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ...emptyHistory(undefined, undefined, undefined, undefined, get().canvasStyle),
       showExportDialog: false, showHelpDialog: false,
     });
+    saveProjectNow({ ...get() });
   },
 
   goToLanding: () => {
@@ -1941,6 +2082,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         ),
       });
       setTimeout(() => get().resetView(), 30);
+      saveProjectNow({ ...get() });
     };
     img.src = dataUrl;
   },
@@ -1969,6 +2111,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       _historyIndex: 0,
     });
     setTimeout(() => get().resetView(), 30);
+    saveProjectNow({ ...get() });
   },
 }));
 

@@ -4,7 +4,9 @@
   "private": true,
   "packageManager": "npm@10.8.2",
   "scripts": {
+    "predev": "node scripts/write-version.mjs",
     "dev": "next dev -p 3001 2>&1 | tee dev.log",
+    "prebuild": "node scripts/write-version.mjs",
     "build": "next build",
     "cf:build": "node scripts/with-wrangler-env.mjs next build",
     "cf:preview": "npm run cf:build && npx wrangler pages dev out",

@@ -14,5 +14,9 @@
 /sw.js
   Cache-Control: public, max-age=0, must-revalidate
 
+/version.json
+  Cache-Control: public, max-age=0, must-revalidate
+  Content-Type: application/json
+
 /manifest.json
   Cache-Control: public, max-age=0, must-revalidate

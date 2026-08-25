@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
 import dynamic from "next/dynamic";
+import { useEditorStore } from "@/store/editor-store";
 
 /**
  * Next.js 16 forbids `ssr: false` on `next/dynamic` inside Server Components,
@@ -17,5 +19,13 @@ const EditorShell = dynamic(() => import("@/components/editor/shell/editor-shell
 });
 
 export default function EditorPageClient() {
+  useEffect(() => {
+    // Decode the persisted imageDataURL into a real HTMLImageElement on the
+    // client. The store init already restored the data URL from localStorage
+    // (safe for SSR), but the actual image element can only be created in the
+    // browser.
+    useEditorStore.getState().hydrateFromStorage();
+  }, []);
+
   return <EditorShell />;
 }
