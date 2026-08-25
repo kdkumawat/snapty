@@ -1,7 +1,7 @@
 'use client';
 
 import { useEditorStore } from '@/store/editor-store';
-import type { EditorElement, CanvasStyle } from '@/types/editor';
+import type { EditorElement, CanvasStyle, TextElement } from '@/types/editor';
 
 export const SNAPTY_PROJECT_EXT = '.snapty';
 export const SNAPTY_PROJECT_MIME = 'application/json';
@@ -16,6 +16,47 @@ export type SnaptyProject = {
   stepCounter: number;
   activeTool?: string;
 };
+
+/**
+ * Migrate a v1 project's elements to v2 (Slice A): write `containerId` on
+ * text elements that were paired with a shape via `groupId`, and back-fill
+ * the shape's `labelIds` array. Idempotent. Never mutates the input — a
+ * new element array is produced, and only touched elements are cloned.
+ */
+export function migrateProjectV1toV2(elements: EditorElement[]): EditorElement[] {
+  // Find every 1-text + 1-non-text groupId pair and resolve them.
+  type Pair = { text: TextElement; shape: EditorElement };
+  const byGroup = new Map<string, { text?: TextElement; shape?: EditorElement }>();
+  for (const el of elements) {
+    if (!el.groupId) continue;
+    const slot = byGroup.get(el.groupId) ?? {};
+    if (el.type === 'text') slot.text = el as TextElement;
+    else slot.shape = el;
+    byGroup.set(el.groupId, slot);
+  }
+  const pairs: Pair[] = [];
+  for (const { text, shape } of byGroup.values()) {
+    if (text && shape) pairs.push({ text, shape });
+  }
+  if (!pairs.length) return elements;
+
+  const out: EditorElement[] = elements.slice();
+  for (const { text, shape } of pairs) {
+    const tIdx = out.findIndex((el) => el.id === text.id);
+    const sIdx = out.findIndex((el) => el.id === shape.id);
+    if (tIdx < 0 || sIdx < 0) continue;
+    const t = out[tIdx] as TextElement;
+    const s = out[sIdx]!;
+    if (!t.containerId) {
+      out[tIdx] = { ...t, containerId: shape.id } as TextElement;
+    }
+    const existingIds = (s as { labelIds?: string[] }).labelIds ?? [];
+    if (!existingIds.includes(text.id)) {
+      out[sIdx] = { ...s, labelIds: [...existingIds, text.id] } as EditorElement;
+    }
+  }
+  return out;
+}
 
 export function buildProjectSnapshot(): SnaptyProject {
   const s = useEditorStore.getState();
@@ -57,6 +98,8 @@ export async function loadProjectFromFile(file: File): Promise<{ ok: true } | { 
       return { ok: false, error: 'Invalid project file' };
     }
     const snap: SnaptyProject = parsed;
+    // Slice A: migrate v1 (groupId pair) → v2 (explicit containerId).
+    const elements = migrateProjectV1toV2(snap.elements as EditorElement[]);
     // Validate image
     if (snap.imageDataURL && typeof snap.imageDataURL === 'string' && snap.imageDataURL.startsWith('data:')) {
       const img = new Image();
@@ -68,7 +111,7 @@ export async function loadProjectFromFile(file: File): Promise<{ ok: true } | { 
       useEditorStore.getState().loadProject(loaded, {
         imageDataURL: snap.imageDataURL,
         imageSize: snap.imageSize ?? { width: loaded.naturalWidth, height: loaded.naturalHeight },
-        elements: snap.elements as EditorElement[],
+        elements,
         canvasStyle: snap.canvasStyle,
         stepCounter: snap.stepCounter ?? 1,
       });
@@ -81,7 +124,7 @@ export async function loadProjectFromFile(file: File): Promise<{ ok: true } | { 
       useEditorStore.getState().loadProject(null, {
         imageDataURL: null,
         imageSize: snap.imageSize ?? { width: 0, height: 0 },
-        elements: snap.elements as EditorElement[],
+        elements,
         canvasStyle: snap.canvasStyle,
         stepCounter: snap.stepCounter ?? 1,
       });

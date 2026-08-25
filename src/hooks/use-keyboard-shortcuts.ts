@@ -115,6 +115,25 @@ export function useKeyboardShortcuts() {
         st.setSelectedElementIds(st.elements.filter((el) => !el.locked).map((el) => el.id));
         return;
       }
+      // Slice A: invert selection (Cmd/Ctrl+Shift+A)
+      if (isCtrl && isShift && key === 'a') {
+        e.preventDefault();
+        st.invertSelection();
+        return;
+      }
+      // Slice A: Tab / Shift+Tab cycle selection in z-order
+      if (!isCtrl && e.key === 'Tab') {
+        e.preventDefault();
+        st.cycleSelection(isShift ? -1 : 1);
+        return;
+      }
+      // Slice A: in-place duplicate (Cmd/Ctrl+Shift+D) — overrides normal
+      // duplicate so the user gets both behaviors
+      if (isCtrl && isShift && key === 'd') {
+        e.preventDefault();
+        st.duplicateInPlace();
+        return;
+      }
       if (isCtrl && isShift && (e.key === 'Backspace' || e.key === 'Delete')) {
         e.preventDefault();
         const n = st.elements.length;

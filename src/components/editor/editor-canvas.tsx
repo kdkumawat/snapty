@@ -57,11 +57,16 @@ import { arrowHeadPoints, generateArrowHead, paintDrawable } from '@/lib/rough-r
 import type { Drawable } from 'roughjs/bin/core';
 import type { RoughDrawInput } from '@/lib/rough-renderer';
 import { snapBounds, type Bounds } from '@/lib/editor/snap-guides';
+import { magneticSnap } from '@/lib/editor/magnetic-snap';
+import SelectionOverlayV2 from '@/components/editor/canvas/selection-overlay-v2';
+import DragGhost from '@/components/editor/canvas/drag-ghost';
+import ShapeContextMenu from '@/components/editor/canvas/shape-context-menu';
 import { getElementBounds, boundsIntersect } from '@/lib/editor/selection';
 import { hydrateSettingsFromElement, hydrateSettingsFromSelection } from '@/lib/editor/settings-sync';
 import { magnifierSourceCenter } from '@/lib/editor/magnifier-geometry';
 import {
-  controlPoint, renderPoints, bendFromHandle, tangentAtStart, tangentAtEnd,
+  controlPoint, renderPoints, bendFromHandle, bendFromCurveMid, bendFromCurveAt, curvePoint,
+  tangentAtStart, tangentAtEnd,
 } from '@/lib/editor/curve';
 import type {
   EditorElement, ShapeElement, ArrowElement, LineElement, FixedPointBinding,
@@ -706,6 +711,13 @@ const EditorCanvas: React.FC = () => {
   // remove / move) so stale references don't linger.
   useEffect(() => { nodeCacheRef.current.clear(); }, [elements]);
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
+  const hoveredId = useEditorStore((s) => s.hoveredId);
+  const setHoveredId = useEditorStore((s) => s.setHoveredId);
+  const multiSelectGhost = useEditorStore((s) => s.multiSelectGhost);
+  const beginMultiSelectDrag = useEditorStore((s) => s.beginMultiSelectDrag);
+  const endMultiSelectDrag = useEditorStore((s) => s.endMultiSelectDrag);
+  // Shape context menu state (right-click on a specific element)
+  const [shapeMenu, setShapeMenu] = useState<{ id: string; pos: { x: number; y: number } } | null>(null);
   /** Multi-point polyline vertex-insertion gesture (midpoint ghost handles).
    *  Holds the working points array for the current drag; committed on end. */
   const midVertexRef = useRef<{ id: string; idx: number; points: number[] } | null>(null);
@@ -1796,6 +1808,12 @@ const EditorCanvas: React.FC = () => {
     if (e && !isDrawing && !isErasing) {
       const s = useEditorStore.getState();
       const hoveredId = findAnnotationId(e.target);
+      // Slice A: always-on hover outline (select / hand modes only).
+      if (s.activeTool === 'select' || s.activeTool === 'hand') {
+        if (s.hoveredId !== hoveredId) setHoveredId(hoveredId);
+      } else if (s.hoveredId) {
+        setHoveredId(null);
+      }
       const drawingTools = !['select', 'hand', 'eraser', 'crop', 'magnifier'].includes(s.activeTool);
       // The text tool hovering a line/arrow shows the attach-label preview
       // (anchor dot + text cursor) instead of the generic selection cursor,
@@ -2859,6 +2877,7 @@ const EditorCanvas: React.FC = () => {
     linearHandleDragRef.current = null;
     draftLayerRef.current?.clearGuides();
     draftLayerRef.current?.clearHoverOutline();
+    endMultiSelectDrag();
     let x = e.target.x();
     let y = e.target.y();
     const s = useEditorStore.getState();
@@ -3024,6 +3043,10 @@ const EditorCanvas: React.FC = () => {
   };
 
   function handleDragMove(id: string, e: Konva.KonvaEventObject<DragEvent>) {
+    // Slice A: capture pre-drag multi-select bounds for the drag-ghost.
+    if (useEditorStore.getState().multiSelectGhost === null) {
+      beginMultiSelectDrag();
+    }
     draftLayerRef.current?.clearHoverOutline();
     const s = useEditorStore.getState();
     const el = s.elements.find((item) => item.id === id);
@@ -3104,6 +3127,10 @@ const EditorCanvas: React.FC = () => {
     const snapped = snapBounds(moving, snapOthers);
     let sx = snapped.x;
     let sy = snapped.y;
+    // Slice A: magnetic snap (center/edge/corner) on top of alignment.
+    const mag = magneticSnap({ x: sx, y: sy, w: moving.w, h: moving.h }, snapOthers, 8);
+    sx += mag.dx;
+    sy += mag.dy;
     const clampedSnap = clampToGutter(el, sx, sy, s.imageSize);
     sx = clampedSnap.x;
     sy = clampedSnap.y;
@@ -3181,15 +3208,151 @@ const EditorCanvas: React.FC = () => {
       ? 0
       : (handDrawnStyle ? (bendVal ? 0.45 : 0.2) : (bendVal ? 0.5 : 0));
     const dash = strokeDash(strokeStyle);
+    // Label-present arrows render as a Group of multiple shaft segments + 1-2
+    // named head triangles (the Konva `Arrow` is single-node only). The old
+    // recurse-and-stop-on-first-match path left the heads and the extra
+    // segments pointing at the pre-bend geometry, so a bent arrow with a
+    // label visibly lost its end and the gap around the label drifted.
+    // For that case we re-derive segments + head triangles from the live
+    // points and patch each child by name.
+    const patchLabelGroup = (group: Konva.Group): boolean => {
+      const kids = group.getChildren();
+      const shaftKids = kids.filter(
+        (k) => k.getClassName() === 'Line' && k.name().startsWith('shaft'),
+      );
+      if (!shaftKids.length) return false;
+      const stStore = useEditorStore.getState();
+      const parent = stStore.elements.find((x) => x.id === id) as ArrowElement | undefined;
+      const labelEl = parent
+        ? (stStore.elements.find(
+            (x) => x.type === 'text' && (
+              (x as TextElement).containerId === parent.id ||
+              (parent.groupId && x.groupId === parent.groupId && isLabelPairGroup(parent.groupId, stStore.elements))
+            ),
+          ) as TextElement | undefined)
+        : undefined;
+      // Re-clip the new sampled polyline against the label's current box so
+      // the gap moves with the bend. Falls back to drawPoints when the label
+      // can't be resolved or the clip empties the stroke.
+      let segs: number[][] | null = null;
+      if (labelEl) {
+        const tb = getElementBounds(labelEl, stStore.imageSize);
+        const fontSize = labelEl.fontSize ?? 24;
+        const tightW = Math.max(
+          24,
+          Math.min(
+            tb.w,
+            labelEl.text.length * fontSize * 0.58 + (labelEl.padding ?? TEXT_PADDING) * 2 + 12,
+          ),
+        );
+        let rectX = tb.x - (parent?.x ?? 0);
+        if (labelEl.align === 'center') rectX += (tb.w - tightW) / 2;
+        else if (labelEl.align === 'right') rectX += tb.w - tightW;
+        const labelRect = {
+          x: rectX,
+          y: tb.y - (parent?.y ?? 0),
+          w: tightW,
+          h: Math.max(1, tb.h),
+        };
+        const clipSource = multi
+          ? drawPoints
+          : (() => {
+              if (!bendVal) return drawPoints;
+              const sampled: number[] = [];
+              const N = 28;
+              const liveEl = { ...(parent as ArrowElement), points, bend: bendVal } as ArrowElement;
+              for (let i = 0; i <= N; i++) {
+                const p = pointAlongPath(liveEl, i / N);
+                sampled.push(p.x, p.y);
+              }
+              return sampled;
+            })();
+        let clipped: number[][] = [clipSource];
+        for (const r of [labelRect]) {
+          clipped = clipped.flatMap((seg) => clipPolylineAgainstRect(seg, r));
+          if (!clipped.length) break;
+        }
+        segs = clipped.length ? clipped : null;
+      }
+      // Patch each shaft segment in order; show/hide to match segment count.
+      if (segs) {
+        for (let i = 0; i < shaftKids.length; i++) {
+          const seg = segs[i];
+          const k = shaftKids[i] as Konva.Line;
+          k.visible(true);
+          if (seg && seg.length >= 4) k.points(seg);
+        }
+        for (let i = segs.length; i < shaftKids.length; i++) shaftKids[i].visible(false);
+      } else {
+        // No label gap to keep: collapse to a single segment drawing the full
+        // polyline, hide the rest. Avoids the "shaft disappears" render that
+        // happens when an old segment set pointed at a stale position.
+        if (shaftKids[0]) {
+          (shaftKids[0] as Konva.Line).visible(true);
+          (shaftKids[0] as Konva.Line).points(drawPoints);
+        }
+        for (let i = 1; i < shaftKids.length; i++) shaftKids[i].visible(false);
+      }
+      // Re-derive head triangles from the live endpoints so the arrowhead
+      // follows the curve tangent at the end (the reported "arrow end lost"
+      // case: head was frozen at the pre-bend position).
+      const headSize =
+        parent?.pointerLength ?? Math.max(10, (parent?.strokeWidth || strokeWidth || 2) * 4);
+      const newSx = points[0] ?? 0;
+      const newSy = points[1] ?? 0;
+      const newEx = points[points.length - 2] ?? 0;
+      const newEy = points[points.length - 1] ?? 0;
+      const endHead = kids.find((k) => k.name() === 'head-end') as Konva.Line | undefined;
+      if (endHead) {
+        let endTan: { x: number; y: number };
+        if (multi) {
+          const n = points.length;
+          const dx = points[n - 2] - points[n - 4];
+          const dy = points[n - 1] - points[n - 3];
+          const len = Math.hypot(dx, dy) || 1;
+          endTan = { x: dx / len, y: dy / len };
+        } else {
+          endTan = tangentAtEnd(newSx, newSy, newEx, newEy, bendVal);
+        }
+        endHead.points(
+          arrowHeadPoints(newEx - endTan.x, newEy - endTan.y, newEx, newEy, headSize).flat(),
+        );
+      }
+      const startHead = kids.find((k) => k.name() === 'head-start') as Konva.Line | undefined;
+      if (startHead) {
+        let startTan: { x: number; y: number };
+        if (multi) {
+          const n = points.length;
+          const dx = points[2] - points[0];
+          const dy = points[3] - points[1];
+          const len = Math.hypot(dx, dy) || 1;
+          startTan = { x: dx / len, y: dy / len };
+        } else {
+          startTan = tangentAtStart(newSx, newSy, newEx, newEy, bendVal);
+        }
+        startHead.points(
+          arrowHeadPoints(newSx + startTan.x, newSy + startTan.y, newSx, newSy, headSize).flat(),
+        );
+      }
+      return true;
+    };
     const patchShaft = (n: Konva.Node): boolean => {
       const cls = n.getClassName();
-      if (cls === 'Line' || cls === 'Arrow') {
+      if (cls === 'Arrow') {
         n.setAttrs({ points: drawPoints, tension, dash });
         return true;
       }
       if (cls === 'Group') {
+        if (patchLabelGroup(n as Konva.Group)) return true;
         const kids = (n as Konva.Group).getChildren();
-        for (let i = 0; i < kids.length; i++) if (patchShaft(kids[i])) return true;
+        for (let i = 0; i < kids.length; i++) {
+          const k = kids[i];
+          const kc = k.getClassName();
+          if (kc === 'Line' || kc === 'Arrow') {
+            k.setAttrs({ points: drawPoints, tension, dash });
+            return true;
+          }
+        }
       }
       return false;
     };
@@ -3233,9 +3396,15 @@ const EditorCanvas: React.FC = () => {
     const st = useEditorStore.getState();
     // A label's position is owned by its shape; never reflow a text element
     // against its own bounds.
-    if (!liveEl.groupId || liveEl.type === 'text') return;
+    if (liveEl.type === 'text') return;
+    // Prefer the explicit `containerId` binding (set by v2 migration and by
+    // `attachText`) so arrows whose label is bound without a `groupId` still
+    // reflow. Fall back to the legacy groupId-pair path for v1 projects.
     const labelEl = st.elements.find(
-      (x) => x.type === 'text' && x.groupId === liveEl.groupId,
+      (x) => x.type === 'text' && (
+        (x as TextElement).containerId === liveEl.id ||
+        (!!liveEl.groupId && x.groupId === liveEl.groupId && isLabelPairGroup(liveEl.groupId, st.elements))
+      ),
     ) as TextElement | undefined;
     if (!labelEl) return;
     const cache = nodeCacheRef.current;
@@ -3781,6 +3950,23 @@ const EditorCanvas: React.FC = () => {
         const showMidVertexHandle = isMulti && !isElbow;
         const multiPoints = isMulti ? arrow.points : [];
         const hoverHandles = handleHoverEvents();
+        // Bend handle sits at the LABEL's on-curve anchor when an attached
+        // label exists (Excalidraw: the label IS the bend handle). The label
+        // gap in the shaft is clipped at this same on-curve position, so the
+        // handle and the gap stay glued together. With no label, fall back to
+        // the visual curve midpoint (the bezier control point is OFF the
+        // curve, so a handle placed there floats in empty space and bends
+        // feel detached from the stroke).
+        const labelT = elements.find(
+          (x) => x.type === 'text' && (
+            (x as TextElement).containerId === arrow.id ||
+            (!!arrow.groupId && x.groupId === arrow.groupId && isLabelPairGroup(arrow.groupId, elements))
+          ),
+        ) as TextElement | undefined;
+        const bendAnchorT = labelT?.labelOffset ?? 0.5;
+        const curveMid = isMulti
+          ? { x: (arrow.points[0] + arrow.points[arrow.points.length - 2]) / 2, y: (arrow.points[1] + arrow.points[arrow.points.length - 1]) / 2 }
+          : pointAlongPath(arrow, bendAnchorT);
 
         // Simple 3-dot editing: start, middle (bend), end. In hand-drawn mode
         // the polyline is jittered, so handles must sit on the *drawn* points
@@ -3808,13 +3994,14 @@ const EditorCanvas: React.FC = () => {
           else applyArrowLineLive(arrow.id, newPoints, 0, arrow.strokeWidth ?? 2, handDrawn, arrow.strokeStyle);
         };
         const updateBendFromHandle = (node: Konva.Node, commit = false) => {
-          // The bend handle sits on the drawn control point; only the bent
-          // (6-coordinate) form has a jittered middle point to compensate.
-          const hasDrawnControl = drawPoints.length > 4;
-          const bendVal = bendFromHandle(
-            sx, sy, ex, ey,
-            node.x() - arrow.x - (hasDrawnControl ? offAt(2) : 0),
-            node.y() - arrow.y - (hasDrawnControl ? offAt(3) : 0),
+          // Bend handle lives on the curve at `bendAnchorT` (the label's
+          // on-curve position, or the midpoint when no label is attached).
+          // `bendFromCurveAt` inverts any on-curve drag back to bend so the
+          // handle and the shaft gap stay glued together during the drag.
+          const bendVal = bendFromCurveAt(
+            sx, sy, ex, ey, bendAnchorT,
+            node.x() - arrow.x,
+            node.y() - arrow.y,
           );
           if (commit) {
             // A click on the handle without movement fires dragEnd too; do not
@@ -4026,7 +4213,7 @@ const EditorCanvas: React.FC = () => {
                       onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey, e.evt); }}
                       {...hoverHandles}
                     />
-                    <Circle x={arrow.x + control.x} y={arrow.y + control.y} {...bendHandleProps} draggable
+                    <Circle x={arrow.x + curveMid.x} y={arrow.y + curveMid.y} {...bendHandleProps} draggable
                       onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
                       onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
                       onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
@@ -4081,7 +4268,7 @@ const EditorCanvas: React.FC = () => {
                     onDragEnd={(e) => { e.cancelBubble = true; updateEndpoint('start', e.target, true, e.evt.altKey, e.evt); }}
                     {...hoverHandles}
                   />
-                  <Circle x={arrow.x + control.x} y={arrow.y + control.y} {...bendHandleProps} draggable
+                  <Circle x={arrow.x + curveMid.x} y={arrow.y + curveMid.y} {...bendHandleProps} draggable
                     onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
                     onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
                     onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
@@ -4116,6 +4303,7 @@ const EditorCanvas: React.FC = () => {
               return (
                 <Line
                   key={`${arrow.id}-head`}
+                  name="head-end"
                   x={arrow.x}
                   y={arrow.y}
                   points={tri.flat()}
@@ -4137,6 +4325,7 @@ const EditorCanvas: React.FC = () => {
               return (
                 <Line
                   key={`${arrow.id}-starthead`}
+                  name="head-start"
                   x={arrow.x}
                   y={arrow.y}
                   points={tri.flat()}
@@ -4163,6 +4352,7 @@ const EditorCanvas: React.FC = () => {
                 {shaftSegments.map((seg, i) => (
                   <Line
                     key={`${arrow.id}-s${i}`}
+                    name={`shaft-${i}`}
                     points={seg}
                     stroke={arrow.stroke}
                     strokeWidth={arrow.strokeWidth}
@@ -4236,8 +4426,8 @@ const EditorCanvas: React.FC = () => {
                   // keep the quadratic bend handle; straight 2-point arrows
                   // get the Excalidraw midpoint ghost instead (drag converts
                   // the midpoint into a real vertex).
-                  <Circle x={arrow.x + (drawPoints.length > 4 ? drawPoints[2] : control.x)}
-                    y={arrow.y + (drawPoints.length > 4 ? drawPoints[3] : control.y)}
+                  <Circle x={arrow.x + curveMid.x}
+                    y={arrow.y + curveMid.y}
                     {...bendHandleProps} draggable
                     onMouseDown={(e) => handleHandleMouseDown(arrow.id, e)}
                     onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
@@ -4272,6 +4462,19 @@ const EditorCanvas: React.FC = () => {
         const bendHandleProps = { ...selectionHandleProps('bend'), name: `edit-handle linear-${line.id}` };
         const styleDash = strokeDash(line.strokeStyle);
         const isMulti = line.points.length > 4;
+        // Bend handle sits at the LABEL's on-curve anchor when a label is
+        // attached, so the handle and the shaft gap stay glued together.
+        // No label → fall back to the visual curve midpoint.
+        const labelT = elements.find(
+          (x) => x.type === 'text' && (
+            (x as TextElement).containerId === line.id ||
+            (!!line.groupId && x.groupId === line.groupId && isLabelPairGroup(line.groupId, elements))
+          ),
+        ) as TextElement | undefined;
+        const bendAnchorT = labelT?.labelOffset ?? 0.5;
+        const curveMid = isMulti
+          ? { x: (line.points[0] + line.points[line.points.length - 2]) / 2, y: (line.points[1] + line.points[line.points.length - 1]) / 2 }
+          : pointAlongPath(line, bendAnchorT);
         const multiPoints = isMulti ? line.points : [];
         const hoverHandles = handleHoverEvents();
 
@@ -4300,6 +4503,38 @@ const EditorCanvas: React.FC = () => {
           if (commit) commitElementUpdate(line.id, { points: newPoints });
           else applyArrowLineLive(line.id, newPoints, 0, line.strokeWidth ?? 2, handDrawn, line.strokeStyle);
         };
+        const updateBendFromHandle = (node: Konva.Node, commit = false) => {
+          // Handle sits on the curve at the label's on-curve anchor.
+          // `bendFromCurveAt` inverts any on-curve drag back to bend.
+          const bendVal = bendFromCurveAt(
+            sx, sy, ex, ey, bendAnchorT,
+            node.x() - line.x,
+            node.y() - line.y,
+          );
+          if (commit) {
+            const current = useEditorStore.getState().elements.find((x) => x.id === line.id) as LineElement | undefined;
+            if (bendVal !== (current?.bend ?? 0)) commitElementUpdate(line.id, { bend: bendVal });
+          } else if (handDrawn) {
+            const live = useEditorStore.getState().elements.find((x) => x.id === line.id);
+            if (!(live as LineElement | undefined)?.bend) {
+              throttledSilentUpdate(line.id, { bend: bendVal });
+            }
+            applyArrowLineLive(line.id, [sx, sy, ex, ey], bendVal, line.strokeWidth ?? 2, true, line.strokeStyle);
+          } else {
+            applyArrowLineLive(line.id, [sx, sy, ex, ey], bendVal, line.strokeWidth ?? 2, false, line.strokeStyle);
+          }
+        };
+        const bendHandle = showHandles && !isMulti ? (
+          <Circle
+            x={line.x + curveMid.x}
+            y={line.y + curveMid.y}
+            {...bendHandleProps} draggable
+            onMouseDown={(e) => handleHandleMouseDown(line.id, e)}
+            onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
+            onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
+            {...hoverHandles}
+          />
+        ) : null;
         const updateEndpoint = (which: 'start' | 'end', node: Konva.Node, commit = false, forceInside = false, evt?: { shiftKey?: boolean }) => {
           // Copy the points and replace only the dragged endpoint, so multi-point
           // polylines keep their interior vertices instead of collapsing to two.
@@ -4361,39 +4596,6 @@ const EditorCanvas: React.FC = () => {
             }
           }
         };
-        const updateBendFromHandle = (node: Konva.Node, commit = false) => {
-          // The bend handle sits on the drawn control point; only the bent
-          // (6-coordinate) form has a jittered middle point to compensate.
-          const hasDrawnControl = drawPoints.length > 4;
-          const bendVal = bendFromHandle(
-            sx, sy, ex, ey,
-            node.x() - line.x - (hasDrawnControl ? offAt(2) : 0),
-            node.y() - line.y - (hasDrawnControl ? offAt(3) : 0),
-          );
-          if (commit) {
-            const current = useEditorStore.getState().elements.find((x) => x.id === line.id) as LineElement | undefined;
-            if (bendVal !== (current?.bend ?? 0)) commitElementUpdate(line.id, { bend: bendVal });
-          } else if (handDrawn) {
-            const live = useEditorStore.getState().elements.find((x) => x.id === line.id);
-            if (!(live as LineElement | undefined)?.bend) {
-              throttledSilentUpdate(line.id, { bend: bendVal });
-            }
-            applyArrowLineLive(line.id, [sx, sy, ex, ey], bendVal, line.strokeWidth ?? 2, true, line.strokeStyle);
-          } else {
-            applyArrowLineLive(line.id, [sx, sy, ex, ey], bendVal, line.strokeWidth ?? 2, false, line.strokeStyle);
-          }
-        };
-        const bendHandle = showHandles && !isMulti ? (
-          <Circle
-            x={line.x + (drawPoints.length > 4 ? drawPoints[2] : control.x)}
-            y={line.y + (drawPoints.length > 4 ? drawPoints[3] : control.y)}
-            {...bendHandleProps} draggable
-            onMouseDown={(e) => handleHandleMouseDown(line.id, e)}
-            onDragMove={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, false); }}
-            onDragEnd={(e) => { e.cancelBubble = true; updateBendFromHandle(e.target, true); }}
-            {...hoverHandles}
-          />
-        ) : null;
 
         // Gap only for bound label (groupId pair), not any nearby free text.
         const lineCandidateRects: Array<{ x: number; y: number; w: number; h: number }> = [];
@@ -4530,6 +4732,7 @@ const EditorCanvas: React.FC = () => {
                 {lineShaftSegments.map((seg, i) => (
                   <Line
                     key={`${line.id}-s${i}`}
+                    name={`shaft-${i}`}
                     points={seg}
                     stroke={line.stroke}
                     strokeWidth={line.strokeWidth}
@@ -5128,6 +5331,18 @@ const EditorCanvas: React.FC = () => {
       style={{
         cursor: cursorCSS,
       }}
+      onContextMenu={(e) => {
+        // Slice A: per-element right-click menu. If the right-click hits an
+        // annotation, open the shape menu and suppress the canvas menu.
+        const stage = stageRef.current;
+        if (!stage) return;
+        const targetId = findAnnotationId(e.target as unknown as Konva.Node);
+        if (targetId) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShapeMenu({ id: targetId, pos: { x: e.clientX, y: e.clientY } });
+        }
+      }}
       onDragOver={(e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -5362,7 +5577,19 @@ const EditorCanvas: React.FC = () => {
         {/* Transient interaction layer: drawing drafts, marquee, eraser rect
             and snapping guides. Driven imperatively by DraftLayer from pointer
             events — React never renders here during a gesture. */}
-        <Layer name="interaction-layer" x={contentOffsetX} y={contentOffsetY} listening={false} ref={interactionLayerRef} />
+        <Layer name="interaction-layer" x={contentOffsetX} y={contentOffsetY} listening={false} ref={interactionLayerRef}>
+          {/* Slice A: always-on hover outline in select/hand modes + drag ghost */}
+          <SelectionOverlayV2
+            hoveredId={
+              (activeTool === 'select' || activeTool === 'hand') ? hoveredId : null
+            }
+            elements={elements}
+            selectedIds={new Set(selectedElementIds)}
+            imageSize={imageSize}
+            zoom={zoom}
+          />
+          <DragGhost ghost={multiSelectGhost} zoom={zoom} />
+        </Layer>
       </Stage>
 
       {/* Text input overlay: the single in-place editor for every text entry
@@ -5390,6 +5617,14 @@ const EditorCanvas: React.FC = () => {
         copied={ocrCopied}
         onClose={() => setOcrOpen(false)}
         onCopy={() => void copyOCRText()}
+      />
+
+      {/* Slice A: per-element right-click menu (overrides the canvas menu
+          when the right-click hits a specific element). */}
+      <ShapeContextMenu
+        elementId={shapeMenu?.id ?? null}
+        position={shapeMenu?.pos ?? null}
+        onClose={() => setShapeMenu(null)}
       />
     </div>
   );

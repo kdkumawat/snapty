@@ -95,6 +95,27 @@ export function bendFromCurveMid(
 }
 
 /**
+ * Invert an on-curve handle at parameter `t` back to `bend`. Used when the
+ * bend handle is anchored at the label's position on the curve (the label
+ * can sit anywhere along the path, not just the midpoint), so the handle
+ * and the shaft gap stay glued together. Falls back to {@link bendFromHandle}
+ * for degenerate `t` (0 or 1) where the inverse is singular.
+ */
+export function bendFromCurveAt(
+  sx: number, sy: number, ex: number, ey: number, t: number, hx: number, hy: number,
+): number {
+  const u = 1 - t;
+  const denom = 2 * u * t;
+  if (Math.abs(denom) < 1e-6) {
+    return bendFromHandle(sx, sy, ex, ey, hx, hy);
+  }
+  // P(t) = (1-t)² P0 + 2(1-t)t C + t² P2  →  C = (P(t) − (1-t)² P0 − t² P2) / (2(1-t)t)
+  const cx = (hx - u * u * sx - t * t * ex) / denom;
+  const cy = (hy - u * u * sy - t * t * ey) / denom;
+  return bendFromHandle(sx, sy, ex, ey, cx, cy);
+}
+
+/**
  * Outgoing tangent at the start of the segment. Arrowheads must follow this,
  * not the chord: on a bent arrow the chord direction is visibly wrong.
  */
