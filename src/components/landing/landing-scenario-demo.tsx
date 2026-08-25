@@ -124,19 +124,25 @@ function BugMock() {
           </div>
           <div className="relative mt-auto">
             <HandNote className="absolute -top-7 -left-1 z-10">covers the terms link</HandNote>
-            <svg
-              className="absolute -top-4 left-[42%] w-8 h-8 pointer-events-none z-10"
-              viewBox="0 0 24 24"
-              fill="none"
-              aria-hidden
-            >
-              <path d="M4 20 L14 10" stroke={ACCENT} strokeWidth="2" strokeLinecap="round" />
-              <path d="M11 9 L15 11 L10 14 Z" fill={ACCENT} />
-            </svg>
             <p className="text-[10px] text-stone-400 mb-1.5 underline decoration-stone-300 relative z-0">
               Terms &amp; refund policy
             </p>
             <div className="relative">
+              {/* Callout arrow: drops in from the upper-right, lands on the button. */}
+              <svg
+                className="absolute -top-9 -right-1 w-12 h-12 pointer-events-none z-20"
+                viewBox="0 0 32 32"
+                fill="none"
+                aria-hidden
+              >
+                <path
+                  d="M28 4 L8 26"
+                  stroke={ACCENT}
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                />
+                <path d="M14 25 L8 26 L10 20 Z" fill={ACCENT} />
+              </svg>
               <div
                 className="absolute -inset-1 rounded-lg border-2 pointer-events-none z-10"
                 style={{ borderColor: ACCENT }}

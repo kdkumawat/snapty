@@ -196,12 +196,14 @@ function bakePixelatedRegion(
 /** Build annotations that demo the tools, targeted at the sample's real UI. */
 async function makeSampleAnnotations(img: HTMLImageElement): Promise<EditorElement[]> {
   // Red arrow: starts bottom-right, lands on the Refund button's right edge.
+  // pointerLength/Width bumped from 14 so the arrowhead actually reads as an
+  // arrowhead at default zoom; roughness dialled down to keep the head sharp.
   const arrow: ArrowElement = {
     id: generateId(), type: 'arrow', x: 648, y: 512,
-    points: [0, 0, -312, -86], stroke: '#ef4444', strokeWidth: 3.5,
-    fill: '#ef4444', pointerLength: 14, pointerWidth: 14,
+    points: [0, 0, -312, -86], stroke: '#ef4444', strokeWidth: 4,
+    fill: '#ef4444', pointerLength: 20, pointerWidth: 20,
     endArrowhead: 'arrow', startArrowhead: 'none',
-    opacity: 1, strokeStyle: 'solid', roughness: 1.25,
+    opacity: 1, strokeStyle: 'solid', roughness: 0.9,
   };
   const step: StepElement = {
     id: generateId(), type: 'step',
