@@ -74,7 +74,7 @@
   --secondary: #F0EEEC;
   --secondary-foreground: var(--foreground);
   --muted: #F0EEEC;
-  --muted-foreground: #78716C;
+  --muted-foreground: #57534E;
   --destructive: #DC2626;
   --input: #E6E4E1;
   --ring: #EA580C;
@@ -99,7 +99,7 @@
   --secondary: #2A2A2A;
   --secondary-foreground: var(--foreground);
   --muted: #2A2A2A;
-  --muted-foreground: #A8A29E;
+  --muted-foreground: #D6D3D1;
   --destructive: #F87171;
   --input: #2E2E2E;
   --ring: #F97316;
@@ -348,7 +348,12 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   color: var(--muted-foreground);
   background: transparent;
   border: none;
-  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease;
+  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease, box-shadow var(--duration-fast) ease;
+}
+
+.icon-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--ring);
 }
 
 .icon-btn:hover:not(:disabled) {
@@ -651,4 +656,33 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   font-size: 10px;
   line-height: 1.2;
   color: var(--muted-foreground);
+}
+
+/*
+  Reduced motion: kill the shimmy on shadcn dialogs/tooltips and the snapty
+  shimmer / tip-fade. We scope the override to the data-slot attribute Radix
+  sets so it never leaks into framer-motion (which has its own MotionConfig
+  hook on the landing).
+*/
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="dialog-overlay"],
+  [data-slot="dialog-content"],
+  [data-slot="tooltip-content"],
+  [data-slot="popover-content"],
+  [data-slot="dropdown-menu-content"],
+  [data-slot="context-menu-content"],
+  [data-slot="select-content"],
+  [data-slot="toast"] {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .snapty-shimmer,
+  .toolbar-tip {
+    animation: none !important;
+  }
+  .floating-surface,
+  [data-snapty-toast-viewport] * {
+    transition-duration: 0.01ms !important;
+  }
 }
