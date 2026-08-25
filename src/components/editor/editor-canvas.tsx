@@ -63,7 +63,6 @@ import DragGhost from '@/components/editor/canvas/drag-ghost';
 import ShapeContextMenu from '@/components/editor/canvas/shape-context-menu';
 import { getElementBounds, boundsIntersect } from '@/lib/editor/selection';
 import { hydrateSettingsFromElement, hydrateSettingsFromSelection } from '@/lib/editor/settings-sync';
-import { magnifierSourceCenter } from '@/lib/editor/magnifier-geometry';
 import {
   controlPoint, renderPoints, bendFromHandle, bendFromCurveMid, bendFromCurveAt, curvePoint,
   tangentAtStart, tangentAtEnd,
@@ -3853,12 +3852,17 @@ const EditorCanvas: React.FC = () => {
 
       case 'magnifier': {
         const mag = el as MagnifierElement;
-        // Resizing keeps the source centered, so the magnified region stays put.
-        const resizeToRadii = (radii: { rx: number; ry: number }, commit: boolean) => {
-          const { cx, cy } = magnifierSourceCenter(mag);
+        // Resize is opposite-corner-fixed like a normal ellipse: the corner
+        // you are NOT dragging stays put and the source center moves as the
+        // bbox grows or shrinks. The top-left comes from the magnifier so
+        // both axes land in the same store update.
+        const resizeToRadii = (
+          radii: { rx: number; ry: number; topLeftX: number; topLeftY: number },
+          commit: boolean,
+        ) => {
           const updates = {
-            x: cx - radii.rx,
-            y: cy - radii.ry,
+            x: radii.topLeftX,
+            y: radii.topLeftY,
             width: radii.rx * 2,
             height: radii.ry * 2,
           };

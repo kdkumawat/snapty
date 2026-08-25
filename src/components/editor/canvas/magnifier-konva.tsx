@@ -45,10 +45,10 @@ type Props = {
   onPreviewOffsetMove?: (offset: { x: number; y: number }) => void;
   /** Commit the bubble placement as a single undo step. */
   onPreviewOffsetCommit?: (offset: { x: number; y: number }) => void;
-  /** Live update while resizing the source ellipse (radii in image units). */
-  onRadiiMove?: (radii: { rx: number; ry: number }) => void;
-  /** Commit the source radii as a single undo step. */
-  onRadiiCommit?: (radii: { rx: number; ry: number }) => void;
+  /** Live update while resizing the source bbox (radii + new top-left). */
+  onRadiiMove?: (radii: { rx: number; ry: number; topLeftX: number; topLeftY: number }) => void;
+  /** Commit the source bbox as a single undo step. */
+  onRadiiCommit?: (radii: { rx: number; ry: number; topLeftX: number; topLeftY: number }) => void;
   /** Live update while bending the leader line (0 = straight, ±1 = full curve). */
   onLeaderBendMove?: (bend: number) => void;
   /** Commit the leader bend as a single undo step. */
@@ -257,22 +257,36 @@ function useHandleDrag(
 }
 
 /**
- * Source radii implied by dragging a corner handle to `local`. Resizing is
- * center-fixed so the magnified region does not slide out from under the ring.
- * Each axis is independent, so corners can shape an ellipse.
+ * Source bbox implied by dragging a corner handle to `local`. Resizing is
+ * opposite-corner-fixed (the same model as the shared Transformer for normal
+ * ellipses): the corner you are NOT dragging stays put, the dragged corner
+ * follows the cursor, and the source center moves as the bbox grows or
+ * shrinks. Each axis is independent, so corners can shape an ellipse.
+ *
+ * Returns the new top-left of the source box plus the new radii, so the
+ * caller can write all four bbox fields back in one update.
  */
 function radiiFromCorner(
   local: { x: number; y: number },
-  w: number,
-  h: number,
-): { rx: number; ry: number } {
-  // Corner handles sit SELECT_PAD outside the ellipse, so subtract that offset
-  // before converting the pointer into radii. Without it the handle is always
+  fx: 0 | 1,
+  fy: 0 | 1,
+  originW: number,
+  originH: number,
+): { rx: number; ry: number; topLeftX: number; topLeftY: number } {
+  // Handle sits SELECT_PAD outside the bbox corner, so subtract that offset
+  // before computing the new bbox width. Without it the handle is always
   // rendered ahead of the cursor while resizing, which reads as a laggy drag.
-  return {
-    rx: Math.max(8, Math.abs(local.x - w / 2) - SELECT_PAD),
-    ry: Math.max(8, Math.abs(local.y - h / 2) - SELECT_PAD),
-  };
+  const dragX = local.x - (fx ? SELECT_PAD : -SELECT_PAD);
+  const dragY = local.y - (fy ? SELECT_PAD : -SELECT_PAD);
+  // The opposite bbox corner is captured on pointerdown so it stays put
+  // through the drag, matching how a normal ellipse is resized.
+  const oppX = (1 - fx) * originW;
+  const oppY = (1 - fy) * originH;
+  const topLeftX = Math.min(dragX, oppX);
+  const topLeftY = Math.min(dragY, oppY);
+  const rx = Math.max(8, Math.abs(dragX - oppX) / 2);
+  const ry = Math.max(8, Math.abs(dragY - oppY) / 2);
+  return { rx, ry, topLeftX, topLeftY };
 }
 
 export default function MagnifierKonva({
@@ -451,20 +465,24 @@ export default function MagnifierKonva({
   const onCornerMoveSmooth = useCallback(
     (local: { x: number; y: number }) => {
       dragHandleLocalRef.current = local;
+      const corner = draggingCornerRef.current;
+      if (!corner) return;
       const origin = dragOriginRef.current ?? { w, h };
-      onRadiiMove?.(radiiFromCorner(local, origin.w, origin.h));
+      onRadiiMove?.(radiiFromCorner(local, corner.fx, corner.fy, origin.w, origin.h));
     },
     [onRadiiMove, w, h],
   );
   const onCornerCommitSmooth = useCallback(
     (local: { x: number; y: number }) => {
+      const corner = draggingCornerRef.current;
       draggingCornerRef.current = null;
       dragHandleLocalRef.current = null;
       dragOriginRef.current = null;
       // Re-render so the handle snaps back to its prop-driven initial position.
       forceRender();
+      if (!corner) return;
       const origin = { w, h };
-      onRadiiCommit?.(radiiFromCorner(local, origin.w, origin.h));
+      onRadiiCommit?.(radiiFromCorner(local, corner.fx, corner.fy, origin.w, origin.h));
     },
     [onRadiiCommit, w, h],
   );
