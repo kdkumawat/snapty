@@ -2793,21 +2793,33 @@ const EditorCanvas: React.FC = () => {
     */
     if (el?.type === 'text') {
       const textEl = el as TextElement;
-      const baseWidth = node.width() || textEl.width || 0;
-      // Side handles re-wrap; corner handles scale the type itself, which is
-      // what "make this label bigger" means.
-      const corner = Math.abs(scaleX - scaleY) < 0.01 && Math.abs(scaleX - 1) > 0.01;
+      // Konva's generic `width()`/`height()` return the raw attrs (0 when
+      // never set), so a fresh TextElement would clamp to the 20px floor.
+      // Use the local bbox instead — it tracks the rendered text (natural
+      // size when auto, or the explicit size once the user has dragged).
+      const baseWidth =
+        textEl.width ||
+        node.getClientRect({ relativeTo: node as Konva.Container }).width ||
+        0;
+      const baseHeight =
+        textEl.height ||
+        (node as Konva.Group).findOne('Text')?.height() ||
+        0;
+      // Every handle re-wraps / resizes the box; fontSize is a separate
+      // property and changes only via the font-size control, never from a
+      // box drag. Corner handles change both width and height; side handles
+      // change only the axis they sit on.
       const nextWidth = Math.max(20, baseWidth * scaleX);
+      const nextHeight = Math.max(20, baseHeight * scaleY);
       updateElement(id, {
         ...updates,
         width: nextWidth,
-        ...(corner
-          ? { fontSize: Math.max(4, (textEl.fontSize ?? 24) * Math.sqrt(scaleX * scaleY)) }
-          : {}),
+        height: nextHeight,
       } as Partial<TextElement>);
       node.scaleX(1);
       node.scaleY(1);
       node.width(nextWidth);
+      node.height(nextHeight);
       return;
     }
 
@@ -4920,8 +4932,17 @@ const EditorCanvas: React.FC = () => {
         // (a Group at the center + offset Text) rather than the top-left.
         const isAttached = !!textEl.groupId;
         const hasRotation = isAttached && (textEl.rotation ?? 0) !== 0;
-        const rawBoxW = textEl.width ?? 100;
-        const rawBoxH = textEl.height ?? (textEl.fontSize ?? 24) * TEXT_LINE_HEIGHT + (textEl.padding ?? TEXT_PADDING) * 2;
+        // Undefined width: Konva Text auto-sizes to the natural line width
+        // and wrap falls through to 'none' below, so fresh captions render on
+        // a single line until the user drags a side handle to add wrap.
+        // Undefined height: same idea vertically — auto-size until the user
+        // drags a top/bottom handle or a corner.
+        const rawBoxW = textEl.width;
+        const rawBoxH: number | undefined = isAttached
+          ? (textEl.height ??
+            (textEl.fontSize ?? 24) * TEXT_LINE_HEIGHT +
+              (textEl.padding ?? TEXT_PADDING) * 2)
+          : textEl.height;
         // The shape this label is attached to (same groupId, different id).
         const parentEl = isAttached
           ? elements.find((x) => x.id !== textEl.id && x.groupId === textEl.groupId)
@@ -4930,11 +4951,14 @@ const EditorCanvas: React.FC = () => {
           !!parentEl && (parentEl.type === 'arrow' || parentEl.type === 'line');
         // For path labels, use tight width so arrow remains grabbable outside the text
         const renderBoxW = isPathLabel
-          ? Math.max(24, Math.min(rawBoxW, textEl.text.length * (textEl.fontSize ?? 24) * 0.58 + (textEl.padding ?? TEXT_PADDING) * 2 + 12))
+          ? Math.max(24, Math.min(rawBoxW ?? 0, textEl.text.length * (textEl.fontSize ?? 24) * 0.58 + (textEl.padding ?? TEXT_PADDING) * 2 + 12))
           : rawBoxW;
         const renderBoxH = rawBoxH;
-        const textOffsetX = isPathLabel ? (rawBoxW - renderBoxW) / 2 : 0;
-        const boxW = rawBoxW;
+        const textOffsetX = isPathLabel ? ((rawBoxW ?? 0) - (renderBoxW ?? 0)) / 2 : 0;
+        // boxW/boxH drive the rotation pivot below, which only fires for
+        // attached text (always created with an explicit width). Keep them
+        // numeric so the math is type-safe.
+        const boxW = rawBoxW ?? 0;
         const boxH = rawBoxH;
 
         // Clicking a closed-shape label selects the container. Clicking an
@@ -5065,10 +5089,16 @@ const EditorCanvas: React.FC = () => {
             padding={textEl.padding ?? TEXT_PADDING}
             lineHeight={textEl.lineHeight ?? TEXT_LINE_HEIGHT}
             width={renderBoxW}
-            height={isAttached ? renderBoxH : undefined}
+            height={renderBoxH}
             wrap={renderBoxW ? 'word' : 'none'}
             align={textEl.align ?? 'left'}
-            verticalAlign={isAttached ? (textEl.verticalAlign ?? 'middle') : undefined}
+            verticalAlign={
+              isAttached
+                ? (textEl.verticalAlign ?? 'middle')
+                : textEl.height
+                  ? 'top'
+                  : undefined
+            }
             listening={true}
             onDblClick={(e) => handleTextDblClick(textEl, e)}
             onDblTap={(e) => handleTextDblClick(textEl, e)}
@@ -5113,9 +5143,9 @@ const EditorCanvas: React.FC = () => {
             key={textEl.id}
             {...groupProps}
             x={textEl.x + boxW / 2}
-            y={textEl.y + boxH / 2}
+            y={textEl.y + (boxH ?? 0) / 2}
             offsetX={boxW / 2}
-            offsetY={boxH / 2}
+            offsetY={(boxH ?? 0) / 2}
             rotation={textEl.rotation ?? 0}
           >
             {labelBox}
@@ -5529,6 +5559,79 @@ const EditorCanvas: React.FC = () => {
                 if (Math.abs(nodes[0].rotation() - snapped) > 0.001) {
                   nodes[0].rotation(snapped);
                   tr.forceUpdate();
+                }
+              }
+              // Live text resize: re-wrap / rescale the Text node each frame
+              // so the drag never stretches the glyphs. Konva's Transformer
+              // scales the group; we translate that scale into intrinsic
+              // width + fontSize on the Text child, reset the group scale,
+              // and shift the group position so the active anchor stays under
+              // the pointer. Without this the text squashes/stretches live
+              // and only settles on commit.
+              if (nodes.length === 1) {
+                const node = nodes[0];
+                const id = node.id();
+                const el = id ? st.elements.find((x) => x.id === id) : undefined;
+                if (el?.type === 'text') {
+                  const textNode = (node as Konva.Group).findOne('Text') as Konva.Text | undefined;
+                  if (textNode) {
+                    const anchor = tr.getActiveAnchor();
+                    const scaleX = node.scaleX();
+                    const scaleY = node.scaleY();
+                    const pad = textNode.padding();
+                    const visualW = textNode.getWidth();
+                    const visualH = textNode.getHeight();
+                    const isLeft =
+                      anchor === 'middle-left' ||
+                      anchor === 'top-left' ||
+                      anchor === 'bottom-left';
+                    const isTop =
+                      anchor === 'top-center' ||
+                      anchor === 'top-left' ||
+                      anchor === 'top-right';
+                    const isHorizontalResize =
+                      anchor === 'middle-left' ||
+                      anchor === 'middle-right' ||
+                      anchor === 'top-left' ||
+                      anchor === 'top-right' ||
+                      anchor === 'bottom-left' ||
+                      anchor === 'bottom-right';
+                    const isVerticalResize =
+                      anchor === 'top-center' ||
+                      anchor === 'bottom-center' ||
+                      anchor === 'top-left' ||
+                      anchor === 'top-right' ||
+                      anchor === 'bottom-left' ||
+                      anchor === 'bottom-right';
+                    if (isHorizontalResize) {
+                      // Re-wrap at the new width. fontSize is never touched
+                      // by a box drag.
+                      const newVisualW = Math.max(20, visualW * scaleX);
+                      textNode.width(Math.max(20, newVisualW - pad * 2));
+                      if (textNode.wrap() === 'none') textNode.wrap('word');
+                    }
+                    if (isVerticalResize) {
+                      // Resize the box height. Text auto-wraps to the width;
+                      // the height just bounds the box. Konva's getHeight()
+                      // already includes padding, so we write the raw value
+                      // back without subtracting.
+                      const newVisualH = Math.max(20, visualH * scaleY);
+                      textNode.height(newVisualH);
+                    }
+
+                    // Keep the active anchor under the pointer by shifting
+                    // the group by the change in visual size.
+                    const newVisualW = textNode.getWidth();
+                    const newVisualH = textNode.getHeight();
+                    const dx = isLeft ? visualW - newVisualW : 0;
+                    const dy = isTop ? visualH - newVisualH : 0;
+                    if (dx !== 0) node.x(node.x() + dx);
+                    if (dy !== 0) node.y(node.y() + dy);
+
+                    node.scaleX(1);
+                    node.scaleY(1);
+                    tr.forceUpdate();
+                  }
                 }
               }
               // Live binding during resize/rotate: a single bindable target
