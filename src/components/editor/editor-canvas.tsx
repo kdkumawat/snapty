@@ -5357,6 +5357,9 @@ const EditorCanvas: React.FC = () => {
     <div
       ref={containerRef}
       data-snapty-canvas
+      role="application"
+      aria-label="Screenshot editor"
+      aria-roledescription="annotation surface"
       className={`relative w-full h-full overflow-hidden z-0 ${dragOver ? 'ring-2 ring-inset ring-accent' : ''}`}
       style={{
         cursor: cursorCSS,

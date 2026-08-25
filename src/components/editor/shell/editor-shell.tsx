@@ -19,6 +19,7 @@ import CanvasContextMenu from '@/components/editor/menus/canvas-context-menu';
 import ImageLoadingSkeleton from '@/components/editor/image-loading-skeleton';
 import SessionRecovery from '@/components/editor/session-recovery';
 import FirstRunCard from '@/components/editor/first-run-card';
+import { EditorErrorBoundary } from '@/components/editor/editor-error-boundary';
 import { scheduleAutosave, clearAutosave, type AutosaveSnapshot } from '@/lib/editor/autosave';
 
 const EditorCanvas = dynamic(() => import('@/components/editor/editor-canvas'), {
@@ -126,23 +127,27 @@ export default function EditorShell() {
     <TooltipProvider delayDuration={200} skipDelayDuration={0}>
       <div className="relative flex flex-col flex-1 min-h-0 h-full w-full bg-canvas overflow-hidden select-none touch-manipulation">
         {/* Flex child fills shell; absolute wrap inside fills that child */}
-        <div className="relative flex-1 min-h-0 w-full">
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="relative flex-1 min-h-0 w-full focus:outline-none"
+        >
           <CanvasContextMenu>
             <div
               className="absolute inset-0 overflow-hidden bg-canvas"
               data-snapty-canvas-wrap
             >
               {backgroundImage ? (
-                <>
+                <EditorErrorBoundary>
                   <EditorCanvas />
                   {imageLoading && <ImageLoadingSkeleton label="Loading image…" />}
-                </>
+                </EditorErrorBoundary>
               ) : (
                 <EmptyState />
               )}
             </div>
           </CanvasContextMenu>
-        </div>
+        </main>
 
         <TopChrome onOpenPalette={() => setShowCommandPalette(true)} />
         <ToolbarTips />

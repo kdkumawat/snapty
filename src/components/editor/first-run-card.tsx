@@ -325,8 +325,15 @@ export default function FirstRunCard({ onClose }: { onClose?: () => void }) {
             </button>
           </div>
           <p className="mt-2.5 text-[10px] text-muted-foreground flex items-center justify-between gap-2">
-            <span>Paste a screenshot with <Kbd>Ctrl</Kbd>+<Kbd>V</Kbd></span>
+            <span>Paste with <Kbd>Ctrl</Kbd>+<Kbd>V</Kbd></span>
             <span className="opacity-70">Stays on your device</span>
+          </p>
+          <p className="mt-1.5 text-[10px] text-muted-foreground flex items-center flex-wrap gap-x-1.5 gap-y-1">
+            <span>Try</span>
+            <Kbd>Ctrl</Kbd>+<Kbd>K</Kbd>
+            <span>for every action, or</span>
+            <Kbd>?</Kbd>
+            <span>for shortcuts.</span>
           </p>
         </div>
       </div>
