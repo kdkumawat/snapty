@@ -12,7 +12,7 @@
  * source live while drawing, dragging and resizing instead of catching up afterwards.
  * Supports hand-drawn rings via Rough when enabled.
  */
-import React, { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Group, Ellipse, Line, Circle, Rect, Image as KonvaImage } from 'react-konva';
 import type Konva from 'konva';
 import type { MagnifierElement } from '@/types/editor';
@@ -434,10 +434,52 @@ export default function MagnifierKonva({
     ),
   );
 
-  const onCornerDrag = useHandleDrag(
-    groupRef,
-    useCallback((local) => onRadiiMove?.(radiiFromCorner(local, w, h)), [onRadiiMove, w, h]),
-    useCallback((local) => onRadiiCommit?.(radiiFromCorner(local, w, h)), [onRadiiCommit, w, h]),
+  // Corner handles are static at SELECT_PAD outside the bbox; without this
+  // state the visible handle stays put while the ellipse grows, so the cursor
+  // outruns the handle and the drag reads as laggy. We track which corner is
+  // being dragged and pin that one to the live pointer position; the other
+  // three keep their initial anchors. Drag origin is captured on pointerdown
+  // so the center stays put even as the store pushes new w/h through every
+  // rAF tick.
+  const [cornerDrag, setCornerDrag] = useState<
+    { fx: 0 | 1; fy: 0 | 1; x: number; y: number } | null
+  >(null);
+  const dragOriginRef = useRef<{ w: number; h: number } | null>(null);
+
+  const onCornerMoveTracked = useCallback(
+    (local: { x: number; y: number }) => {
+      setCornerDrag((prev) => (prev ? { ...prev, x: local.x, y: local.y } : prev));
+      const origin = dragOriginRef.current ?? { w, h };
+      onRadiiMove?.(radiiFromCorner(local, origin.w, origin.h));
+    },
+    [onRadiiMove, w, h],
+  );
+  const onCornerCommitTracked = useCallback(
+    (local: { x: number; y: number }) => {
+      setCornerDrag(null);
+      const origin = dragOriginRef.current ?? { w, h };
+      dragOriginRef.current = null;
+      onRadiiCommit?.(radiiFromCorner(local, origin.w, origin.h));
+    },
+    [onRadiiCommit, w, h],
+  );
+  const baseCornerDrag = useHandleDrag(groupRef, onCornerMoveTracked, onCornerCommitTracked);
+  const cornerDragProps = useCallback(
+    (fx: 0 | 1, fy: 0 | 1) => ({
+      onPointerDown: (e: Konva.KonvaEventObject<PointerEvent>) => {
+        dragOriginRef.current = { w, h };
+        setCornerDrag({
+          fx,
+          fy,
+          x: fx ? w + SELECT_PAD : -SELECT_PAD,
+          y: fy ? h + SELECT_PAD : -SELECT_PAD,
+        });
+        baseCornerDrag.onPointerDown(e);
+      },
+      onMouseDown: baseCornerDrag.onMouseDown,
+      onTouchStart: baseCornerDrag.onTouchStart,
+    }),
+    [baseCornerDrag, w, h],
   );
 
   return (
@@ -662,16 +704,21 @@ export default function MagnifierKonva({
             listening={false}
             perfectDrawEnabled={false}
           />
-          {canResize && CORNERS.map(([fx, fy]) => (
-            <Circle
-              key={`${el.id}-rs${fx}${fy}`}
-              x={fx ? w + SELECT_PAD : -SELECT_PAD}
-              y={fy ? h + SELECT_PAD : -SELECT_PAD}
-              {...handle}
-              {...onCornerDrag}
-              {...hoverEvents}
-            />
-          ))}
+          {canResize && CORNERS.map(([fx, fy]) => {
+            const isDragging = cornerDrag?.fx === fx && cornerDrag?.fy === fy;
+            const hx = isDragging && cornerDrag ? cornerDrag.x : (fx ? w + SELECT_PAD : -SELECT_PAD);
+            const hy = isDragging && cornerDrag ? cornerDrag.y : (fy ? h + SELECT_PAD : -SELECT_PAD);
+            return (
+              <Circle
+                key={`${el.id}-rs${fx}${fy}`}
+                x={hx}
+                y={hy}
+                {...handle}
+                {...cornerDragProps(fx, fy)}
+                {...hoverEvents}
+              />
+            );
+          })}
         </>
       )}
     </Group>
