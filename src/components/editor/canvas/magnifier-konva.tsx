@@ -12,7 +12,7 @@
  * source live while drawing, dragging and resizing instead of catching up afterwards.
  * Supports hand-drawn rings via Rough when enabled.
  */
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { Group, Ellipse, Line, Circle, Rect, Image as KonvaImage } from 'react-konva';
 import type Konva from 'konva';
 import type { MagnifierElement } from '@/types/editor';
@@ -434,46 +434,50 @@ export default function MagnifierKonva({
     ),
   );
 
-  // Corner handles are static at SELECT_PAD outside the bbox; without this
-  // state the visible handle stays put while the ellipse grows, so the cursor
+  // Corner handles are static at SELECT_PAD outside the bbox; without help
+  // the visible handle stays put while the ellipse grows, so the cursor
   // outruns the handle and the drag reads as laggy. We track which corner is
-  // being dragged and pin that one to the live pointer position; the other
-  // three keep their initial anchors. Drag origin is captured on pointerdown
-  // so the center stays put even as the store pushes new w/h through every
-  // rAF tick.
-  const [cornerDrag, setCornerDrag] = useState<
-    { fx: 0 | 1; fy: 0 | 1; x: number; y: number } | null
-  >(null);
+  // being dragged and pin that one to the live pointer position via a ref +
+  // useLayoutEffect so the Konva node is updated synchronously after the
+  // render (before paint) - no one-frame React delay. The other three keep
+  // their initial anchors. Drag origin is captured on pointerdown so the
+  // center stays put even as the store pushes new w/h through every rAF tick.
+  const draggingCornerRef = useRef<{ fx: 0 | 1; fy: 0 | 1 } | null>(null);
+  const dragHandleLocalRef = useRef<{ x: number; y: number } | null>(null);
+  const handleNodesRef = useRef<(Konva.Circle | null)[]>([null, null, null, null]);
   const dragOriginRef = useRef<{ w: number; h: number } | null>(null);
+  const [, forceRender] = useReducer((x: number) => x + 1, 0);
 
-  const onCornerMoveTracked = useCallback(
+  const onCornerMoveSmooth = useCallback(
     (local: { x: number; y: number }) => {
-      setCornerDrag((prev) => (prev ? { ...prev, x: local.x, y: local.y } : prev));
+      dragHandleLocalRef.current = local;
       const origin = dragOriginRef.current ?? { w, h };
       onRadiiMove?.(radiiFromCorner(local, origin.w, origin.h));
     },
     [onRadiiMove, w, h],
   );
-  const onCornerCommitTracked = useCallback(
+  const onCornerCommitSmooth = useCallback(
     (local: { x: number; y: number }) => {
-      setCornerDrag(null);
-      const origin = dragOriginRef.current ?? { w, h };
+      draggingCornerRef.current = null;
+      dragHandleLocalRef.current = null;
       dragOriginRef.current = null;
+      // Re-render so the handle snaps back to its prop-driven initial position.
+      forceRender();
+      const origin = { w, h };
       onRadiiCommit?.(radiiFromCorner(local, origin.w, origin.h));
     },
     [onRadiiCommit, w, h],
   );
-  const baseCornerDrag = useHandleDrag(groupRef, onCornerMoveTracked, onCornerCommitTracked);
+  const baseCornerDrag = useHandleDrag(groupRef, onCornerMoveSmooth, onCornerCommitSmooth);
   const cornerDragProps = useCallback(
     (fx: 0 | 1, fy: 0 | 1) => ({
       onPointerDown: (e: Konva.KonvaEventObject<PointerEvent>) => {
         dragOriginRef.current = { w, h };
-        setCornerDrag({
-          fx,
-          fy,
+        draggingCornerRef.current = { fx, fy };
+        dragHandleLocalRef.current = {
           x: fx ? w + SELECT_PAD : -SELECT_PAD,
           y: fy ? h + SELECT_PAD : -SELECT_PAD,
-        });
+        };
         baseCornerDrag.onPointerDown(e);
       },
       onMouseDown: baseCornerDrag.onMouseDown,
@@ -481,6 +485,18 @@ export default function MagnifierKonva({
     }),
     [baseCornerDrag, w, h],
   );
+
+  // Apply the live handle position synchronously after every render, before
+  // the browser paints. Runs without deps so the Konva node is repositioned
+  // even on the renders triggered by the store's rAF-throttled updates.
+  useLayoutEffect(() => {
+    const drag = draggingCornerRef.current;
+    const local = dragHandleLocalRef.current;
+    if (!drag || !local) return;
+    const idx = drag.fy * 2 + drag.fx;
+    const node = handleNodesRef.current[idx];
+    if (node) node.position(local);
+  });
 
   return (
     <Group
@@ -705,14 +721,13 @@ export default function MagnifierKonva({
             perfectDrawEnabled={false}
           />
           {canResize && CORNERS.map(([fx, fy]) => {
-            const isDragging = cornerDrag?.fx === fx && cornerDrag?.fy === fy;
-            const hx = isDragging && cornerDrag ? cornerDrag.x : (fx ? w + SELECT_PAD : -SELECT_PAD);
-            const hy = isDragging && cornerDrag ? cornerDrag.y : (fy ? h + SELECT_PAD : -SELECT_PAD);
+            const idx = fy * 2 + fx;
             return (
               <Circle
                 key={`${el.id}-rs${fx}${fy}`}
-                x={hx}
-                y={hy}
+                ref={(node) => { handleNodesRef.current[idx] = node; }}
+                x={fx ? w + SELECT_PAD : -SELECT_PAD}
+                y={fy ? h + SELECT_PAD : -SELECT_PAD}
                 {...handle}
                 {...cornerDragProps(fx, fy)}
                 {...hoverEvents}
