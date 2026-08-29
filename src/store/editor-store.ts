@@ -1194,7 +1194,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   setHandDrawn: (v) => {
-    try { if (typeof window !== 'undefined') localStorage.setItem('snapty-tool-settings', JSON.stringify({ handDrawn: v })); } catch {}
+    try { if (typeof window !== 'undefined') localStorage.setItem('snapty-tool-settings', JSON.stringify({ handDrawn: v })); } catch { /* storage unavailable */ }
     set({ handDrawn: v });
   },
 

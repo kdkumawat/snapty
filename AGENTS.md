@@ -38,6 +38,6 @@ npm run build        # static export to out/
 
 ## Cloudflare Pages
 
-- `wrangler.toml` is the authoritative config; its `[vars]` hold plaintext env (Dashboard is for Secrets only). `wrangler.json` / `wrangler.jsonc` are bare duplicates without `[vars]`.
+- `wrangler.toml` is the authoritative config; its `[vars]` hold plaintext env (Dashboard is for Secrets only). The former bare `wrangler.json` / `wrangler.jsonc` duplicates have been removed.
 - `cf:build` wraps `next build` with `scripts/with-wrangler-env.mjs`, which injects `wrangler.toml [vars]` into env so NEXT_PUBLIC_* resolve during build. Use it (or set vars manually) for production-parity builds.
 - `npm run cf:preview` builds + serves `out/` via wrangler; `npm run cf:deploy` deploys.

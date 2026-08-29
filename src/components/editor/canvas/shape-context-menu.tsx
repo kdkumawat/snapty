@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useEditorStore } from '@/store/editor-store';
 import { isClosedShape } from '@/lib/editor/text-labels';
 

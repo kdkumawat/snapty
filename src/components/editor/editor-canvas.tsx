@@ -37,7 +37,6 @@ import {
   pointAlongPath,
   projectPointToPath,
   tangentAlongPath,
-  estimateLabelHeight,
   isLabelPairGroup,
   selectionTargetForClick,
   isClosedShape,
@@ -64,7 +63,7 @@ import ShapeContextMenu from '@/components/editor/canvas/shape-context-menu';
 import { getElementBounds, boundsIntersect } from '@/lib/editor/selection';
 import { hydrateSettingsFromElement, hydrateSettingsFromSelection } from '@/lib/editor/settings-sync';
 import {
-  controlPoint, renderPoints, bendFromHandle, bendFromCurveMid, bendFromCurveAt, curvePoint,
+  renderPoints, bendFromCurveAt,
   tangentAtStart, tangentAtEnd,
 } from '@/lib/editor/curve';
 import type {
@@ -699,12 +698,8 @@ const EditorCanvas: React.FC = () => {
   const stagePosition = useEditorStore((s) => s.stagePosition);
   const activeTool = useEditorStore((s) => s.activeTool);
   const strokeColor = useEditorStore((s) => s.strokeColor);
-  const fillColor = useEditorStore((s) => s.fillColor);
-  const strokeWidth = useEditorStore((s) => s.strokeWidth);
   const fontSize = useEditorStore((s) => s.fontSize);
   const fontFamily = useEditorStore((s) => s.fontFamily);
-  const opacity = useEditorStore((s) => s.opacity);
-  const cornerRadius = useEditorStore((s) => s.cornerRadius);
   const elements = useEditorStore((s) => s.elements);
   // Invalidate the Konva node cache when the elements array changes (add /
   // remove / move) so stale references don't linger.
@@ -727,10 +722,6 @@ const EditorCanvas: React.FC = () => {
   const updateElement = useEditorStore((s) => s.updateElement);
   const updateElementSilent = useEditorStore((s) => s.updateElementSilent);
   const commitElementUpdate = useEditorStore((s) => s.commitElementUpdate);
-  const removeElements = useEditorStore((s) => s.removeElements);
-  const setSelectedElementIds = useEditorStore((s) => s.setSelectedElementIds);
-  const setZoom = useEditorStore((s) => s.setZoom);
-  const setStagePosition = useEditorStore((s) => s.setStagePosition);
   const resetView = useEditorStore((s) => s.resetView);
 
   async function runOCR() {
@@ -3333,7 +3324,6 @@ const EditorCanvas: React.FC = () => {
       if (startHead) {
         let startTan: { x: number; y: number };
         if (multi) {
-          const n = points.length;
           const dx = points[2] - points[0];
           const dy = points[3] - points[1];
           const len = Math.hypot(dx, dy) || 1;
@@ -3621,7 +3611,7 @@ const EditorCanvas: React.FC = () => {
      * Hand-drawn (jittered) polylines skip the ghosts — their drawn vertices
      * are offset from the raw points, so a ghost would float off the stroke.
      */
-    const renderMidGhosts = (el: ArrowElement | LineElement, pts: number[], handDrawnStyle: boolean) => {
+    const renderMidGhosts = (el: ArrowElement | LineElement, pts: number[], _handDrawnStyle: boolean) => {
       // Excalidraw shows a midpoint ghost on EVERY segment — drag converts midpoint to vertex.
       // Legacy quadratic bend (bend !==0) keeps bend handle; hand-drawn no longer blocks ghost
       // so straight hand-drawn arrows also bend via vertex (cleaner than scalar bend).
@@ -3954,7 +3944,6 @@ const EditorCanvas: React.FC = () => {
         const arrow = el as ArrowElement;
         const [sx, sy, ex, ey] = arrow.points;
         const bend = arrow.bend ?? 0;
-        const control = controlPoint(sx, sy, ex, ey, bend);
         const showHandles = !isDraft && isSelected;
         const handleProps = { ...selectionHandleProps('endpoint'), name: `edit-handle linear-${arrow.id}` };
         const bendHandleProps = { ...selectionHandleProps('bend'), name: `edit-handle linear-${arrow.id}` };
@@ -4472,7 +4461,6 @@ const EditorCanvas: React.FC = () => {
         const line = el as LineElement;
         const [sx, sy, ex, ey] = line.points;
         const bend = line.bend ?? 0;
-        const control = controlPoint(sx, sy, ex, ey, bend);
         const showHandles = !isDraft && isSelected;
         const handleProps = { ...selectionHandleProps('endpoint'), name: `edit-handle linear-${line.id}` };
         const bendHandleProps = { ...selectionHandleProps('bend'), name: `edit-handle linear-${line.id}` };

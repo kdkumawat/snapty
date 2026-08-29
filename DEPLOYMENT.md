@@ -62,7 +62,7 @@ NEXT_PUBLIC_SITE_URL = "https://snapty.pages.dev"
 | `NEXT_PUBLIC_SITE_URL` | Production URL for SEO/canonical | `wrangler.toml` → `[vars]` |
 | `NEXT_PUBLIC_GA_MEASUREMENT_ID` | Google Analytics 4 (`G-…`) | `wrangler.toml` → `[vars]` |
 
-**Local dev:** copy `env.example` → `.env.local` (same keys).
+**Local dev:** copy `.env.example` → `.env.local` (same keys).
 
 `npm run cf:build` runs `scripts/with-wrangler-env.mjs` so `next build` inlines `NEXT_PUBLIC_*` from `wrangler.toml`.
 

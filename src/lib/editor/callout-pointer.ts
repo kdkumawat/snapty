@@ -38,16 +38,6 @@ export function calloutPath(
   // Smooth curve factor for pointer base (higher = sharper transition)
   const curve = Math.min(pointerLength * 0.5, halfW * 0.8);
 
-  // Helper: rounded rect corner arc SVG
-  const arc = (cx: number, cy: number) =>
-    `A ${r} ${r} 0 0 1 ${cx + r * (cx < w / 2 ? 1 : -1)} ${cy + r * (cy < h / 2 ? 1 : -1)}`;
-
-  // Build the rounded rect corners
-  const topRight = `A ${r} ${r} 0 0 1 ${w - r} 0 L ${w - r} 0 A ${r} ${r} 0 0 1 ${w} ${r}`;
-  const bottomRight = `A ${r} ${r} 0 0 1 ${w} ${h - r} L ${w} ${h - r} A ${r} ${r} 0 0 1 ${w - r} ${h}`;
-  const bottomLeft = `A ${r} ${r} 0 0 1 ${r} ${h} L ${r} ${h} A ${r} ${r} 0 0 1 0 ${h - r}`;
-  const topLeft = `A ${r} ${r} 0 0 1 0 ${r} L 0 ${r} A ${r} ${r} 0 0 1 ${r} 0`;
-
   const parts: string[] = [];
 
   switch (direction) {
@@ -146,8 +136,6 @@ export function calloutPath(
     case 'bottom-right': {
       // Pointer at bottom-right corner
       const baseX1 = w - halfW;
-      const baseY1 = h;
-      const baseX2 = w;
       const baseY2 = h - halfW;
       const tipX = w + pointerLength * 0.707;
       const tipY = h + pointerLength * 0.707;
@@ -169,7 +157,6 @@ export function calloutPath(
     case 'bottom-left': {
       // Pointer at bottom-left corner
       const baseX1 = halfW;
-      const baseY1 = h;
       const baseX2 = 0;
       const baseY2 = h - halfW;
       const tipX = -pointerLength * 0.707;
@@ -194,7 +181,6 @@ export function calloutPath(
       const baseX1 = w;
       const baseY1 = halfW;
       const baseX2 = w - halfW;
-      const baseY2 = 0;
       const tipX = w + pointerLength * 0.707;
       const tipY = -pointerLength * 0.707;
 
@@ -259,9 +245,8 @@ export function calloutPointerTip(
   direction: CalloutPointerDirection,
   offset: number,
   pointerLength: number,
-  pointerWidth: number,
+  _pointerWidth: number,
 ): { x: number; y: number } {
-  const halfW = pointerWidth / 2;
   const t = Math.max(0, Math.min(1, offset));
 
   switch (direction) {

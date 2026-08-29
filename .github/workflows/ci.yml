@@ -32,3 +32,24 @@ jobs:
         env:
           # Static export doesn't need Cloudflare vars; GA stays disabled when unset.
           NEXT_PUBLIC_SITE_URL: https://snapty.pages.dev
+
+  cloudflare-build:
+    name: Cloudflare parity build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Production builds go through scripts/with-wrangler-env.mjs, which
+      # injects wrangler.toml [vars] so NEXT_PUBLIC_* (e.g. the GA ID) resolve.
+      # Exercise that path so var wiring breaks here, not at deploy time.
+      - name: Build with wrangler vars (cf:build)
+        run: bun run cf:build

@@ -52,7 +52,6 @@ export function reflowAllContainerText(
 
   const fontSize = labels[0]?.fontSize ?? 20;
   const scale = options.scale ?? 1;
-  const pad = TEXT_PADDING * scale;
 
   const out: EditorElement[] = elements.slice();
   for (const label of labels) {
