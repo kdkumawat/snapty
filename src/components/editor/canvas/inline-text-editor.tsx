@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { EditorElement, TextElement } from '@/types/editor';
+import React, { useLayoutEffect, useRef, useState } from 'react';
+import type { TextElement } from '@/types/editor';
 import { HANDWRITTEN_FONT, TEXT_PADDING, TEXT_LINE_HEIGHT } from '@/types/editor';
 import { wrapText, measureBlock } from '@/lib/editor/measure-text';
 

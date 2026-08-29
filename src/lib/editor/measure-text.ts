@@ -45,14 +45,6 @@ export function measureTextWidth(text: string, font: Font): number {
   return m.width();
 }
 
-/** Convenience: width of a single character (used by hard-break fallback). */
-function measureCharWidth(ch: string, font: Font): number {
-  const m = getMirror();
-  configureMirror(m, font);
-  m.text(ch);
-  return m.width();
-}
-
 const lineWidthCache = new Map<string, number>();
 
 /**

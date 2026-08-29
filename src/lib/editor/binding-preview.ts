@@ -53,7 +53,7 @@ function clamp01(v: number): number {
 }
 
 /** Axis-aligned bounds of a bindable element (mirrors binding.ts). */
-function boundsOf(el: EditorElement, imageSize: { width: number; height: number }): { x: number; y: number; w: number; h: number } {
+function boundsOf(el: EditorElement, _imageSize: { width: number; height: number }): { x: number; y: number; w: number; h: number } {
   if (el.type === 'step') {
     const r = (el as { radius?: number }).radius || 16;
     return { x: el.x - r, y: el.y - r, w: r * 2, h: r * 2 };

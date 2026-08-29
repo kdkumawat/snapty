@@ -12,7 +12,7 @@
  * source live while drawing, dragging and resizing instead of catching up afterwards.
  * Supports hand-drawn rings via Rough when enabled.
  */
-import React, { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useReducer, useRef } from 'react';
 import { Group, Ellipse, Line, Circle, Rect, Image as KonvaImage } from 'react-konva';
 import type Konva from 'konva';
 import type { MagnifierElement } from '@/types/editor';
@@ -421,7 +421,6 @@ export default function MagnifierKonva({
   );
 
   // Midpoint of the leader line, where the bend handle rests when straight.
-  const leaderBend = el.leaderBend ?? 0;
   const lSx = leader.sx;
   const lSy = leader.sy;
   const lEx = leader.ex;

@@ -387,7 +387,7 @@ export class DraftLayer {
         height: Math.max(1, h),
         opacity,
         listening: false,
-        sceneFunc: (ctx, shape) => {
+        sceneFunc: (ctx, _shape) => {
           const c = ctx as unknown as CanvasRenderingContext2D;
           const svgPath = new Path2D(pathD);
           if (s.fill && s.fill !== 'transparent') {

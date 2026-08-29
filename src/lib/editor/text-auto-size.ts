@@ -6,7 +6,7 @@
  * Excalidraw behaviour: a shape with text is at least as large as its text
  * (min-size), and a free text element grows in width to fit its longest line.
  */
-import type { TextElement, ShapeElement, CircleElement, DiamondElement, CalloutElement } from '@/types/editor';
+import type { ShapeElement, CircleElement, DiamondElement, CalloutElement } from '@/types/editor';
 
 type AnyShape = ShapeElement | CircleElement | DiamondElement | CalloutElement;
 

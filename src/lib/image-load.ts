@@ -69,15 +69,6 @@ export function dataUrlToImage(dataUrl: string): Promise<HTMLImageElement> {
   });
 }
 
-function blobToDataURL(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('Failed to read image'));
-    reader.readAsDataURL(blob);
-  });
-}
-
 function imageToPngDataURL(img: HTMLImageElement): string {
   const canvas = document.createElement('canvas');
   canvas.width = img.naturalWidth || img.width;

@@ -430,7 +430,7 @@ export default function ShapeSelectionOverlay({
     setHandleActive(e.target as Konva.Circle);
   };
 
-  const moveCalloutPointer = (e: Konva.KonvaEventObject<DragEvent>) => {
+  const moveCalloutPointer = (_e: Konva.KonvaEventObject<DragEvent>) => {
     const d = dragRef.current;
     if (!d || d.kind !== 'callout-pointer' || !d.calloutBase) return;
     const P = toImagePoint();

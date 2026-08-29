@@ -1,5 +1,10 @@
 const CACHE_NAME = 'snapty-v3';
 
+// Why the cache name is not bumped per release: navigations are network-first
+// and every bundled asset under /_next/static is content-hashed, so a new
+// deploy naturally serves fresh HTML pointing at new hashed URLs that miss
+// the cache. Old cache partitions are pruned on activate below.
+
 // Static assets to precache (minimal - most loaded on-demand)
 // Prefetch editor route so installed PWA opens offline-ready
 const PRECACHE_URLS = [
@@ -32,6 +37,11 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
+
+  // version.json must always hit the network: it is the deploy-detection
+  // signal used by update-toast.tsx. Serving it from cache would make the
+  // app think it is always up to date.
+  if (request.url.includes('/version.json')) return;
 
   // Navigation requests: always network-first to get the latest version
   if (request.mode === 'navigate') {

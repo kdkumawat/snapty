@@ -5,7 +5,6 @@ import * as ContextMenu from '@radix-ui/react-context-menu';
 import { useEditorStore } from '@/store/editor-store';
 import {
   copyStyleToClipboard,
-  pasteStyleFromClipboard,
   hasClipboardStyle,
   getClipboardStyle,
 } from '@/lib/editor/clipboard-style';

@@ -2,7 +2,6 @@
 
 import React from 'react';
 import { Rect, Group } from 'react-konva';
-import type Konva from 'konva';
 import type { EditorElement } from '@/types/editor';
 import { getElementBounds } from '@/lib/editor/selection';
 import { getSelectionTheme } from '@/lib/selection-theme';
