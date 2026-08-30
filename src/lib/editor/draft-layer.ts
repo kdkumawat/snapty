@@ -96,10 +96,22 @@ export interface DraftSegmentGeo {
   elbowed?: boolean;
 }
 
+/**
+ * Mutable scene data for a rough-drawn draft node. The Konva.Shape is reused
+ * across pointer moves and its sceneFunc reads this holder, so a live draft
+ * only regenerates the rough drawable per frame — it never destroys/re-adds
+ * the node (that churn stalls the draft preview while drawing).
+ */
+type RoughDraftScene = {
+  drawable: ReturnType<typeof generateRoughDrawable>;
+  head: ReturnType<typeof generateArrowHead> | null;
+  startHead: ReturnType<typeof generateArrowHead> | null;
+};
+
 type DraftState =
-  | { type: 'freehand'; tool: FreehandTool; strokeWidth: number; color: string; opacity: number; simulatePressure: boolean; node: Konva.Line }
-  | { type: 'box'; geo: DraftBoxGeo; style: DraftBoxStyle; seed: string; handDrawn: boolean; node: Konva.Shape | null }
-  | { type: 'segment'; kind: 'arrow' | 'line'; geo: DraftSegmentGeo; style: DraftSegmentStyle; seed: string; handDrawn: boolean; node: Konva.Shape | null };
+  | { type: 'freehand'; tool: FreehandTool; strokeWidth: number; color: string; opacity: number; simulatePressure: boolean; node: Konva.Line; pendingPoints: number[] | null; pendingPressures: number[] | null }
+  | { type: 'box'; geo: DraftBoxGeo; style: DraftBoxStyle; seed: string; handDrawn: boolean; node: Konva.Shape | null; rough: RoughDraftScene | null; calloutPathD: string | null }
+  | { type: 'segment'; kind: 'arrow' | 'line'; geo: DraftSegmentGeo; style: DraftSegmentStyle; seed: string; handDrawn: boolean; node: Konva.Shape | null; rough: RoughDraftScene | null };
 
 function normalizeBox(geo: DraftBoxGeo): { x: number; y: number; w: number; h: number } {
   let x = geo.ox;
@@ -148,6 +160,17 @@ export class DraftLayer {
   private bindingPreview: { preview: BindingPreview; accent: string; zoom: number } | null = null;
   private hoverOutline: { x: number; y: number; w: number; h: number } | null = null;
   private labelAnchor: { x: number; y: number; zoom: number } | null = null;
+  // Pooled chrome nodes: marquee/eraser/guides/binding-preview are updated on
+  // every pointermove during a gesture, so their Konva nodes are reused
+  // in-place instead of being destroyed and recreated per frame.
+  private marqueeNode: Konva.Rect | null = null;
+  private eraserNode: Konva.Rect | null = null;
+  private guideNodes: Konva.Line[] = [];
+  private bindingRectNode: Konva.Rect | null = null;
+  private bindingDotNode: Konva.Circle | null = null;
+  private hoverNode: Konva.Rect | null = null;
+  private labelRingNode: Konva.Circle | null = null;
+  private labelDotNode: Konva.Circle | null = null;
 
   attach(layer: Konva.Layer) {
     this.layer = layer;
@@ -174,6 +197,21 @@ export class DraftLayer {
     this.rafId = requestAnimationFrame(() => {
       this.rafId = null;
       this.dirty = false;
+      // Freehand outline computation is coalesced here: perfect-freehand is
+      // the expensive part of the stroke hot path, and a 120Hz pointer stream
+      // recomputed it up to twice per displayed frame. Only the latest sample
+      // buffer matters visually, so compute at most one outline per frame.
+      const d = this.draft;
+      if (d && d.type === 'freehand' && d.pendingPoints) {
+        d.node.points(computeFreehandOutline(
+          d.pendingPoints,
+          d.tool,
+          d.strokeWidth,
+          { pressures: d.pendingPressures ?? undefined, simulatePressure: d.simulatePressure },
+        ));
+        d.pendingPoints = null;
+        d.pendingPressures = null;
+      }
       this.layer?.batchDraw();
     });
   }
@@ -192,6 +230,14 @@ export class DraftLayer {
     this.bindingPreview = null;
     this.hoverOutline = null;
     this.labelAnchor = null;
+    this.marqueeNode = null;
+    this.eraserNode = null;
+    this.guideNodes = [];
+    this.bindingRectNode = null;
+    this.bindingDotNode = null;
+    this.hoverNode = null;
+    this.labelRingNode = null;
+    this.labelDotNode = null;
     if (this.layer) {
       // batchDraw now so the overlay never shows a stale frame.
       this.layer.batchDraw();
@@ -207,11 +253,18 @@ export class DraftLayer {
 
   /** Replace the overlay chrome nodes (never touches the active draft). */
   private setChrome(nodes: Konva.Shape[]) {
-    for (const n of this.chrome) n.destroy();
-    this.chrome = nodes;
-    if (this.layer) {
-      for (const n of nodes) this.layer.add(n);
+    // Pooled nodes surviving into the new set keep their layer membership;
+    // only the ones dropped are destroyed (per-frame rebuilds stay cheap).
+    const keep = new Set<Konva.Shape>(nodes);
+    for (const n of this.chrome) {
+      if (!keep.has(n)) n.destroy();
     }
+    if (this.layer) {
+      for (const n of nodes) {
+        if (!n.getLayer()) this.layer.add(n);
+      }
+    }
+    this.chrome = nodes;
   }
 
   // ------------------------------------------------------------------ freehand
@@ -234,25 +287,24 @@ export class DraftLayer {
       listening: false,
     });
     this.replaceNode(node);
-    this.draft = { type: 'freehand', tool, strokeWidth, color, opacity, simulatePressure, node };
+    this.draft = { type: 'freehand', tool, strokeWidth, color, opacity, simulatePressure, node, pendingPoints: null, pendingPressures: null };
   }
 
   updateFreehand(points: number[], pressures: number[] | undefined, simulatePressure: boolean) {
     const d = this.draft;
     if (!d || d.type !== 'freehand') return;
     d.simulatePressure = simulatePressure;
-    const outline = computeFreehandOutline(points, d.tool, d.strokeWidth, {
-      pressures,
-      simulatePressure,
-    });
-    d.node.points(outline);
+    // Stage the latest sample buffer; the outline is computed once per
+    // animation frame inside draw() instead of on every pointermove.
+    d.pendingPoints = points;
+    d.pendingPressures = pressures ?? null;
     this.draw();
   }
 
   // ------------------------------------------------------------------ box
 
   beginBox(geo: DraftBoxGeo, style: DraftBoxStyle, seed: string, handDrawn: boolean) {
-    this.draft = { type: 'box', geo, style, seed, handDrawn, node: null };
+    this.draft = { type: 'box', geo, style, seed, handDrawn, node: null, rough: null, calloutPathD: null };
     this.rebuildBox();
   }
 
@@ -293,18 +345,36 @@ export class DraftLayer {
         height: Math.max(1, h),
         cornerRadius: s.cornerRadius,
       });
-      const node = new Konva.Shape({
-        x,
-        y,
-        width: Math.max(1, w),
-        height: Math.max(1, h),
-        opacity,
-        listening: false,
-        sceneFunc: (ctx, shape) => {
-          roughSceneFunc(ctx as unknown as CanvasRenderingContext2D, shape as Konva.Shape, drawable);
-        },
-      });
-      this.replaceNode(node);
+      const existing = d.node && d.node.getClassName() === 'Shape' ? (d.node as Konva.Shape) : null;
+      if (existing && d.rough) {
+        // Reuse the node in place: only the drawable + geometry attrs change.
+        // Destroying and re-adding a node per pointermove (the old behavior)
+        // stalled the draft preview while drawing.
+        d.rough.drawable = drawable;
+        existing.setAttrs({
+          x,
+          y,
+          width: Math.max(1, w),
+          height: Math.max(1, h),
+          opacity,
+        });
+      } else {
+        const scene: RoughDraftScene = { drawable, head: null, startHead: null };
+        const node = new Konva.Shape({
+          x,
+          y,
+          width: Math.max(1, w),
+          height: Math.max(1, h),
+          opacity,
+          listening: false,
+          sceneFunc: (ctx, shape) => {
+            roughSceneFunc(ctx as unknown as CanvasRenderingContext2D, shape as Konva.Shape, scene.drawable);
+          },
+        });
+        d.rough = scene;
+        this.replaceNode(node);
+      }
+      this.draw();
       return;
     }
 
@@ -381,28 +451,43 @@ export class DraftLayer {
       const pOffset = d.geo.extra?.pointerOffset ?? 0.5;
       const pathD = calloutPath(w, h, pDir, pOffset, pointerLen, pointerW, cornerR);
 
-      const node = new Konva.Shape({
-        x, y,
-        width: Math.max(1, w),
-        height: Math.max(1, h),
-        opacity,
-        listening: false,
-        sceneFunc: (ctx, _shape) => {
-          const c = ctx as unknown as CanvasRenderingContext2D;
-          const svgPath = new Path2D(pathD);
-          if (s.fill && s.fill !== 'transparent') {
-            c.fillStyle = s.fill;
-            c.fill(svgPath);
-          }
-          if (s.stroke && s.strokeWidth) {
-            c.strokeStyle = s.stroke;
-            c.lineWidth = s.strokeWidth;
-            c.setLineDash(dashOf(s.strokeStyle) ?? []);
-            c.stroke(svgPath);
-          }
-        },
-      });
-      this.replaceNode(node);
+      const existing = d.node && d.node.getClassName() === 'Shape' ? (d.node as Konva.Shape) : null;
+      if (existing && d.calloutPathD !== null) {
+        // Reuse the node in place; the sceneFunc reads the swapped path.
+        d.calloutPathD = pathD;
+        existing.setAttrs({
+          x,
+          y,
+          width: Math.max(1, w),
+          height: Math.max(1, h),
+          opacity,
+        });
+      } else {
+        const holder = { pathD };
+        const node = new Konva.Shape({
+          x, y,
+          width: Math.max(1, w),
+          height: Math.max(1, h),
+          opacity,
+          listening: false,
+          sceneFunc: (ctx, _shape) => {
+            const c = ctx as unknown as CanvasRenderingContext2D;
+            const svgPath = new Path2D(holder.pathD);
+            if (s.fill && s.fill !== 'transparent') {
+              c.fillStyle = s.fill;
+              c.fill(svgPath);
+            }
+            if (s.stroke && s.strokeWidth) {
+              c.strokeStyle = s.stroke;
+              c.lineWidth = s.strokeWidth;
+              c.setLineDash(dashOf(s.strokeStyle) ?? []);
+              c.stroke(svgPath);
+            }
+          },
+        });
+        d.calloutPathD = pathD;
+        this.replaceNode(node);
+      }
       this.draw();
       return;
     }
@@ -441,7 +526,7 @@ export class DraftLayer {
     seed: string,
     handDrawn: boolean,
   ) {
-    this.draft = { type: 'segment', kind, geo, style, seed, handDrawn, node: null };
+    this.draft = { type: 'segment', kind, geo, style, seed, handDrawn, node: null, rough: null };
     this.rebuildSegment();
   }
 
@@ -528,14 +613,25 @@ export class DraftLayer {
             arrowheadSize: headSize,
           } as Parameters<typeof generateArrowHead>[0])
         : null;
-      const node = new Konva.Shape({
-        opacity: s.opacity,
-        listening: false,
-        sceneFunc: (ctx, shape) => {
-          roughSceneFunc(ctx as unknown as CanvasRenderingContext2D, shape as Konva.Shape, drawable, head, startHead);
-        },
-      });
-      this.replaceNode(node);
+      const existing = d.node && d.node.getClassName() === 'Shape' ? (d.node as Konva.Shape) : null;
+      if (existing && d.rough) {
+        // Reuse the node in place: only the drawables change per pointermove
+        // (node churn here stalled the hand-drawn arrow/line draft).
+        d.rough.drawable = drawable;
+        d.rough.head = head;
+        d.rough.startHead = startHead;
+      } else {
+        const scene: RoughDraftScene = { drawable, head, startHead };
+        const node = new Konva.Shape({
+          opacity: s.opacity,
+          listening: false,
+          sceneFunc: (ctx, shape) => {
+            roughSceneFunc(ctx as unknown as CanvasRenderingContext2D, shape as Konva.Shape, scene.drawable, scene.head, scene.startHead);
+          },
+        });
+        d.rough = scene;
+        this.replaceNode(node);
+      }
       this.draw();
       return;
     }
@@ -598,13 +694,7 @@ export class DraftLayer {
 
   showMarquee(x: number, y: number, w: number, h: number, accent: string, fill: string) {
     this.marquee = { x, y, w, h, accent, fill };
-    const node = new Konva.Rect({
-      x, y, width: Math.max(1, w), height: Math.max(1, h),
-      fill, stroke: accent, strokeWidth: 1, dash: [6, 4],
-      listening: false,
-    });
-    this.setChrome([node]);
-    this.draw();
+    this.rebuildChrome();
   }
 
   clearMarquee() {
@@ -614,19 +704,7 @@ export class DraftLayer {
 
   showEraser(x1: number, y1: number, x2: number, y2: number) {
     this.eraser = { x1, y1, x2, y2 };
-    const node = new Konva.Rect({
-      x: Math.min(x1, x2),
-      y: Math.min(y1, y2),
-      width: Math.max(1, Math.abs(x2 - x1)),
-      height: Math.max(1, Math.abs(y2 - y1)),
-      fill: 'rgba(239,68,68,0.06)',
-      stroke: '#ef4444',
-      strokeWidth: 1.5,
-      dash: [6, 4],
-      listening: false,
-    });
-    this.setChrome([node]);
-    this.draw();
+    this.rebuildChrome();
   }
 
   clearEraser() {
@@ -636,19 +714,7 @@ export class DraftLayer {
 
   showGuides(guides: GuideLine[]) {
     this.guides = guides;
-    const nodes = guides.map((g) =>
-      new Konva.Line({
-        points: g.orientation === 'vertical'
-          ? [g.position, g.start, g.position, g.end]
-          : [g.start, g.position, g.end, g.position],
-        stroke: '#F97316',
-        strokeWidth: 1,
-        dash: [4, 4],
-        listening: false,
-      }),
-    );
-    this.setChrome(nodes);
-    this.draw();
+    this.rebuildChrome();
   }
 
   clearGuides() {
@@ -707,38 +773,64 @@ export class DraftLayer {
     const nodes: Konva.Shape[] = [];
     if (this.marquee) {
       const m = this.marquee;
-      nodes.push(new Konva.Rect({
-        x: m.x, y: m.y, width: Math.max(1, m.w), height: Math.max(1, m.h),
+      const attrs = {
+        x: m.x,
+        y: m.y,
+        width: Math.max(1, m.w),
+        height: Math.max(1, m.h),
         fill: m.fill ?? 'rgba(234,88,12,0.08)',
         stroke: m.accent ?? '#ea580c',
-        strokeWidth: 1, dash: [6, 4],
-        listening: false,
-      }));
+      };
+      if (this.marqueeNode && this.marqueeNode.getLayer()) {
+        this.marqueeNode.setAttrs(attrs);
+      } else {
+        this.marqueeNode = new Konva.Rect({ ...attrs, strokeWidth: 1, dash: [6, 4], listening: false });
+      }
+      nodes.push(this.marqueeNode);
     }
     if (this.eraser) {
       const e = this.eraser;
-      nodes.push(new Konva.Rect({
-        x: Math.min(e.x1, e.x2), y: Math.min(e.y1, e.y2),
-        width: Math.max(1, Math.abs(e.x2 - e.x1)), height: Math.max(1, Math.abs(e.y2 - e.y1)),
-        fill: 'rgba(239,68,68,0.06)', stroke: '#ef4444', strokeWidth: 1.5, dash: [6, 4],
-        listening: false,
-      }));
+      const attrs = {
+        x: Math.min(e.x1, e.x2),
+        y: Math.min(e.y1, e.y2),
+        width: Math.max(1, Math.abs(e.x2 - e.x1)),
+        height: Math.max(1, Math.abs(e.y2 - e.y1)),
+      };
+      if (this.eraserNode && this.eraserNode.getLayer()) {
+        this.eraserNode.setAttrs(attrs);
+      } else {
+        this.eraserNode = new Konva.Rect({
+          ...attrs,
+          fill: 'rgba(239,68,68,0.06)', stroke: '#ef4444', strokeWidth: 1.5, dash: [6, 4],
+          listening: false,
+        });
+      }
+      nodes.push(this.eraserNode);
     }
     if (this.guides) {
-      for (const g of this.guides) {
-        nodes.push(new Konva.Line({
-          points: g.orientation === 'vertical'
-            ? [g.position, g.start, g.position, g.end]
-            : [g.start, g.position, g.end, g.position],
-          stroke: '#F97316', strokeWidth: 1, dash: [4, 4], listening: false,
-        }));
+      for (let i = 0; i < this.guides.length; i++) {
+        const g = this.guides[i];
+        const points = g.orientation === 'vertical'
+          ? [g.position, g.start, g.position, g.end]
+          : [g.start, g.position, g.end, g.position];
+        let node = this.guideNodes[i];
+        if (node && node.getLayer()) {
+          node.points(points);
+        } else {
+          node = new Konva.Line({
+            points,
+            stroke: '#F97316', strokeWidth: 1, dash: [4, 4], listening: false,
+          });
+          this.guideNodes[i] = node;
+        }
+        nodes.push(node);
       }
     }
     if (this.bindingPreview) {
       const { preview, accent, zoom } = this.bindingPreview;
       const z = zoom > 0 ? zoom : 1;
       const b = preview.bounds;
-      nodes.push(new Konva.Rect({
+      const rectAttrs = {
         x: b.x,
         y: b.y,
         width: Math.max(1, b.w),
@@ -747,8 +839,14 @@ export class DraftLayer {
         strokeWidth: 1.5 / z,
         dash: [6 / z, 4 / z],
         listening: false,
-      }));
-      nodes.push(new Konva.Circle({
+      };
+      if (this.bindingRectNode && this.bindingRectNode.getLayer()) {
+        this.bindingRectNode.setAttrs(rectAttrs);
+      } else {
+        this.bindingRectNode = new Konva.Rect(rectAttrs);
+      }
+      nodes.push(this.bindingRectNode);
+      const dotAttrs = {
         x: preview.anchor.x,
         y: preview.anchor.y,
         radius: 3.5 / z,
@@ -756,31 +854,49 @@ export class DraftLayer {
         stroke: '#ffffff',
         strokeWidth: 1 / z,
         listening: false,
-      }));
+      };
+      if (this.bindingDotNode && this.bindingDotNode.getLayer()) {
+        this.bindingDotNode.setAttrs(dotAttrs);
+      } else {
+        this.bindingDotNode = new Konva.Circle(dotAttrs);
+      }
+      nodes.push(this.bindingDotNode);
     }
     if (this.labelAnchor) {
       const { x, y, zoom } = this.labelAnchor;
       const z = zoom > 0 ? zoom : 1;
       const theme = getSelectionTheme();
-      nodes.push(new Konva.Circle({
+      const ringAttrs = {
         x, y, radius: 6 / z,
         stroke: theme.accentSoft,
         strokeWidth: 1 / z,
         dash: [3 / z, 2 / z],
         listening: false,
-      }));
-      nodes.push(new Konva.Circle({
+      };
+      if (this.labelRingNode && this.labelRingNode.getLayer()) {
+        this.labelRingNode.setAttrs(ringAttrs);
+      } else {
+        this.labelRingNode = new Konva.Circle(ringAttrs);
+      }
+      nodes.push(this.labelRingNode);
+      const dotAttrs = {
         x, y, radius: 1.75 / z,
         fill: theme.accentSoft,
         listening: false,
-      }));
+      };
+      if (this.labelDotNode && this.labelDotNode.getLayer()) {
+        this.labelDotNode.setAttrs(dotAttrs);
+      } else {
+        this.labelDotNode = new Konva.Circle(dotAttrs);
+      }
+      nodes.push(this.labelDotNode);
     }
     // While a binding preview is up, the target highlight carries the hover
     // signal; a second outline on the same shape would just look noisy.
     if (this.hoverOutline && !this.bindingPreview) {
       const h = this.hoverOutline;
       const theme = getSelectionTheme();
-      nodes.push(new Konva.Rect({
+      const attrs = {
         x: h.x,
         y: h.y,
         width: Math.max(1, h.w),
@@ -789,9 +905,18 @@ export class DraftLayer {
         strokeWidth: 1.5,
         cornerRadius: 2,
         listening: false,
-      }));
+      };
+      if (this.hoverNode && this.hoverNode.getLayer()) {
+        this.hoverNode.setAttrs(attrs);
+      } else {
+        this.hoverNode = new Konva.Rect(attrs);
+      }
+      nodes.push(this.hoverNode);
     }
     this.setChrome(nodes);
+    // Dropped guide nodes were destroyed by setChrome; shrink the pool to
+    // match so stale references never accumulate.
+    this.guideNodes.length = this.guides?.length ?? 0;
     this.draw();
   }
 }

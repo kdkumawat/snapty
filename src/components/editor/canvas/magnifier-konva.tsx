@@ -12,7 +12,7 @@
  * source live while drawing, dragging and resizing instead of catching up afterwards.
  * Supports hand-drawn rings via Rough when enabled.
  */
-import React, { useCallback, useEffect, useLayoutEffect, useReducer, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Group, Ellipse, Line, Circle, Rect, Image as KonvaImage } from 'react-konva';
 import type Konva from 'konva';
 import type { MagnifierElement } from '@/types/editor';
@@ -41,17 +41,13 @@ type Props = {
   onTap?: (e: Konva.KonvaEventObject<Event>) => void;
   onDragEnd?: (e: Konva.KonvaEventObject<DragEvent>) => void;
   onDragMove?: (e: Konva.KonvaEventObject<DragEvent>) => void;
-  /** Live update while repositioning the magnified bubble (offset from source center). */
-  onPreviewOffsetMove?: (offset: { x: number; y: number }) => void;
-  /** Commit the bubble placement as a single undo step. */
+  /** Commit the bubble placement as a single undo step. The live drag itself
+   *  stays in component-local state, so the store (and the rest of the editor)
+   *  is not touched until release. */
   onPreviewOffsetCommit?: (offset: { x: number; y: number }) => void;
-  /** Live update while resizing the source bbox (radii + new top-left). */
-  onRadiiMove?: (radii: { rx: number; ry: number; topLeftX: number; topLeftY: number }) => void;
-  /** Commit the source bbox as a single undo step. */
+  /** Commit the source bbox as a single undo step (radii + new top-left). */
   onRadiiCommit?: (radii: { rx: number; ry: number; topLeftX: number; topLeftY: number }) => void;
-  /** Live update while bending the leader line (0 = straight, ±1 = full curve). */
-  onLeaderBendMove?: (bend: number) => void;
-  /** Commit the leader bend as a single undo step. */
+  /** Commit the leader bend as a single undo step (0 = straight, ±1 = full curve). */
   onLeaderBendCommit?: (bend: number) => void;
 };
 
@@ -157,7 +153,7 @@ const CORNERS: ReadonlyArray<readonly [0 | 1, 0 | 1]> = [[0, 0], [1, 0], [0, 1],
  * Here the handle is NOT draggable - it captures the pointer, reads stage
  * coordinates directly, and reports positions in the Group's local space.
  * Updates are coalesced onto an animation frame so a fast drag does not queue
- * one store write per pointer event.
+ * one component update per pointer event.
  */
 function useHandleDrag(
   groupRef: React.RefObject<Konva.Group | null>,
@@ -289,8 +285,15 @@ function radiiFromCorner(
   return { rx, ry, topLeftX, topLeftY };
 }
 
+/** Live gesture values held locally during a drag; committed to the store on release. */
+type LivePatch = {
+  previewOffset?: { x: number; y: number };
+  radii?: { rx: number; ry: number; topLeftX: number; topLeftY: number };
+  leaderBend?: number;
+};
+
 export default function MagnifierKonva({
-  el,
+  el: elProp,
   backgroundImage,
   imageSize,
   selected,
@@ -304,13 +307,28 @@ export default function MagnifierKonva({
   onTap,
   onDragEnd,
   onDragMove,
-  onPreviewOffsetMove,
   onPreviewOffsetCommit,
-  onRadiiMove,
   onRadiiCommit,
-  onLeaderBendMove,
   onLeaderBendCommit,
 }: Props) {
+  // Live drag values stay in component-local state: each move re-renders ONLY
+  // this component (the zoom painting is imperative anyway), and the global
+  // store hears about the gesture once, at commit. The old path pushed every
+  // frame through the store, re-rendering the entire annotation scene.
+  const [live, setLive] = useState<LivePatch | null>(null);
+  const el = useMemo<MagnifierElement>(() => {
+    if (!live) return elProp;
+    const next: MagnifierElement = { ...elProp };
+    if (live.previewOffset) next.previewOffset = live.previewOffset;
+    if (live.leaderBend !== undefined) next.leaderBend = live.leaderBend;
+    if (live.radii) {
+      next.x = live.radii.topLeftX;
+      next.y = live.radii.topLeftY;
+      next.width = live.radii.rx * 2;
+      next.height = live.radii.ry * 2;
+    }
+    return next;
+  }, [elProp, live]);
   const m = magnifierMetrics(el);
   const { w, h, rx, ry, mag, previewRx, previewRy } = m;
   const gx = el.width < 0 ? el.x + el.width : el.x;
@@ -402,8 +420,8 @@ export default function MagnifierKonva({
   ];
 
   const canEdit = !!selected && !draft && !!draggable;
-  const canReposition = canEdit && typeof onPreviewOffsetMove === 'function';
-  const canResize = canEdit && typeof onRadiiMove === 'function';
+  const canReposition = canEdit && typeof onPreviewOffsetCommit === 'function';
+  const canResize = canEdit && typeof onRadiiCommit === 'function';
   const theme = getSelectionTheme();
   const handle = selectionHandleProps('endpoint');
   const lengthHandle = selectionHandleProps('bend');
@@ -416,8 +434,13 @@ export default function MagnifierKonva({
   );
   const onBubbleDrag = useHandleDrag(
     groupRef,
-    useCallback((local) => onPreviewOffsetMove?.(bubbleOffsetAt(local)), [onPreviewOffsetMove, bubbleOffsetAt]),
-    useCallback((local) => onPreviewOffsetCommit?.(bubbleOffsetAt(local)), [onPreviewOffsetCommit, bubbleOffsetAt]),
+    useCallback((local) => {
+      setLive((p) => ({ ...(p ?? {}), previewOffset: bubbleOffsetAt(local) }));
+    }, [bubbleOffsetAt]),
+    useCallback((local) => {
+      setLive(null);
+      onPreviewOffsetCommit?.(bubbleOffsetAt(local));
+    }, [onPreviewOffsetCommit, bubbleOffsetAt]),
   );
 
   // Midpoint of the leader line, where the bend handle rests when straight.
@@ -438,11 +461,16 @@ export default function MagnifierKonva({
   const onLeaderBendDrag = useHandleDrag(
     groupRef,
     useCallback(
-      (local) => onLeaderBendMove?.(bendFromHandle(lSx, lSy, lEx, lEy, local.x, local.y)),
-      [onLeaderBendMove, lSx, lSy, lEx, lEy],
+      (local) => {
+        setLive((p) => ({ ...(p ?? {}), leaderBend: bendFromHandle(lSx, lSy, lEx, lEy, local.x, local.y) }));
+      },
+      [lSx, lSy, lEx, lEy],
     ),
     useCallback(
-      (local) => onLeaderBendCommit?.(bendFromHandle(lSx, lSy, lEx, lEy, local.x, local.y)),
+      (local) => {
+        setLive(null);
+        onLeaderBendCommit?.(bendFromHandle(lSx, lSy, lEx, lEy, local.x, local.y));
+      },
       [onLeaderBendCommit, lSx, lSy, lEx, lEy],
     ),
   );
@@ -467,9 +495,12 @@ export default function MagnifierKonva({
       const corner = draggingCornerRef.current;
       if (!corner) return;
       const origin = dragOriginRef.current ?? { w, h };
-      onRadiiMove?.(radiiFromCorner(local, corner.fx, corner.fy, origin.w, origin.h));
+      setLive((p) => ({
+        ...(p ?? {}),
+        radii: radiiFromCorner(local, corner.fx, corner.fy, origin.w, origin.h),
+      }));
     },
-    [onRadiiMove, w, h],
+    [w, h],
   );
   const onCornerCommitSmooth = useCallback(
     (local: { x: number; y: number }) => {
@@ -479,6 +510,7 @@ export default function MagnifierKonva({
       dragOriginRef.current = null;
       // Re-render so the handle snaps back to its prop-driven initial position.
       forceRender();
+      setLive(null);
       if (!corner) return;
       const origin = { w, h };
       onRadiiCommit?.(radiiFromCorner(local, corner.fx, corner.fy, origin.w, origin.h));
