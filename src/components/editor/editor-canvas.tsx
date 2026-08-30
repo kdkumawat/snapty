@@ -519,6 +519,9 @@ const EditorCanvas: React.FC = () => {
   const altDuplicateRef = useRef<string | null>(null);
   /** Cache element ID → Konva node to avoid tree traversal per frame. */
   const nodeCacheRef = useRef<Map<string, Konva.Node>>(new Map());
+  /** Snap-target bounds for the current drag: built once per gesture, not per
+   *  frame (no element geometry can change mid-drag). */
+  const dragSnapCacheRef = useRef<{ id: string; others: Bounds[] } | null>(null);
   const reflowLabelRef = useRef<(el: EditorElement) => void>(() => {});
   const linearHandleDragRef = useRef<{
     id: string;
@@ -2899,16 +2902,24 @@ const EditorCanvas: React.FC = () => {
         moving.w = boxW;
         moving.h = boxH;
       }
-      // Snap references exclude the dragged element's own group members (its
-      // attached label shares its bounds and would fire guides permanently).
-      const others = s.elements
-        .filter((item) => {
-          if (item.id === id || s.selectedElementIds.includes(item.id)) return false;
-          if (el.groupId && item.groupId === el.groupId) return false;
-          return true;
-        })
-        .map((item) => getElementBounds(item, s.imageSize));
-      const snapped = snapBounds(moving, others);
+      // Reuse the snap-target list built during the drag (same gesture); a
+      // drag that ends without an intervening move builds it here once.
+      // Retire the cache afterwards so a new gesture rebuilds it.
+      let snapCache = dragSnapCacheRef.current;
+      if (!snapCache || snapCache.id !== id) {
+        snapCache = {
+          id,
+          others: s.elements
+            .filter((item) => {
+              if (item.id === id || s.selectedElementIds.includes(item.id)) return false;
+              if (el.groupId && item.groupId === el.groupId) return false;
+              return true;
+            })
+            .map((item) => getElementBounds(item, s.imageSize)),
+        };
+      }
+      dragSnapCacheRef.current = null;
+      const snapped = snapBounds(moving, snapCache.others);
       x = snapped.x;
       y = snapped.y;
       const clamped = clampToGutter(el, x, y, s.imageSize);
@@ -3108,19 +3119,26 @@ const EditorCanvas: React.FC = () => {
       w,
       h,
     };
-    const others: Bounds[] = [];
-    for (let i = 0; i < s.elements.length; i++) {
-      const item = s.elements[i];
-      if (item.id === id) continue;
-      if (el.groupId && item.groupId === el.groupId) continue;
-      if (s.selectedElementIds.includes(item.id)) continue;
-      others.push(getElementBounds(item, s.imageSize));
+    // Snap targets are constant for the whole gesture, so build the list once
+    // per drag (first move) instead of on every pointermove.
+    let snapCache = dragSnapCacheRef.current;
+    if (!snapCache || snapCache.id !== id) {
+      const others: Bounds[] = [];
+      for (let i = 0; i < s.elements.length; i++) {
+        const item = s.elements[i];
+        if (item.id === id) continue;
+        if (el.groupId && item.groupId === el.groupId) continue;
+        if (s.selectedElementIds.includes(item.id)) continue;
+        others.push(getElementBounds(item, s.imageSize));
+      }
+      snapCache = { id, others };
+      dragSnapCacheRef.current = snapCache;
     }
-    let snapOthers = others;
-    if (others.length > 16) {
+    let snapOthers = snapCache.others;
+    if (snapOthers.length > 16) {
       const mcx = moving.x + moving.w / 2;
       const mcy = moving.y + moving.h / 2;
-      snapOthers = [...others]
+      snapOthers = [...snapOthers]
         .map((b) => ({ b, d: Math.hypot(b.x + b.w/2 - mcx, b.y + b.h/2 - mcy) }))
         .sort((a, b) => a.d - b.d)
         .slice(0, 16)
@@ -3191,6 +3209,9 @@ const EditorCanvas: React.FC = () => {
     strokeWidth: number,
     handDrawnStyle: boolean,
     strokeStyle?: string,
+    /** Live label anchor while the label itself is mid-drag (image coords).
+     *  The dragged node's position is authoritative; the store is stale. */
+    labelRectOverride?: { x: number; y: number },
   ) => {
     const st = stageRef.current;
     if (!st) return;
@@ -3247,12 +3268,16 @@ const EditorCanvas: React.FC = () => {
             labelEl.text.length * fontSize * 0.58 + (labelEl.padding ?? TEXT_PADDING) * 2 + 12,
           ),
         );
-        let rectX = tb.x - (parent?.x ?? 0);
+        // With a live override (label being dragged) the node position is the
+        // current anchor; otherwise fall back to the store's (committed) box.
+        const boxX = labelRectOverride ? labelRectOverride.x : tb.x;
+        const boxY = labelRectOverride ? labelRectOverride.y : tb.y;
+        let rectX = boxX - (parent?.x ?? 0);
         if (labelEl.align === 'center') rectX += (tb.w - tightW) / 2;
         else if (labelEl.align === 'right') rectX += tb.w - tightW;
         const labelRect = {
           x: rectX,
-          y: tb.y - (parent?.y ?? 0),
+          y: boxY - (parent?.y ?? 0),
           w: tightW,
           h: Math.max(1, tb.h),
         };
@@ -3362,7 +3387,10 @@ const EditorCanvas: React.FC = () => {
     }
     const stStore = useEditorStore.getState();
     const parent = stStore.elements.find((x) => x.id === id);
-    if (parent) {
+    // While the label itself is mid-drag (override active) its node position is
+    // authoritative — reflowing from the stale store value would snap it back
+    // and fight Konva's drag.
+    if (parent && !labelRectOverride) {
       reflowLabelRef.current({ ...parent, points, bend: bendVal } as EditorElement);
     }
     node.getLayer()?.batchDraw();
@@ -3848,16 +3876,15 @@ const EditorCanvas: React.FC = () => {
         // both axes land in the same store update.
         const resizeToRadii = (
           radii: { rx: number; ry: number; topLeftX: number; topLeftY: number },
-          commit: boolean,
         ) => {
-          const updates = {
+          // The live drag stays inside MagnifierKonva (component-local state);
+          // this fires once, at release, as a single undo step.
+          commitElementUpdate(mag.id, {
             x: radii.topLeftX,
             y: radii.topLeftY,
             width: radii.rx * 2,
             height: radii.ry * 2,
-          };
-          if (commit) commitElementUpdate(mag.id, updates);
-          else throttledSilentUpdate(mag.id, updates);
+          });
         };
         return (
           <MagnifierKonva
@@ -3876,11 +3903,8 @@ const EditorCanvas: React.FC = () => {
             onTap={baseProps.onTap}
             onDragEnd={baseProps.onDragEnd}
             onDragMove={baseProps.onDragMove}
-            onPreviewOffsetMove={(offset) => throttledSilentUpdate(mag.id, { previewOffset: offset })}
             onPreviewOffsetCommit={(offset) => commitElementUpdate(mag.id, { previewOffset: offset })}
-            onRadiiMove={(radii) => resizeToRadii(radii, false)}
-            onRadiiCommit={(radii) => resizeToRadii(radii, true)}
-            onLeaderBendMove={(bend) => throttledSilentUpdate(mag.id, { leaderBend: bend })}
+            onRadiiCommit={resizeToRadii}
             onLeaderBendCommit={(bend) => commitElementUpdate(mag.id, { leaderBend: bend })}
           />
         );
@@ -5033,20 +5057,33 @@ const EditorCanvas: React.FC = () => {
         // Silent store update each move so the arrow's line-erase follows.
         const liveLabelDrag = (e: Konva.KonvaEventObject<DragEvent>) => {
           const parent = parentEl as ArrowElement | LineElement;
-          const { t, offsetY } = labelCenterGeometry(e.target);
-          const scale = getImageToolScale(imageSize.width, imageSize.height);
-          const anchor = labelAnchorForElement(parent, imageSize, textEl.fontSize ?? 24, scale, {
-            ...textEl,
-            labelOffset: t,
-            labelOffsetY: offsetY,
-          });
-          throttledSilentUpdate(textEl.id, {
-            x: anchor.x,
-            y: anchor.y,
-            width: anchor.width,
-            labelOffset: t,
-            labelOffsetY: offsetY,
-          } as Partial<EditorElement>);
+          const node = e.target;
+          const { t, offsetY } = labelCenterGeometry(node);
+          // Imperative live patch: the dragged node's position IS the live
+          // anchor (dragBoundFunc already projected it onto the path), so the
+          // shaft gap follows with no store write — the old silent write
+          // re-rendered the whole annotation scene on every frame.
+          applyArrowLineLive(
+            parent.id,
+            parent.points,
+            parent.bend ?? 0,
+            parent.strokeWidth ?? 2,
+            handDrawn,
+            parent.strokeStyle,
+            { x: node.x(), y: node.y() },
+          );
+          // Rough-drawn straight arrows render baked rough segments that
+          // cannot be patched in place; fall back to the throttled silent
+          // write so the re-render recomputes the gap (one React pass per
+          // frame, unchanged behavior). Commit still records everything.
+          if (handDrawn && (parent.bend ?? 0) === 0 && parent.points.length <= 4) {
+            throttledSilentUpdate(textEl.id, {
+              x: node.x(),
+              y: node.y(),
+              labelOffset: t,
+              labelOffsetY: offsetY,
+            } as Partial<EditorElement>);
+          }
         };
         // Commit the dragged offset as one undo step (position is already on
         // screen; the store now agrees with it).
