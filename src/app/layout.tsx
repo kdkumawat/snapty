@@ -7,6 +7,7 @@ import JsonLd from "@/components/json-ld";
 import { SkipLink } from "@/components/skip-link";
 import { Toaster } from "@/components/ui/toaster";
 import GoogleAnalytics from "@/components/google-analytics";
+import { EDITOR_ACCENT, EDITOR_ACCENT_DARK } from "@/config/brand";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -24,8 +25,8 @@ export const viewport: Viewport = {
   userScalable: false,
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#fafafa" },
-    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#161514" },
   ],
 };
 
@@ -120,7 +121,16 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      // The brand colour is the one knob; globals.css derives every tint.
+      className="editor-accent"
+      style={{
+        '--editor-accent': EDITOR_ACCENT,
+        '--editor-accent-dark': EDITOR_ACCENT_DARK || EDITOR_ACCENT,
+      } as React.CSSProperties}
+    >
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${caveat.variable} antialiased`}
       >

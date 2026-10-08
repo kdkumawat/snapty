@@ -3,6 +3,34 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+  Excalidraw's text faces (SIL OFL), latin subset. Declared as plain
+  @font-face rather than next/font because Konva draws text by literal family
+  name, and next/font hashes the name.
+*/
+@font-face {
+  font-family: "Assistant";
+  src: url("/fonts/Assistant-Variable.woff2") format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Excalifont";
+  src: url("/fonts/Excalifont-Regular.woff2") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Nunito";
+  src: url("/fonts/Nunito-Regular.woff2") format("woff2");
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Comic Shanns";
+  src: url("/fonts/ComicShanns-Regular.woff2") format("woff2");
+  font-display: swap;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -254,14 +282,74 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   border-radius: 999px;
 }
 
+/*
+  Brand theme, set on <html> for the whole app (landing, guide, editor), so
+  portalled popovers and tooltips pick it up too. Every tint derives from the
+  one brand colour (--editor-accent, see src/config/brand.ts) in OKLCH:
+  --accent keeps its hue but is capped in lightness (light) or floored (dark),
+  so accent-coloured text and thin strokes keep AA contrast on the page.
+  Solid fills (buttons) wear the exact brand colour, with a black or white
+  label picked from its lightness.
+*/
+html.editor-accent {
+  --brand: var(--editor-accent, #f97316);
+  --accent: oklch(from var(--brand) min(l, 0.52) c h);
+  --button-fill: oklch(from var(--brand) min(l, 0.52) c h);
+  --accent-foreground: #ffffff;
+  --accent-container: color-mix(in oklch, var(--brand) 22%, white);
+  --on-accent-container: oklch(from var(--brand) min(l, 0.4) c h);
+  --secondary: #f1f0f0;
+  --canvas: #ffffff;
+  --border: #ebebeb;
+  --foreground: #1b1b1f;
+  --button-bg: #f6f5f5;
+  --primary: var(--accent);
+  --primary-foreground: #ffffff;
+  --ring: var(--accent);
+  --floating-shadow: 0 0 1px rgb(0 0 0 / 0.17), 0 0 3px rgb(0 0 0 / 0.08), 0 7px 14px rgb(0 0 0 / 0.05);
+}
+/* Solid buttons: the brand hue, deepened until a white label reaches 4.5:1
+   (white on the brand orange itself is 2.8:1). Same fill in light and dark. */
+html.editor-accent :is(button, a):is(.bg-accent, .bg-primary) {
+  background-color: var(--button-fill);
+  color: #ffffff;
+}
+/* Excalidraw's UI font and its "island": opaque, 8px radius, no border. */
+html.editor-accent body {
+  font-family: Assistant, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+html.editor-accent .floating-surface {
+  background: var(--surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: none;
+  border-radius: 8px;
+}
+html.editor-accent.dark {
+  --brand: var(--editor-accent-dark, var(--editor-accent, #f97316));
+  --accent: oklch(from var(--brand) max(l, 0.7) c h);
+  --accent-foreground: #121212;
+  --accent-container: color-mix(in oklch, var(--brand) 30%, #232329);
+  --on-accent-container: oklch(from var(--brand) max(l, 0.88) calc(c * 0.5) h);
+  --secondary: #2f2e2e;
+  --canvas: #121212;
+  --surface: #232323;
+  --border: #3a3939;
+  --foreground: #e6e4e4;
+  --button-bg: #2e2d2d;
+  --primary: var(--accent);
+  --primary-foreground: #121212;
+  --ring: var(--accent);
+}
+
 .toolbar-btn {
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9px;
-  color: var(--muted-foreground);
+  border-radius: 8px;
+  color: var(--foreground);
   background: transparent;
   border: none;
   position: relative;
@@ -271,9 +359,13 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease;
 }
 
+.toolbar-btn:disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
 .toolbar-btn:hover:not(:disabled):not(.toolbar-btn-active) {
   background: var(--secondary);
-  color: var(--foreground);
 }
 
 .toolbar-btn:focus-visible {
@@ -281,63 +373,34 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   outline-offset: 1px;
 }
 
-/*
-  Selected tool: the accent highlight fills the inner icon chip only. The
-  button box stays transparent, so the toolbar reads as a quiet row of tools
-  with the active glyph emphasized (the chip, not a filled pill).
-*/
-.toolbar-btn-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
-  transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease;
-}
-
 .toolbar-btn-active {
-  background: transparent !important;
-  color: var(--foreground) !important;
-  box-shadow: none !important;
-  outline: none !important;
+  background: var(--accent-container);
+  color: var(--on-accent-container);
 }
 
-.toolbar-btn-active .toolbar-btn-icon {
-  background: var(--accent);
-  color: var(--accent-foreground) !important;
+/* Top-right actions as Excalidraw draws them: no island, flat 36px buttons. */
+html.editor-accent .floating-surface.action-flat {
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+/* Only the bar's own icon buttons: its popovers hold ordinary buttons. */
+.action-flat .icon-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--secondary);
+  color: var(--foreground);
+}
+.action-flat .icon-btn[aria-label="Download"] {
+  background: var(--button-fill);
+  color: #ffffff;
 }
 
-/* Sticky mode: a small dot under the active chip, like Excalidraw's lock hint. */
-.toolbar-btn-sticky-dot {
-  position: absolute;
-  left: 50%;
-  bottom: 3px;
-  transform: translateX(-50%);
-  width: 4px;
-  height: 4px;
-  border-radius: 9999px;
-  /* The button box is transparent in the active state, so the dot uses the
-     accent (not accent-foreground) to stay visible on any theme. */
-  background: var(--accent);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--duration-fast) ease;
+/* Excalidraw's "fillable" tools: the active icon is drawn solid. */
+.toolbar-btn-active.toolbar-btn-fillable svg {
+  fill: currentColor;
 }
-
-.toolbar-btn-shortcut {
-  position: absolute;
-  right: 2px;
-  bottom: 1px;
-  font-size: 8px;
-  line-height: 1;
-  font-weight: 600;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  color: color-mix(in srgb, var(--muted-foreground) 75%, transparent);
-  pointer-events: none;
-  user-select: none;
-}
-
 .icon-btn {
   width: 36px;
   height: 36px;
@@ -372,9 +435,9 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   height: 44px;
   width: 100%;
   max-width: 100%;
-  overflow-x: auto;
-  overflow-y: visible;
-  scrollbar-width: none;
+  /* The bar is trimmed per layout tier so it always fits; it must not scroll,
+     because a scroll container would clip the "more tools" menu. */
+  overflow: visible;
   -webkit-overflow-scrolling: touch;
   scroll-snap-type: x proximity;
 }
@@ -393,7 +456,13 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   }
 }
 
-[data-snapty-toolbar]::-webkit-scrollbar {
+/* Phone toolbar scroller: swipe sideways, no scrollbar. */
+.toolbar-scroll {
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
+}
+.toolbar-scroll::-webkit-scrollbar {
   display: none;
 }
 
@@ -439,6 +508,10 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   padding-bottom: env(safe-area-inset-bottom, 0);
 }
 
+@keyframes recovery-countdown {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
 @keyframes snapty-shimmer {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(100%); }
@@ -609,7 +682,7 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
   bottom: 0;
   width: 3px;
   border-radius: 999px 0 0 999px;
-  background: var(--accent);
+  background: var(--brand);
 }
 .snapty-toast-error {
   border-color: color-mix(in oklab, var(--destructive) 35%, var(--border)) !important;
@@ -686,3 +759,70 @@ html.theme-ready *:where(button, a, [role="button"], .icon-btn, .toolbar-btn, .f
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Sharp look (shared with the landing page): ink on paper, crisp 1px rules in
+   place of soft blurred shadows, one keycap style, a display face for headings.
+   Token overrides only: components read these through the theme utilities.
+   The accent still derives from --editor-accent (src/config/brand.ts); solid
+   fills use its deepened form (--button-fill, #b93300 for the default orange). */
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("/fonts/BricolageGrotesque-Variable.woff2") format("woff2");
+  font-weight: 200 800;
+  font-display: swap;
+}
+html.editor-accent {
+  --foreground: #17171a;
+  --canvas: #ffffff;
+  --surface: #ffffff;
+  --border: #dfdfdc;
+  --input: #dfdfdc;
+  --secondary: #f5f5f3;
+  --muted: #f5f5f3;
+  --muted-foreground: #54555b;
+  --button-bg: #f5f5f3;
+  --floating-shadow: 0 0 0 1px var(--border), 0 10px 24px -14px rgb(23 23 26 / 0.3);
+  --font-display: "Bricolage Grotesque", Assistant, system-ui, sans-serif;
+}
+html.editor-accent.dark {
+  --foreground: #f3f1ed;
+  --canvas: #161514;
+  --surface: #201f1d;
+  --popover: #262523;
+  --border: #383633;
+  --input: #383633;
+  --secondary: #2a2927;
+  --muted: #2a2927;
+  --muted-foreground: #b3b0aa;
+  --button-bg: #2a2927;
+  --floating-shadow: 0 0 0 1px var(--border), 0 12px 30px -14px rgb(0 0 0 / 0.85);
+}
+html.editor-accent :is(h1, h2, [data-slot="dialog-title"]):not(.lp *) {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+/* One keycap everywhere (editor hints, palette, shortcuts dialog, pages). */
+html.editor-accent :is(kbd, .snapty-kbd):not(.lp *) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.6em;
+  padding: 0.1em 0.5em;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--foreground);
+  font-family: Assistant, system-ui, sans-serif;
+  font-weight: 600;
+  line-height: 1.35;
+}
+/* The app's one theme control (src/components/theme-toggle.tsx): one button, three states.
+   The icon of the current mode is shown; the other two wait rotated out. */
+.theme-btn { position: relative; }
+.theme-btn > svg { position: absolute; inset: 0; margin: auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transform: rotate(-90deg) scale(0.5); transition: opacity 0.25s ease, transform 0.35s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.theme-btn[data-choice="system"] .t-system, .theme-btn[data-choice="dark"] .t-dark, .theme-btn[data-choice="light"] .t-light { opacity: 1; transform: none; }
+/* The same control as a row in the editor's main menu: icon on the left, mode name beside it. */
+.theme-menu-btn { display: flex; align-items: center; width: 100%; height: 32px; padding: 0 8px 0 34px; border: 0; border-radius: 6px; background: transparent; color: var(--foreground); font-size: 0.875rem; text-align: left; cursor: pointer; }
+.theme-menu-btn:hover { background: var(--secondary); }
+.theme-menu-btn > svg { inset: 0 auto 0 8px; width: 18px; height: 18px; }

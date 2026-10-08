@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>magnifier</title><style>
+@font-face{font-family:Assistant;src:url(Assistant-Variable.woff2) format("woff2");font-weight:200 800}
+@font-face{font-family:Bricolage;src:url(BricolageGrotesque-Variable.woff2) format("woff2");font-weight:200 800}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1920px;height:1280px;overflow:hidden;background:#17171a;font-family:Assistant,system-ui,sans-serif}
+#root{position:relative;width:1920px;height:1280px;overflow:hidden;background:#17171a}
+#stage{position:absolute;left:0;top:0;width:1920px;height:1200px;overflow:hidden;background:#fff}
+#cam{position:absolute;left:0;top:0;width:1920px;height:1200px;transform-origin:0 0}
+#foot,#loop{position:absolute;left:0;top:0;width:1920px;height:1200px;object-fit:fill}
+#loop{opacity:0}
+#band{position:absolute;left:0;top:1200px;width:1920px;height:80px;background:#17171a}
+#brand{position:absolute;left:36px;top:1218px;display:flex;align-items:center;gap:12px;color:#fff;font:800 32px/44px Assistant,sans-serif;letter-spacing:-.02em}
+#brand i{display:grid;place-items:center;width:44px;height:44px;border-radius:11px;background:#b93300}
+#brand svg{width:28px;height:28px;fill:#fff}
+.cap{position:absolute;left:272px;top:1214px;padding-left:28px;border-left:2px solid #4a4a50;height:52px;display:flex;align-items:center;gap:18px;color:#fff;font:700 34px/52px Assistant,sans-serif;letter-spacing:-.01em;opacity:0;white-space:nowrap}
+.cap kbd{display:inline-grid;place-items:center;min-width:46px;height:46px;padding:0 14px;margin-right:8px;font:700 25px/1 Assistant,sans-serif;color:#17171a;background:#fff;border-radius:10px;box-shadow:inset 0 -4px 0 #cfcfcb}
+.full{position:absolute;left:0;top:0;width:1920px;height:1280px;background:#b93300;color:#fff}
+#sting .lock{position:absolute;left:0;right:0;top:450px;display:flex;justify-content:center;align-items:center;gap:44px}
+#sting svg{width:230px;height:230px;fill:#fff}
+#sting .word{font:800 230px/1 Assistant,sans-serif;letter-spacing:-.045em}
+#sting .tag{position:absolute;left:0;right:0;top:750px;text-align:center;font:600 52px/1.2 Assistant,sans-serif}
+#end{opacity:0}
+#end .shot{position:absolute;left:96px;top:290px;width:1090px;height:681px;border-radius:22px;overflow:hidden;background:#fff;box-shadow:0 50px 110px -30px rgba(40,10,0,.7);transform:rotate(-2deg)}
+#end .shot img{width:100%;height:100%;display:block}
+#end .txt{position:absolute;left:1262px;top:330px;width:600px}
+#end h2{font:700 96px/.98 Bricolage,Assistant,sans-serif;letter-spacing:-.035em}
+#end .cta{display:inline-flex;align-items:center;height:104px;margin-top:56px;padding:0 48px;background:#fff;color:#17171a;border-radius:26px;font:700 46px/1 Assistant,sans-serif}
+#end .sub{margin-top:30px;font:600 38px/1.25 Assistant,sans-serif}
+#end .brand{position:absolute;left:96px;top:96px;display:flex;align-items:center;gap:18px;font:800 62px/1 Assistant,sans-serif;letter-spacing:-.03em}
+#end .brand svg{width:66px;height:66px;fill:#fff}
+</style></head><body>
+<div id="root" data-composition-id="root" data-width="1920" data-height="1280" data-start="0" data-duration="4.967" data-fps="30">
+<div id="stage"><div id="cam"><video class="clip" id="foot" src="footage.mp4" muted playsinline data-start="0" data-duration="4.967" data-track-index="1"></video><img class="clip" id="loop" src="first.jpg" alt="" data-start="4.467" data-duration="0.5" data-track-index="2">
+</div></div>
+<div id="band"></div><div id="brand"><i><svg viewBox="0 0 24 24"><path d="M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64zM6 8c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm0 12c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm6-7.5c-.28 0-.5-.22-.5-.5s.22-.5.5-.5.5.22.5.5-.22.5-.5.5zM19 3l-6 6 2 2 7-7V3h-3z"/></svg></i><span>Snapty</span></div>
+<div class="cap clip" id="cap0" data-start="0.000" data-duration="4.217" data-track-index="3"><span>Magnifier</span><span><kbd>M</kbd></span></div>
+</div>
+<script src="gsap.min.js"></script>
+<script>
+const tl = gsap.timeline({ paused: true });
+tl.to("#cam",{scale:1.3559,x:-439,y:-212,duration:1,ease:"power2.inOut"},0.050);
+tl.to("#cam",{scale:1,x:0,y:0,duration:0.8,ease:"power2.inOut"},3.367);
+tl.fromTo("#cap0",{opacity:0,y:14},{opacity:1,y:0,duration:0.28,ease:"power2.out"},0.040);
+tl.to("#cap0",{opacity:0,duration:0.2,ease:"power1.in"},3.997);
+tl.to("#loop",{opacity:1,duration:0.45,ease:"power1.inOut"},4.467);
+tl.set({}, {}, 4.967);
+window.__timelines = window.__timelines || {}; window.__timelines["root"] = tl;
+</script></body></html>

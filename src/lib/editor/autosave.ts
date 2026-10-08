@@ -7,6 +7,8 @@ const VERSION = 1;
 
 /** Keep at most this many recent sessions so recovery can offer a short history. */
 export const MAX_AUTOSAVES = 3;
+/** Sessions older than this are dropped: not worth offering, not worth keeping. */
+const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const PROMPT_KEY = 'snapty-recover-prompt';
 
@@ -70,7 +72,7 @@ async function readList(): Promise<AutosaveSnapshot[]> {
     });
     db.close();
     if (Array.isArray(raw)) {
-      return raw.filter((s) => !!s && !!s.imageDataURL);
+      return raw.filter((s) => !!s && !!s.imageDataURL && Date.now() - (s.updatedAt ?? 0) < MAX_AGE_MS);
     }
     // Legacy single-snapshot format → migrate in place to a one-entry list.
     if (raw && typeof raw === 'object' && 'elements' in raw) {
@@ -101,15 +103,17 @@ async function writeList(list: AutosaveSnapshot[]): Promise<void> {
 }
 
 /**
- * Save a snapshot. One entry per session: a snapshot with the same `sessionId`
- * replaces the current entry, so a long editing session never floods the
- * history. Older *different* sessions roll off past {@link MAX_AUTOSAVES}.
+ * Save a snapshot. One entry per session and per screenshot: a snapshot
+ * replaces the entry with the same `sessionId` and any older entry of the same
+ * image (a reload restores the project and carries on under a new session id,
+ * which used to list the same work several times). Other sessions roll off
+ * past {@link MAX_AUTOSAVES}.
  */
 export async function saveAutosave(snapshot: AutosaveSnapshot): Promise<void> {
   const list = await readList();
   const next = [
     snapshot,
-    ...list.filter((s) => s.sessionId !== snapshot.sessionId),
+    ...list.filter((s) => s.sessionId !== snapshot.sessionId && s.imageDataURL !== snapshot.imageDataURL),
   ].slice(0, MAX_AUTOSAVES);
   await writeList(next);
 }
@@ -123,22 +127,6 @@ export async function listAutosaves(): Promise<AutosaveSnapshot[]> {
 export async function removeAutosave(updatedAt: number): Promise<void> {
   const list = await readList();
   await writeList(list.filter((s) => s.updatedAt !== updatedAt));
-}
-
-export async function clearAutosave(): Promise<void> {
-  if (typeof indexedDB === 'undefined') return;
-  try {
-    const db = await openDb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readwrite');
-      tx.objectStore(STORE).delete(KEY);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-    db.close();
-  } catch {
-    /* ignore */
-  }
 }
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;

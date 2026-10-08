@@ -10,17 +10,14 @@ import { ToolbarTips } from '@/components/editor/toolbar/floating-toolbar';
 import BottomChrome from '@/components/editor/chrome/bottom-chrome';
 import FloatingPropertiesPanel from '@/components/editor/panels/properties-panel';
 import EmptyState from '@/components/editor/empty/empty-state';
-import ExportDialog from '@/components/editor/export-dialog';
 import HelpDialog from '@/components/editor/help-dialog';
-import SettingsDialog from '@/components/editor/dialogs/settings-dialog';
 import InfoDialog from '@/components/editor/dialogs/info-dialog';
 import CommandPalette from '@/components/editor/menus/command-palette';
 import CanvasContextMenu from '@/components/editor/menus/canvas-context-menu';
 import ImageLoadingSkeleton from '@/components/editor/image-loading-skeleton';
 import SessionRecovery from '@/components/editor/session-recovery';
-import FirstRunCard from '@/components/editor/first-run-card';
 import { EditorErrorBoundary } from '@/components/editor/editor-error-boundary';
-import { scheduleAutosave, clearAutosave, type AutosaveSnapshot } from '@/lib/editor/autosave';
+import { scheduleAutosave, type AutosaveSnapshot } from '@/lib/editor/autosave';
 
 const EditorCanvas = dynamic(() => import('@/components/editor/editor-canvas'), {
   ssr: false,
@@ -33,8 +30,8 @@ const EditorCanvas = dynamic(() => import('@/components/editor/editor-canvas'), 
 
 /**
  * Persist while editing. The IndexedDB snapshot is *offered* for recovery on
- * reload (SessionRecovery); once the user decides (or no snapshot exists) it
- * is safe to clear stale drafts when there is no image.
+ * reload (SessionRecovery); saving starts once the user has decided (or no
+ * snapshot exists). Old sessions expire by age in the autosave store.
  */
 function useAutosaveLifecycle(recoveryResolved: boolean) {
   // One autosave history entry per page load, so recovery can offer the last
@@ -56,10 +53,9 @@ function useAutosaveLifecycle(recoveryResolved: boolean) {
 
   useEffect(() => {
     if (!recoveryResolved) return;
-    if (!backgroundImage && !imageDataURL) {
-      void clearAutosave();
-      return;
-    }
+    // Nothing to save. Saved sessions are left alone: closing the image or
+    // letting the recovery toast time out must not throw earlier work away.
+    if (!backgroundImage && !imageDataURL) return;
     scheduleAutosave((): AutosaveSnapshot | null => {
       const s = useEditorStore.getState();
       if (!s.imageDataURL) return null;
@@ -84,7 +80,6 @@ export default function EditorShell() {
   const backgroundImage = useEditorStore((s) => s.backgroundImage);
   const imageLoading = useEditorStore((s) => s.imageLoading);
   const imageLocked = useEditorStore((s) => s.imageLocked);
-  const setShowCommandPalette = useEditorStore((s) => s.setShowCommandPalette);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const overlayInputRef = React.useRef<HTMLInputElement>(null);
   const [recoveryResolved, setRecoveryResolved] = React.useState(false);
@@ -149,7 +144,7 @@ export default function EditorShell() {
           </CanvasContextMenu>
         </main>
 
-        <TopChrome onOpenPalette={() => setShowCommandPalette(true)} />
+        <TopChrome />
         <ToolbarTips />
         <FloatingPropertiesPanel />
         <BottomChrome />
@@ -200,12 +195,7 @@ export default function EditorShell() {
         />
 
         <SessionRecovery onResolved={() => setRecoveryResolved(true)} />
-        {/* First-run card waits for the session-recovery decision so the two
-            bottom-center cards can never overlap on screen. */}
-        {recoveryResolved && !backgroundImage && !imageLoading && <FirstRunCard />}
-        <ExportDialog />
         <HelpDialog />
-        <SettingsDialog />
         <InfoDialog />
         <CommandPalette />
       </div>

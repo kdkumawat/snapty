@@ -9,6 +9,7 @@ import {
   paintDrawable,
   type RoughDrawInput,
 } from '@/lib/rough-renderer';
+import { useEditorStore } from '@/store/editor-store';
 
 type RoughShapeProps = RoughDrawInput & {
   id?: string;
@@ -41,6 +42,8 @@ export default function RoughKonvaShape({
   ...input
 }: RoughShapeProps) {
   const pointsKey = input.points?.join(',') ?? '';
+  // Excalidraw's hit threshold: about 8.5 screen px either side of the stroke.
+  const hitWidth = Math.max(hitStrokeWidth, 17 / useEditorStore((s) => s.zoom));
 
   const drawable = useMemo(
     () => generateRoughDrawable({ ...input, x: 0, y: 0 }),
@@ -114,7 +117,7 @@ export default function RoughKonvaShape({
         ctx.closePath();
         ctx.fillStrokeShape(shape);
       }}
-      hitStrokeWidth={hitStrokeWidth}
+      hitStrokeWidth={hitWidth}
       onClick={input.onClick}
       onTap={input.onTap as any}
       onDragStart={input.onDragStart}

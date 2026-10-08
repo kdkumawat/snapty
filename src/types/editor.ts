@@ -112,6 +112,8 @@ export interface ShapeElement extends BaseElement {
   cornerRadius?: number;
   blurRadius?: number;
   pixelSize?: number;
+  /** Spotlight only: how strongly everything outside the region is dimmed (0-1). */
+  dim?: number;
   imageDataURL?: string;
   /**
    * IDs of text elements bound to this shape (text living inside it, or
@@ -129,6 +131,7 @@ export interface DiamondElement extends BaseElement {
   fill?: string;
   stroke?: string;
   strokeWidth?: number;
+  cornerRadius?: number;
   labelIds?: string[];
 }
 
@@ -145,6 +148,8 @@ export interface ArrowElement extends BaseElement {
    * moves/resizes/rotates.
    */
   elbowed?: boolean;
+  /** Excalidraw's "curved" arrow type: the shaft is a curve through `points`. */
+  curved?: boolean;
   /**
    * User-fixed segments that survive re-routing (Excalidraw compat). Kept
    * for data-model compatibility; the current router derives all interior
@@ -173,6 +178,7 @@ export interface LineElement extends BaseElement {
   points: [number, number, number, number];
   /** Curvature, same convention as {@link ArrowElement.bend}. 0 is straight. */
   bend?: number;
+  curved?: boolean;
   stroke?: string;
   strokeWidth?: number;
   startArrowhead?: Arrowhead;
@@ -248,10 +254,13 @@ export interface TextElement extends BaseElement {
 
 export interface StepElement extends BaseElement {
   type: 'step';
-  stepNumber: number;
+  /** What the badge shows: a number, or a letter for letter-style steps. */
+  stepNumber: number | string;
   radius?: number;
   fill?: string;
   fontSize?: number;
+  /** Finger emoji drawn beside the badge, pointing away from it at the target. */
+  pointer?: string;
 }
 
 export type EditorElement =
@@ -285,19 +294,98 @@ export interface CanvasStyle {
   transparentExport?: boolean;
 }
 
-export const DEFAULT_COLORS = [
-  '#ef4444', '#f97316', '#eab308', '#22c55e',
-  '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899',
-  '#ffffff', '#000000',
+/**
+ * Excalidraw's palette (open-color, 5 shades per hue) and quick picks, copied
+ * from packages/common/src/colors.ts.
+ */
+export const COLOR_PALETTE = {
+  transparent: 'transparent',
+  black: '#1e1e1e',
+  white: '#ffffff',
+  gray: ['#f8f9fa', '#e9ecef', '#ced4da', '#868e96', '#343a40'],
+  red: ['#fff5f5', '#ffc9c9', '#ff8787', '#fa5252', '#e03131'],
+  pink: ['#fff0f6', '#fcc2d7', '#f783ac', '#e64980', '#c2255c'],
+  grape: ['#f8f0fc', '#eebefa', '#da77f2', '#be4bdb', '#9c36b5'],
+  violet: ['#f3f0ff', '#d0bfff', '#9775fa', '#7950f2', '#6741d9'],
+  blue: ['#e7f5ff', '#a5d8ff', '#4dabf7', '#228be6', '#1971c2'],
+  cyan: ['#e3fafc', '#99e9f2', '#3bc9db', '#15aabf', '#0c8599'],
+  teal: ['#e6fcf5', '#96f2d7', '#38d9a9', '#12b886', '#099268'],
+  green: ['#ebfbee', '#b2f2bb', '#69db7c', '#40c057', '#2f9e44'],
+  yellow: ['#fff9db', '#ffec99', '#ffd43b', '#fab005', '#f08c00'],
+  orange: ['#fff4e6', '#ffd8a8', '#ffa94d', '#fd7e14', '#e8590c'],
+  bronze: ['#f8f1ee', '#eaddd7', '#d2bab0', '#a18072', '#846358'],
+} as const;
+
+/** Picker grid order: a 5-column grid, single colors first, then the hues. */
+export const PALETTE_ORDER = [
+  'transparent', 'white', 'gray', 'black', 'bronze',
+  'cyan', 'blue', 'violet', 'grape', 'pink',
+  'green', 'teal', 'yellow', 'orange', 'red',
+] as const satisfies readonly (keyof typeof COLOR_PALETTE)[];
+
+/** Shade shown in the grid: strokes use the darkest, backgrounds a light one. */
+export const STROKE_SHADE = 4;
+export const BACKGROUND_SHADE = 1;
+
+/** Emoji stamps the Number tool can place instead of a numbered badge. */
+/** Fingers that can carry a numbered badge: the step lands with the fingertip on the click. */
+export const STEP_FINGERS = ['👉', '👆'] as const;
+/** Where the finger sits relative to the badge centre, in badge radii: box origin and fingertip. */
+export function stepFingerBox(pointer: string, r: number) {
+  const size = r * 2;
+  const near = r * 1.3;
+  return pointer === '👆'
+    ? { x: -r, y: -near - size, size, tipX: 0, tipY: -near - size }
+    : { x: near, y: -r, size, tipX: near + size, tipY: 0 };
+}
+export const STEP_STAMPS = ['👉', '👆', '✅', '❌', '⚠️', '❓', '⭐', '🔥'] as const;
+
+/** Marker yellow: the highlighter's default and its quick-pick swatch. */
+export const HIGHLIGHTER_COLOR = COLOR_PALETTE.yellow[2];
+
+// Screenshot order: the colors people annotate with first.
+export const STROKE_PICKS = [
+  COLOR_PALETTE.red[STROKE_SHADE],
+  HIGHLIGHTER_COLOR,
+  COLOR_PALETTE.green[STROKE_SHADE],
+  COLOR_PALETTE.blue[STROKE_SHADE],
+  COLOR_PALETTE.black,
+  COLOR_PALETTE.white,
 ];
 
-export const DEFAULT_FONT_SIZES = [12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64, 72];
+export const BACKGROUND_PICKS = [
+  COLOR_PALETTE.transparent,
+  COLOR_PALETTE.red[BACKGROUND_SHADE],
+  COLOR_PALETTE.green[BACKGROUND_SHADE],
+  COLOR_PALETTE.blue[BACKGROUND_SHADE],
+  COLOR_PALETTE.yellow[BACKGROUND_SHADE],
+];
 
+/**
+ * Snapty's deliberate deviation from Excalidraw's defaults: a new stroke is
+ * red and bold, because near-black thin lines disappear on most screenshots.
+ */
+export const DEFAULT_STROKE_COLOR = COLOR_PALETTE.red[STROKE_SHADE];
+
+// Excalidraw's presets (ROUGHNESS, STROKE_WIDTH, FONT_SIZES). Stroke width and
+// font size are authored at 1x and multiplied by the image tool scale.
 export const ROUGHNESS_PRESETS: Record<RoughnessPreset, number> = {
-  architect: 0.4,
-  artist: 1.4,
-  cartoonist: 2.6,
+  architect: 0,
+  artist: 1,
+  cartoonist: 2,
 };
+
+export const STROKE_WIDTHS = { thin: 1, bold: 2, extraBold: 4 } as const;
+
+export const FONT_SIZE_PRESETS = { S: 16, M: 20, L: 28, XL: 36 } as const;
+
+/** Excalidraw's DEFAULT_ADAPTIVE_RADIUS for "round" edges. */
+export const ROUND_CORNER_RADIUS = 32;
+
+// Excalidraw's three text faces, self-hosted from public/fonts (see globals.css).
+export const FONT_HAND_DRAWN = 'Excalifont, sans-serif';
+export const FONT_NORMAL = 'Nunito, sans-serif';
+export const FONT_CODE = '"Comic Shanns", monospace';
 
 /** Handwritten-style font stack for text annotations (DOM / CSS). */
 export const HANDWRITTEN_FONT =
@@ -375,6 +463,13 @@ export interface CalloutElement extends BaseElement {
    * Defaults to 20 (scaled by image tool scale).
    */
   pointerWidth?: number;
+  /**
+   * Free pointer tip, relative to the centre of the body (image px, in the
+   * body's unrotated frame). When set it wins over direction/offset/length:
+   * the tail runs from the nearest side of the body straight to this point,
+   * so a callout can point at exactly what the user pressed on.
+   */
+  pointerTip?: { x: number; y: number };
   labelIds?: string[];
 }
 
@@ -397,3 +492,6 @@ export interface MagnifierElement extends BaseElement {
   stroke?: string;
   strokeWidth?: number;
 }
+
+/** Round spotlights use a small radius: the shared shape radius turns small ones into pills. */
+export const SPOTLIGHT_RADIUS = 8;

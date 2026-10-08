@@ -1,5 +1,4 @@
 import type Konva from 'konva';
-import { useEditorStore } from '@/store/editor-store';
 
 /** Read themed selection colors from CSS variables (client only). */
 export function getSelectionTheme() {
@@ -16,7 +15,7 @@ export function getSelectionTheme() {
   }
   const root = document.documentElement;
   const cs = getComputedStyle(root);
-  const accent = cs.getPropertyValue('--accent').trim() || 'oklch(0.625 0.2 50)';
+  const accent = cs.getPropertyValue('--brand').trim() || cs.getPropertyValue('--accent').trim() || 'oklch(0.625 0.2 50)';
   const accentFg = cs.getPropertyValue('--accent-foreground').trim() || '#fff';
   const surface = cs.getPropertyValue('--background').trim() || '#fff';
   const border = cs.getPropertyValue('--border').trim() || 'rgba(0,0,0,0.12)';
@@ -37,37 +36,26 @@ export function getSelectionTheme() {
 }
 
 /**
- * Premium Konva Transformer anchor styling, kept screen-constant at any zoom:
- * the Transformer lives inside the zoomed stage, so its anchor geometry is
- * divided by the current zoom. The offsets were just set by the Transformer
- * (anchorSize/2 + padding, image units), so dividing them keeps the visual
- * gap between anchor and selection box constant too. Runs on every
- * Transformer update (attach / drag / resize), so zoom changes are picked up
- * the moment the store reports them.
- *
- * Handles are deliberately small and quiet (≈7px screen, grey): they read as
- * control points, not UI knobs. Hit areas stay generous (hitStrokeWidth in
- * selectionHandleProps) so usability is unaffected.
+ * Konva Transformer anchor styling. The Transformer cancels its parents'
+ * scale, so anchor geometry is already in screen px at any zoom.
  */
 export function styleSelectionAnchor(anchor: Konva.Rect) {
   const theme = getSelectionTheme();
   const name = anchor.name();
-  const isRotate = name === 'rotater';
-  const z = Math.max(0.1, useEditorStore.getState().zoom || 1);
-  const size = (isRotate ? 9 : 7) / z;
+  const isRotate = name.split(' ')[0] === 'rotater';
+  // Excalidraw: 8px handles, rounded squares for resize, a circle for rotate.
+  const size = 8;
 
   anchor.width(size);
   anchor.height(size);
-  anchor.offsetX(anchor.offsetX() / z);
-  anchor.offsetY(anchor.offsetY() / z);
-  anchor.cornerRadius(size / 2);
-  anchor.fill(theme.surface);
-  anchor.stroke('rgba(120, 120, 120, 0.5)');
-  anchor.strokeWidth((isRotate ? 1.5 : 1.2) / z);
-  anchor.shadowColor(theme.shadow);
-  anchor.shadowBlur(2.5 / z);
-  anchor.shadowOpacity(0.15);
-  anchor.shadowOffset({ x: 0, y: 0.5 / z });
+  anchor.cornerRadius(isRotate ? size / 2 : 2);
+  anchor.fill('#ffffff');
+  anchor.stroke(theme.accent);
+  anchor.strokeWidth(1);
+  anchor.shadowOpacity(0);
+  // Side anchors stay grabbable but invisible: Excalidraw shows corners only
+  // on desktop and lets the frame edge do the rest.
+  anchor.opacity(/^(top|bottom)-center$|^middle-/.test(name.split(' ')[0]) ? 0 : 1);
 }
 
 /**
@@ -78,20 +66,16 @@ export function styleSelectionAnchor(anchor: Konva.Rect) {
  */
 export function selectionHandleProps(variant: 'endpoint' | 'bend' | 'rotate' = 'endpoint') {
   const theme = getSelectionTheme();
-  const r = variant === 'bend' ? 5.5 : variant === 'rotate' ? 4.5 : 4.5;
   return {
     name: 'edit-handle',
     // Radius/width are IMAGE units; the canvas keeps them screen-sized by
     // scaling every `.edit-handle` node by 1/zoom (see the zoom effect in
     // editor-canvas) — handles stay the same visual size at any zoom.
-    radius: r,
-    fill: 'rgba(255, 255, 255, 0.92)',
-    stroke: 'rgba(110, 110, 110, 0.55)',
-    strokeWidth: variant === 'bend' ? 1.4 : 1.2,
-    shadowColor: theme.shadow,
-    shadowBlur: 3,
-    shadowOpacity: 0.16,
-    shadowOffset: { x: 0, y: 0.5 },
+    // Excalidraw's point handle: white dot, selection-colored ring.
+    radius: 4.5,
+    fill: '#ffffff',
+    stroke: theme.accent,
+    strokeWidth: 1,
     hitStrokeWidth: variant === 'endpoint' ? 20 : 24,
     cursor: 'grab',
   };
@@ -115,15 +99,11 @@ export function handleHoverEvents() {
     onMouseEnter: (e: Konva.KonvaEventObject<MouseEvent>) => {
       const node = e.target as Konva.Shape;
       scaleBy(node, 1.25);
-      node.fill('rgba(96, 96, 96, 0.62)');
-      node.stroke('rgba(96, 96, 96, 0.8)');
       node.getLayer()?.batchDraw();
     },
     onMouseLeave: (e: Konva.KonvaEventObject<MouseEvent>) => {
       const node = e.target as Konva.Shape;
       scaleBy(node, 1);
-      node.fill('rgba(255, 255, 255, 0.92)');
-      node.stroke('rgba(110, 110, 110, 0.55)');
       node.getLayer()?.batchDraw();
     },
   };
@@ -134,16 +114,11 @@ export function midHandleProps() {
   const theme = getSelectionTheme();
   return {
     name: 'edit-handle',
-    radius: 4.5,
-    fill: 'rgba(255, 255, 255, 0.9)',
-    stroke: 'rgba(110, 110, 110, 0.5)',
-    strokeWidth: 1.2,
-    shadowColor: theme.shadow,
-    shadowBlur: 2.5,
-    shadowOpacity: 0.15,
-    shadowOffset: { x: 0, y: 0.5 },
+    // Excalidraw's segment midpoint: a soft filled dot in the selection color.
+    radius: 4,
+    fill: theme.accent,
+    opacity: 0.5,
     hitStrokeWidth: 16,
-    dash: [2.5, 2],
-    cursor: 'copy',
+    cursor: 'pointer',
   };
 }

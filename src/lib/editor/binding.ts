@@ -97,6 +97,21 @@ function boundsOf(el: EditorElement, imageSize: { width: number; height: number 
   return { x, y, w, h };
 }
 
+/**
+ * boundsOf, re-centred on where the shape really is. A box shape rotates
+ * about its top-left origin, so once rotated its visual centre is no longer
+ * x + w/2; binding maths that rotates about the centre needs the true one.
+ */
+function visualBoxOf(el: EditorElement, imageSize: { width: number; height: number }): { x: number; y: number; w: number; h: number } {
+  const box = boundsOf(el, imageSize);
+  const deg = (el as { rotation?: number }).rotation ?? 0;
+  if (!deg || el.type === 'step' || el.type === 'magnifier') return box;
+  const r = deg * (Math.PI / 180);
+  const cx = box.x + (Math.cos(r) * box.w - Math.sin(r) * box.h) / 2;
+  const cy = box.y + (Math.sin(r) * box.w + Math.cos(r) * box.h) / 2;
+  return { x: cx - box.w / 2, y: cy - box.h / 2, w: box.w, h: box.h };
+}
+
 function rot(v: Pt, cos: number, sin: number): Pt {
   return { x: v.x * cos - v.y * sin, y: v.x * sin + v.y * cos };
 }
@@ -111,7 +126,7 @@ export function anchorForBinding(
   mode: FixedPointBinding['mode'],
   imageSize: { width: number; height: number },
 ): Pt {
-  const box = boundsOf(target, imageSize);
+  const box = visualBoxOf(target, imageSize);
   const cx = box.x + box.w / 2;
   const cy = box.y + box.h / 2;
   // Unrotated direction from the shape center to the fixedPoint.
@@ -123,6 +138,16 @@ export function anchorForBinding(
   const radians = ((target as { rotation?: number }).rotation ?? 0) * (Math.PI / 180);
   const cos = Math.cos(radians);
   const sin = Math.sin(radians);
+  // Excalidraw's 'inside' binding: the endpoint sits exactly on the fixed
+  // point (where the pointer was released inside the shape), not on the
+  // outline. It rides along as the shape moves, resizes or rotates.
+  if (mode === 'inside') {
+    const local = rot(
+      { x: (fixedPoint[0] - 0.5) * box.w, y: (fixedPoint[1] - 0.5) * box.h },
+      cos, sin,
+    );
+    return { x: cx + local.x, y: cy + local.y };
+  }
   // Work in the shape's local (unrotated) space, then rotate the result out.
   const localDir = rot(dir, cos, -sin);
   const boundary = intersectOutline(box, cx, cy, localDir, target.type);
@@ -453,7 +478,7 @@ export function globalFixedPointForBinding(
   fixedPoint: [number, number],
   imageSize: { width: number; height: number },
 ): Pt {
-  const box = boundsOf(target, imageSize);
+  const box = visualBoxOf(target, imageSize);
   const cx = box.x + box.w / 2;
   const cy = box.y + box.h / 2;
   const local = { x: (fixedPoint[0] - 0.5) * box.w, y: (fixedPoint[1] - 0.5) * box.h };
@@ -475,7 +500,7 @@ export function fixedPointFromGlobalPoint(
   absY: number,
   imageSize: { width: number; height: number },
 ): [number, number] {
-  const box = boundsOf(target, imageSize);
+  const box = visualBoxOf(target, imageSize);
   const cx = box.x + box.w / 2;
   const cy = box.y + box.h / 2;
   const radians = ((target as { rotation?: number }).rotation ?? 0) * (Math.PI / 180);

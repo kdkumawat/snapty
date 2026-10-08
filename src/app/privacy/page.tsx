@@ -24,7 +24,7 @@ export default function PrivacyPage() {
   return (
     <main className="min-h-full overflow-y-auto bg-canvas text-foreground">
       <header className="sticky top-0 z-50 backdrop-blur-md bg-canvas/90 border-b border-border/40 flex items-center justify-between px-5 sm:px-8 py-3">
-        <Link href="/" className="flex items-center gap-2.5 font-hand text-xl font-semibold">
+        <Link href="/" className="flex items-center gap-2.5 text-xl font-bold tracking-tight">
           <span className="w-9 h-9 rounded-xl bg-accent text-accent-foreground flex items-center justify-center text-sm">✂</span>
           Snapty
         </Link>

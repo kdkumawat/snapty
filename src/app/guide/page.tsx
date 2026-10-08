@@ -48,7 +48,7 @@ export default function GuidePage() {
     <div className="min-h-dvh bg-canvas text-foreground">
       <header className="sticky top-0 z-50 backdrop-blur-md bg-canvas/90 border-b border-border/40 flex items-center justify-between px-5 sm:px-8 py-3">
         <div className="flex items-center gap-2.5">
-          <span className="text-xl font-semibold font-hand text-accent">Snapty</span>
+          <span className="text-xl font-bold tracking-tight">Snapty</span>
         </div>
         <Link
           href="/editor"

@@ -1,0 +1,17 @@
+{
+ "fps": 30,
+ "w": 1600,
+ "h": 1000,
+ "beats": [
+  {
+   "f": 0,
+   "label": "Spotlight",
+   "keys": [
+    "S"
+   ],
+   "cam": null
+  }
+ ],
+ "keys": [],
+ "frames": 157
+}

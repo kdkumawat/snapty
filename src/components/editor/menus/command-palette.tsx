@@ -2,315 +2,185 @@
 
 import React, { useEffect, useState } from 'react';
 import { Command } from 'cmdk';
-import { useTheme } from 'next-themes';
 import {
-  MousePointer2, Hand, ScanSearch, Square, Diamond, Circle, MoveUpRight,
-  Minus, Pencil, Type, ListOrdered, Highlighter, Droplets, Grid3x3, Crop,
-  Eraser, MonitorUp, FolderOpen, Download, Settings2, ImageOff, RotateCcw,
-  Keyboard, Maximize2, ZoomIn, Undo2, Redo2, Trash2, Sun, Moon, Monitor,
-  Search, ImagePlus, ScanText, Save, FileJson,
-} from 'lucide-react';
+  MousePointer2, Hand, ScanSearch, Square, Circle, MoveUpRight, Minus, Pencil,
+  Type, ListOrdered, Highlighter, Droplets, Crop, Eraser, MessageCircle,
+  MonitorUp, FolderOpen, Download, Copy, Share2, ImageOff, RotateCcw, Keyboard,
+  Maximize2, ZoomIn, Undo2, Redo2, Trash2, Sun, Search, ImagePlus, ScanText,
+  Save, FileJson,
+} from '@/components/editor/ui/icons';
+import { Kbd } from '@/components/editor/ui/kbd';
 import { useEditorStore } from '@/store/editor-store';
 import type { ToolType } from '@/types/editor';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
-import { isScreenCaptureSupported, captureScreenRegion } from '@/lib/screen-capture';
-import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
+import { isScreenCaptureSupported } from '@/lib/screen-capture';
+import { toastSuccess } from '@/lib/app-toast';
 import { TOOL_SHORTCUTS, formatToolKeys } from '@/lib/tool-shortcuts';
 import { openOverlayImagePicker } from '@/lib/image-load';
+import { modKey } from '@/hooks/use-keyboard-shortcuts';
 import { cn } from '@/lib/utils';
 
+const I = 'w-4 h-4';
+// Tool icons by id; the tool list itself comes from TOOL_SHORTCUTS, so a tool
+// without an entry here still appears (with a generic icon).
 const TOOL_ICONS: Partial<Record<ToolType, React.ReactNode>> = {
-  select: <MousePointer2 className="w-4 h-4" />,
-  hand: <Hand className="w-4 h-4" />,
-  magnifier: <ScanSearch className="w-4 h-4" />,
-  rectangle: <Square className="w-4 h-4" />,
-  diamond: <Diamond className="w-4 h-4" />,
-  circle: <Circle className="w-4 h-4" />,
-  arrow: <MoveUpRight className="w-4 h-4" />,
-  line: <Minus className="w-4 h-4" />,
-  pencil: <Pencil className="w-4 h-4" />,
-  text: <Type className="w-4 h-4" />,
-  step: <ListOrdered className="w-4 h-4" />,
-  highlighter: <Highlighter className="w-4 h-4" />,
-  blur: <Droplets className="w-4 h-4" />,
-  pixelate: <Grid3x3 className="w-4 h-4" />,
-  crop: <Crop className="w-4 h-4" />,
-  eraser: <Eraser className="w-4 h-4" />,
-  spotlight: <ScanSearch className="w-4 h-4" />,
+  select: <MousePointer2 className={I} />,
+  hand: <Hand className={I} />,
+  magnifier: <ScanSearch className={I} />,
+  rectangle: <Square className={I} />,
+  circle: <Circle className={I} />,
+  arrow: <MoveUpRight className={I} />,
+  line: <Minus className={I} />,
+  pencil: <Pencil className={I} />,
+  text: <Type className={I} />,
+  step: <ListOrdered className={I} />,
+  highlighter: <Highlighter className={I} />,
+  blur: <Droplets className={I} />,
+  crop: <Crop className={I} />,
+  eraser: <Eraser className={I} />,
+  callout: <MessageCircle className={I} />,
 };
 
-const itemClass =
-  'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm cursor-pointer aria-selected:bg-accent/10 aria-selected:text-foreground text-foreground';
+type Cmd = {
+  label: string;
+  icon: React.ReactNode;
+  keys?: string[];
+  keywords?: string[];
+  needsImage?: boolean;
+  hidden?: boolean;
+  run: () => void;
+};
+
+const emit = (name: string) => () => window.dispatchEvent(new CustomEvent(name));
 
 export default function CommandPalette() {
   const open = useEditorStore((s) => s.showCommandPalette);
   const setOpen = useEditorStore((s) => s.setShowCommandPalette);
-  const setActiveTool = useEditorStore((s) => s.setActiveTool);
-  const setShowExportDialog = useEditorStore((s) => s.setShowExportDialog);
-  const setShowHelpDialog = useEditorStore((s) => s.setShowHelpDialog);
-  const setShowSettings = useEditorStore((s) => s.setShowSettings);
-  const resetView = useEditorStore((s) => s.resetView);
-  const zoomToActual = useEditorStore((s) => s.zoomToActual);
-  const undo = useEditorStore((s) => s.undo);
-  const redo = useEditorStore((s) => s.redo);
-  const clearElements = useEditorStore((s) => s.clearElements);
-  const replaceImage = useEditorStore((s) => s.replaceImage);
-  const resetToolSettings = useEditorStore((s) => s.resetToolSettings);
-  const setImageLoading = useEditorStore((s) => s.setImageLoading);
-  const { setTheme } = useTheme();
+  const hasImage = useEditorStore((s) => s.backgroundImage !== null);
   const [query, setQuery] = useState('');
 
   useEffect(() => {
     if (!open) setQuery('');
   }, [open]);
 
-  const run = (fn: () => void) => {
-    fn();
-    setOpen(false);
-  };
+  const st = () => useEditorStore.getState();
+  const groups: { heading: string; items: Cmd[] }[] = [
+    {
+      heading: 'Tools',
+      items: TOOL_SHORTCUTS.map((t) => ({
+        label: t.label,
+        icon: TOOL_ICONS[t.id] ?? <MousePointer2 className={I} />,
+        keys: formatToolKeys(t).split(' / '),
+        keywords: [t.hint, 'tool'],
+        run: () => st().setActiveTool(t.id),
+      })),
+    },
+    {
+      heading: 'Edit',
+      items: [
+        { label: 'Undo', icon: <Undo2 className={I} />, keys: [modKey, 'Z'], run: () => st().undo() },
+        { label: 'Redo', icon: <Redo2 className={I} />, keys: [modKey, 'Shift', 'Z'], run: () => st().redo() },
+        { label: 'Add image to canvas', icon: <ImagePlus className={I} />, keywords: ['overlay', 'logo'], needsImage: true, run: openOverlayImagePicker },
+        { label: 'Extract text', icon: <ScanText className={I} />, keywords: ['ocr', 'recognize', 'copy text'], needsImage: true, run: emit('snapty-ocr') },
+        { label: 'Clear annotations', icon: <Trash2 className={I} />, keys: [modKey, 'Shift', 'Backspace'], keywords: ['remove', 'delete', 'all'], needsImage: true, run: () => st().clearElements() },
+        {
+          label: 'Reset tool defaults', icon: <RotateCcw className={I} />, keywords: ['stroke', 'style', 'restore'],
+          run: () => { st().resetToolSettings(); toastSuccess('Tools reset', 'Snapty defaults restored'); },
+        },
+      ],
+    },
+    {
+      heading: 'File',
+      items: [
+        { label: 'Open image', icon: <FolderOpen className={I} />, keys: [modKey, 'O'], keywords: ['upload', 'choose file'], run: emit('snapty-open-file') },
+        { label: 'Capture screen', icon: <MonitorUp className={I} />, keys: [modKey, 'Shift', 'S'], keywords: ['screenshot', 'grab'], hidden: !isScreenCaptureSupported(), run: emit('snapty-capture') },
+        { label: 'Close image', icon: <ImageOff className={I} />, keys: [modKey, 'Shift', 'X'], keywords: ['clear', 'new', 'start over'], needsImage: true, run: emit('snapty-clear') },
+        {
+          label: 'Save project', icon: <Save className={I} />, keys: [modKey, 'S'], keywords: ['snapty file'], needsImage: true,
+          run: () => {
+            void import('@/lib/editor/project-file').then((m) => m.downloadProject());
+            toastSuccess('Project saved', 'Downloaded .snapty file. Reopen it to continue editing');
+          },
+        },
+        { label: 'Open project', icon: <FileJson className={I} />, keywords: ['snapty file', 'load'], run: () => void import('@/lib/editor/project-file').then((m) => m.openProjectPicker()) },
+      ],
+    },
+    {
+      heading: 'View',
+      items: [
+        { label: 'Fit to screen', icon: <Maximize2 className={I} />, keys: [modKey, '0'], keywords: ['zoom', 'reset view'], needsImage: true, run: () => st().resetView() },
+        { label: 'Actual size', icon: <ZoomIn className={I} />, keys: [modKey, '1'], keywords: ['zoom', '100%'], needsImage: true, run: () => st().zoomToActual() },
+        { label: 'Toggle dark mode', icon: <Sun className={I} />, keys: ['Alt', 'Shift', 'D'], keywords: ['theme', 'light', 'dark'], run: emit('snapty-toggle-theme') },
+      ],
+    },
+    {
+      heading: 'Export',
+      items: [
+        { label: 'Download', icon: <Download className={I} />, keys: [modKey, 'E'], keywords: ['export', 'png', 'jpg', 'webp', 'svg', 'save image'], needsImage: true, run: () => st().setShowExportDialog(true) },
+        { label: 'Copy image', icon: <Copy className={I} />, keywords: ['clipboard'], needsImage: true, run: emit('snapty-copy') },
+        { label: 'Share', icon: <Share2 className={I} />, needsImage: true, run: emit('snapty-share') },
+      ],
+    },
+    {
+      heading: 'Help',
+      items: [
+        { label: 'Keyboard shortcuts', icon: <Keyboard className={I} />, keys: ['?'], keywords: ['help', 'keys', 'guide'], run: () => st().setShowHelpDialog(true) },
+      ],
+    },
+  ];
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         showCloseButton={false}
         className={cn(
-          'p-0 overflow-hidden bg-surface border-border gap-0 shadow-2xl flex flex-col',
-          'max-w-lg w-[min(32rem,calc(100vw-1.5rem))]',
-          'top-[max(12vh,2rem)] translate-y-0 max-h-[min(90dvh,36rem)]',
+          'p-0 overflow-hidden bg-surface border-border gap-0 flex flex-col rounded-[8px] shadow-[var(--floating-shadow)]',
+          'w-[min(32rem,calc(100vw-1.5rem))] max-w-lg',
+          'top-[max(12vh,2rem)] translate-y-0 max-h-[min(90dvh,34rem)]',
         )}
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
-        <Command className="bg-transparent flex flex-col min-h-0 flex-1" shouldFilter>
-          <div className="shrink-0 flex items-center gap-2 px-4 border-b border-border bg-surface">
+        <Command className="bg-transparent flex flex-col min-h-0 flex-1" loop>
+          <div className="shrink-0 flex items-center gap-2 px-3 border-b border-border">
             <Search className="w-4 h-4 text-muted-foreground shrink-0" />
             <Command.Input
               value={query}
               onValueChange={setQuery}
-              placeholder="Search tools and commands..."
-              className="w-full h-12 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
+              placeholder="Search tools and commands"
+              className="w-full h-11 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
             />
-            <kbd className="snapty-kbd shrink-0 hidden sm:inline">Esc</kbd>
-            <button
-              type="button"
-              aria-label="Close"
-              onClick={() => setOpen(false)}
-              className="w-8 h-8 shrink-0 rounded-lg inline-flex items-center justify-center text-muted-foreground hover:bg-secondary hover:text-foreground"
-            >
-              <span className="text-lg leading-none">&times;</span>
-            </button>
+            <Kbd className="shrink-0 hidden sm:inline-flex">Esc</Kbd>
           </div>
-          <Command.List className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2">
+          <Command.List className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-1.5">
             <Command.Empty className="py-8 text-center text-sm text-muted-foreground">
-              No results
+              No matching commands
             </Command.Empty>
-
-            <Command.Group heading="Tools" className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 py-1.5">
-              {TOOL_SHORTCUTS.map((t) => (
-                <Command.Item
-                  key={t.id}
-                  value={`${t.label} ${t.hint} ${t.letter} ${t.digit ?? ''}`}
-                  onSelect={() => run(() => setActiveTool(t.id))}
-                  className={itemClass}
-                >
-                  <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                    {TOOL_ICONS[t.id]}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="font-medium truncate">{t.label}</p>
-                    <p className="text-[11px] text-muted-foreground truncate">{t.hint}</p>
-                  </div>
-                  <span className="flex gap-1 shrink-0">
-                    {formatToolKeys(t).split(' / ').map((k) => (
-                      <kbd key={k} className="snapty-kbd">{k}</kbd>
-                    ))}
-                  </span>
-                </Command.Item>
-              ))}
-            </Command.Group>
-
-            <Command.Group heading="Actions" className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 py-1.5 mt-1">
-              {isScreenCaptureSupported() && (
-                <Command.Item
-                  value="Capture screen"
-                  onSelect={() => run(() => {
-                    setImageLoading(true);
-                    void captureScreenRegion()
-                      .then((result) => {
-                        if (!result.ok) {
-                          if (result.reason === 'denied') toastInfo('Capture cancelled', 'No screenshot was taken');
-                          else toastError('Capture failed', result.message);
-                          return;
-                        }
-                        useEditorStore.getState().setBackgroundImage(result.image);
-                        toastSuccess('Captured', 'Screenshot loaded');
-                      })
-                      .finally(() => useEditorStore.getState().setImageLoading(false));
-                  })}
-                  className={itemClass}
-                >
-                  <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                    <MonitorUp className="w-4 h-4" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="font-medium">Capture screen</p>
-                    <p className="text-[11px] text-muted-foreground">Grab a window or display</p>
-                  </div>
-                </Command.Item>
-              )}
-              <Command.Item value="Open file" onSelect={() => run(() => {
-                window.dispatchEvent(new CustomEvent('snapty-open-file'));
-              })} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <FolderOpen className="w-4 h-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">Open file</p>
-                  <p className="text-[11px] text-muted-foreground">Adds on canvas if an image is already open</p>
-                </div>
-              </Command.Item>
-              <Command.Item value="Add image overlay" onSelect={() => run(() => openOverlayImagePicker())} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <ImagePlus className="w-4 h-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">Add image</p>
-                  <p className="text-[11px] text-muted-foreground">Place another image on the canvas</p>
-                </div>
-              </Command.Item>
-              <Command.Item value="Export download" onSelect={() => run(() => setShowExportDialog(true))} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <Download className="w-4 h-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">Export</p>
-                  <p className="text-[11px] text-muted-foreground">Advanced download options</p>
-                </div>
-              </Command.Item>
-              <Command.Item value="Extract text OCR recognize" onSelect={() => run(() => {
-                window.dispatchEvent(new CustomEvent('snapty-ocr'));
-              })} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <ScanText className="w-4 h-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">Extract text</p>
-                  <p className="text-[11px] text-muted-foreground">Read text from the image, on your device</p>
-                </div>
-              </Command.Item>
-              <Command.Item value="Canvas settings" onSelect={() => run(() => setShowSettings(true))} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <Settings2 className="w-4 h-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">Settings</p>
-                  <p className="text-[11px] text-muted-foreground">Theme, padding, background, locks</p>
-                </div>
-              </Command.Item>
-              <Command.Item value="Clean clear image" onSelect={() => run(() => replaceImage())} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <ImageOff className="w-4 h-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">Clear image</p>
-                  <p className="text-[11px] text-muted-foreground">Clear image and show empty state</p>
-                </div>
-              </Command.Item>
-              <Command.Item value="Reset tools defaults" onSelect={() => run(() => {
-                resetToolSettings();
-                toastSuccess('Tools reset', 'Default stroke and style prefs restored');
-              })} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <RotateCcw className="w-4 h-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">Reset tools</p>
-                  <p className="text-[11px] text-muted-foreground">Restore Snapty defaults</p>
-                </div>
-              </Command.Item>
-              <Command.Item value="Keyboard shortcuts" onSelect={() => run(() => setShowHelpDialog(true))} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <Keyboard className="w-4 h-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">Keyboard shortcuts</p>
-                  <p className="text-[11px] text-muted-foreground">Letters and number keys</p>
-                </div>
-              </Command.Item>
-              <Command.Item value="Fit to screen" onSelect={() => run(resetView)} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <Maximize2 className="w-4 h-4" />
-                </span>
-                <p className="font-medium flex-1">Fit to screen</p>
-              </Command.Item>
-              <Command.Item value="Actual size" onSelect={() => run(zoomToActual)} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <ZoomIn className="w-4 h-4" />
-                </span>
-                <p className="font-medium flex-1">Actual size</p>
-              </Command.Item>
-              <Command.Item value="Undo" onSelect={() => run(undo)} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <Undo2 className="w-4 h-4" />
-                </span>
-                <p className="font-medium flex-1">Undo</p>
-              </Command.Item>
-              <Command.Item value="Redo" onSelect={() => run(redo)} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <Redo2 className="w-4 h-4" />
-                </span>
-                <p className="font-medium flex-1">Redo</p>
-              </Command.Item>
-              <Command.Item value="Clear annotations" onSelect={() => run(clearElements)} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <Trash2 className="w-4 h-4" />
-                </span>
-                <p className="font-medium flex-1">Clear annotations</p>
-              </Command.Item>
-              <Command.Item value="Save project snapty" onSelect={() => run(() => {
-                void import('@/lib/editor/project-file').then((m) => m.downloadProject());
-                toastSuccess('Project saved', 'Downloaded .snapty file — reopen to continue editing');
-              })} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <Save className="w-4 h-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">Save project</p>
-                  <p className="text-[11px] text-muted-foreground">Download .snapty (image + annotations)</p>
-                </div>
-              </Command.Item>
-              <Command.Item value="Open project snapty" onSelect={() => run(() => {
-                void import('@/lib/editor/project-file').then((m) => m.openProjectPicker());
-              })} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <FileJson className="w-4 h-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">Open project</p>
-                  <p className="text-[11px] text-muted-foreground">Load .snapty file</p>
-                </div>
-              </Command.Item>
-            </Command.Group>
-
-            <Command.Group heading="Theme" className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 py-1.5 mt-1">
-              <Command.Item value="Light theme" onSelect={() => run(() => setTheme('light'))} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <Sun className="w-4 h-4" />
-                </span>
-                <p className="font-medium">Light theme</p>
-              </Command.Item>
-              <Command.Item value="Dark theme" onSelect={() => run(() => setTheme('dark'))} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <Moon className="w-4 h-4" />
-                </span>
-                <p className="font-medium">Dark theme</p>
-              </Command.Item>
-              <Command.Item value="System theme" onSelect={() => run(() => setTheme('system'))} className={itemClass}>
-                <span className="w-8 h-8 rounded-lg bg-secondary text-muted-foreground flex items-center justify-center shrink-0">
-                  <Monitor className="w-4 h-4" />
-                </span>
-                <p className="font-medium">System theme</p>
-              </Command.Item>
-            </Command.Group>
+            {groups.map((g) => (
+              <Command.Group
+                key={g.heading}
+                heading={g.heading}
+                className="[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground"
+              >
+                {g.items.filter((c) => !c.hidden).map((c) => (
+                  <Command.Item
+                    key={c.label}
+                    value={`${g.heading} ${c.label}`}
+                    keywords={c.keywords}
+                    disabled={c.needsImage && !hasImage}
+                    onSelect={() => { setOpen(false); c.run(); }}
+                    className="flex items-center gap-2.5 h-9 px-2.5 rounded-lg text-sm cursor-pointer text-foreground data-[selected=true]:bg-[var(--accent-container)] data-[selected=true]:text-[var(--on-accent-container)] data-[disabled=true]:opacity-40 data-[disabled=true]:cursor-default"
+                  >
+                    <span className="shrink-0 text-muted-foreground">{c.icon}</span>
+                    <span className="flex-1 truncate">{c.label}</span>
+                    {c.keys && (
+                      <span className="flex gap-1 shrink-0 max-sm:hidden">
+                        {c.keys.map((k) => <Kbd key={k}>{k}</Kbd>)}
+                      </span>
+                    )}
+                  </Command.Item>
+                ))}
+              </Command.Group>
+            ))}
           </Command.List>
         </Command>
       </DialogContent>

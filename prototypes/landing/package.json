@@ -1,0 +1,12 @@
+{
+  "name": "snapty-landing-prototype",
+  "private": true,
+  "description": "Tooling for the landing prototype only (video composition). Not part of the Snapty app.",
+  "scripts": {
+    "serve": "serve -l 5000 ."
+  },
+  "dependencies": {
+    "gsap": "^3.15.0",
+    "hyperframes": "^0.8.140"
+  }
+}

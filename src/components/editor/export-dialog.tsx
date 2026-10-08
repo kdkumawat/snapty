@@ -1,24 +1,15 @@
-'use client';
-
-import React, { useState, useEffect } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
-import { Slider } from '@/components/ui/slider';
-import { Download, Copy, Check, Loader2, Share2 } from 'lucide-react';
-import { Switch } from '@/components/ui/switch';
+/** Export pipeline: renders the canvas to PNG/JPG/WebP/SVG. UI lives in chrome/action-cluster. */
 import { useEditorStore } from '@/store/editor-store';
 import type {
   ExportFormat, CanvasStyle, EditorElement, ShapeElement, ArrowElement,
   LineElement, PencilElement, CircleElement, TextElement, StepElement,
 } from '@/types/editor';
-import { TEXT_LINE_HEIGHT, TEXT_PADDING } from '@/types/editor';
-import { cn } from '@/lib/utils';
+import { SPOTLIGHT_RADIUS, TEXT_LINE_HEIGHT, TEXT_PADDING, stepFingerBox } from '@/types/editor';
 import { magnifierBounds } from '@/lib/editor/magnifier-geometry';
 import { freehandOutline } from '@/lib/editor/freehand';
 import { quadBounds, quadPathD, polylinePathD, tangentAtStart, tangentAtEnd } from '@/lib/editor/curve';
 import { clipPolylineAgainstRect, pointAlongPath, estimateLabelHeight } from '@/lib/editor/text-labels';
-import { arrowHeadPoints, generateRoughDrawable } from '@/lib/rough-renderer';
+import { arrowHeadPoints, generateRoughDrawable, generateLinearDrawables } from '@/lib/rough-renderer';
 import type { RoughDrawInput } from '@/lib/rough-renderer';
 import { RoughSVG } from 'roughjs/bin/svg';
 import {
@@ -28,7 +19,6 @@ import {
   innerRectForFrame,
   outerSizeForFrame,
 } from '@/lib/editor/device-frames';
-import { toastError, toastSuccess } from '@/lib/app-toast';
 
 const formats: { id: ExportFormat; label: string; ext: string; mime: string }[] = [
   { id: 'png', label: 'PNG', ext: '.png', mime: 'image/png' },
@@ -410,10 +400,6 @@ async function exportImage(
   }
 }
 
-async function exportCanvasBlob(format: ExportFormat = 'png', quality = 0.92): Promise<Blob | null> {
-  return exportImage(format, quality);
-}
-
 async function buildSvgExport(region?: { x: number; y: number; width: number; height: number }): Promise<string> {
   const store = useEditorStore.getState();
   const { imageSize, imageDataURL, elements, canvasStyle } = store;
@@ -458,6 +444,25 @@ async function buildSvgExport(region?: { x: number; y: number; width: number; he
       return `<g transform="translate(${x} ${y})" opacity="${elOpacity}">${node.outerHTML}</g>`;
     } catch { return null; }
   };
+
+  // Spotlights: one dim sheet over the image and the drawings with an even-odd
+  // hole per spotlight, the strongest dim winning, as on the canvas. It is
+  // pushed after the annotations so they are dimmed outside the holes too.
+  // ponytail: holes ignore rotation; add a per-hole transform if rotated spotlights matter in SVG.
+  let dimSheet = '';
+  const spots = elements.filter((el) => el.type === 'spotlight') as ShapeElement[];
+  if (spots.length) {
+    const dim = Math.max(...spots.map((sp) => sp.dim ?? 0.55));
+    const holes = spots.map((sp) => {
+      const sw = Math.abs(sp.width);
+      const sh = Math.abs(sp.height);
+      const sx = sp.width < 0 ? sp.x + sp.width : sp.x;
+      const sy = sp.height < 0 ? sp.y + sp.height : sp.y;
+      const r = Math.min(sp.cornerRadius ?? 0, SPOTLIGHT_RADIUS, sw / 2, sh / 2);
+      return `M${sx + r} ${sy}h${sw - 2 * r}a${r} ${r} 0 0 1 ${r} ${r}v${sh - 2 * r}a${r} ${r} 0 0 1 ${-r} ${r}h${-(sw - 2 * r)}a${r} ${r} 0 0 1 ${-r} ${-r}v${-(sh - 2 * r)}a${r} ${r} 0 0 1 ${r} ${-r}Z`;
+    }).join('');
+    dimSheet = `<path fill-rule="evenodd" fill="rgba(0,0,0,${dim})" d="M0 0H${w}V${h}H0Z${holes}"/>`;
+  }
 
   for (const el of elements) {
     const opacity = el.opacity ?? 1;
@@ -524,37 +529,6 @@ async function buildSvgExport(region?: { x: number; y: number; width: number; he
         : el.strokeStyle === 'dotted'
           ? ' stroke-dasharray="2 4"'
           : '';
-      if (bend === 0 && !isMulti) {
-        const roughLine = roughMarkup({
-          kind: 'line',
-          seed: el.id,
-          stroke: stroke === 'none' ? undefined : stroke,
-          strokeWidth: sw,
-          strokeStyle: el.strokeStyle,
-          roughness: el.roughness ?? 1.25,
-          points: [0, 0, pts[2] ?? 0, pts[3] ?? 0],
-        }, el.x, el.y, opacity);
-        if (roughLine) {
-          parts.push(roughLine);
-          const headSize = el.type === 'arrow'
-            ? ((el as ArrowElement).pointerLength ?? Math.max(10, sw * 4))
-            : Math.max(8, sw * 3);
-          const headFill = ('fill' in el ? (el as { fill?: string }).fill : undefined) || stroke;
-          const headPoly = (tipX: number, tipY: number, dir: { x: number; y: number }) =>
-            arrowHeadPoints(tipX + dir.x, tipY + dir.y, tipX, tipY, headSize)
-              .map(([px, py]) => `${el.x + px},${el.y + py}`)
-              .join(' ');
-          if ((el.endArrowhead ?? (el.type === 'arrow' ? 'arrow' : 'none')) !== 'none') {
-            const t = { x: Math.cos(Math.atan2(pts[3] ?? 0, pts[2] ?? 0)), y: Math.sin(Math.atan2(pts[3] ?? 0, pts[2] ?? 0)) };
-            parts.push(`<polygon points="${headPoly(pts[2] ?? 0, pts[3] ?? 0, t)}" fill="${headFill}" opacity="${opacity}"/>`);
-          }
-          if ((el.startArrowhead ?? 'none') !== 'none') {
-            const t = { x: Math.cos(Math.atan2(pts[3] ?? 0, pts[2] ?? 0)), y: Math.sin(Math.atan2(pts[3] ?? 0, pts[2] ?? 0)) };
-            parts.push(`<polygon points="${headPoly(0, 0, { x: -t.x, y: -t.y })}" fill="${headFill}" opacity="${opacity}"/>`);
-          }
-          continue;
-        }
-      }
       // An attached label erases the stroke behind it (matches the canvas):
       // clip the polyline against the label box and emit one path per piece.
       const attachedLabel = elements.find(
@@ -569,11 +543,44 @@ async function buildSvgExport(region?: { x: number; y: number; width: number; he
       const labelRect = attachedLabel
         ? {
             x: attachedLabel.x - el.x,
-            y: attachedLabel.y - (labelBoxH - ((attachedLabel.fontSize ?? 24) * TEXT_LINE_HEIGHT + (attachedLabel.padding ?? TEXT_PADDING) * 2)) / 2,
+            y: attachedLabel.y - el.y - (labelBoxH - ((attachedLabel.fontSize ?? 24) * TEXT_LINE_HEIGHT + (attachedLabel.padding ?? TEXT_PADDING) * 2)) / 2,
             w: Math.max(1, attachedLabel.width ?? 0),
             h: Math.max(1, labelBoxH),
           }
         : null;
+      // Same drawables the canvas paints (Excalidraw's shaft + arrowheads). The
+      // label gap is a clip on the shaft only, so heads stay whole.
+      if (roughSvg) {
+        const linear = el as ArrowElement;
+        const shapePts = bend && !isMulti
+          ? (() => {
+              const mid = pointAlongPath(el, 0.5);
+              return [pts[0], pts[1], mid.x, mid.y, pts[2], pts[3]];
+            })()
+          : pts;
+        const [shaft, ...heads] = generateLinearDrawables({
+          seed: el.id,
+          points: shapePts,
+          stroke: stroke === 'none' ? undefined : stroke,
+          strokeWidth: sw,
+          strokeStyle: el.strokeStyle,
+          roughness: el.roughness ?? 1,
+          arrowType: linear.elbowed ? 'elbow' : (linear.curved || bend) ? 'round' : 'sharp',
+          startArrowhead: el.type === 'arrow' ? (el.startArrowhead ?? 'none') : 'none',
+          endArrowhead: el.type === 'arrow' ? (el.endArrowhead ?? 'arrow') : 'none',
+        }).map((d) => roughSvg.draw(d).outerHTML);
+        if (shaft) {
+          const clipId = `gap-${el.id}`;
+          const clip = labelRect
+            ? `<clipPath id="${clipId}"><path clip-rule="evenodd" d="M-1e6 -1e6H1e6V1e6H-1e6Z M${labelRect.x} ${labelRect.y}h${labelRect.w}v${labelRect.h}h${-labelRect.w}Z"/></clipPath>`
+            : '';
+          parts.push(
+            `<g transform="translate(${el.x} ${el.y})" opacity="${opacity}">${clip}`
+            + `<g${labelRect ? ` clip-path="url(#${clipId})"` : ''}>${shaft}</g>${heads.join('')}</g>`,
+          );
+          continue;
+        }
+      }
       const clipSource =
         labelRect && !isMulti && bend !== 0
           ? (() => {
@@ -629,7 +636,7 @@ async function buildSvgExport(region?: { x: number; y: number; width: number; he
           : tangentAtStart(pts[0], pts[1], pts[2], pts[3], bend);
         parts.push(`<polygon points="${headPoly(pts[0], pts[1], { x: -t.x, y: -t.y })}" fill="${headFill}" opacity="${opacity}"/>`);
       }
-    } else if (el.type === 'blur' || el.type === 'pixelate' || el.type === 'spotlight') {
+    } else if (el.type === 'blur' || el.type === 'pixelate') {
       // The effect is baked into a PNG at commit time, so the bitmap is exactly
       // what the canvas shows. Without this branch these vanished from SVG.
       const shape = el as ShapeElement;
@@ -677,6 +684,10 @@ async function buildSvgExport(region?: { x: number; y: number; width: number; he
       parts.push(`<text x="${el.x}" y="${el.y + (el.fontSize || 24)}" font-size="${el.fontSize || 24}" font-family="${el.fontFamily || 'sans-serif'}" fill="${el.fill || stroke}" opacity="${opacity}">${escapeXml(el.text || '')}</text>`);
     } else if (el.type === 'step') {
       const r = el.radius || 16;
+      if (el.pointer) {
+        const fb = stepFingerBox(el.pointer, r);
+        parts.push(`<text x="${el.x + fb.x + fb.size / 2}" y="${el.y + fb.y + fb.size / 2}" font-size="${fb.size * 0.85}" text-anchor="middle" dominant-baseline="central" opacity="${opacity}">${el.pointer}</text>`);
+      }
       const roughStep = roughMarkup({
         kind: 'ellipse',
         seed: el.id,
@@ -692,6 +703,7 @@ async function buildSvgExport(region?: { x: number; y: number; width: number; he
       parts.push(`<text x="${el.x}" y="${el.y + r * 0.35}" text-anchor="middle" font-size="${el.fontSize || r * 0.8}" fill="#fff" font-weight="700" font-family="sans-serif">${el.stepNumber}</text>`);
     }
   }
+  if (dimSheet) parts.push(dimSheet);
   if (region) parts.push('</g>');
   parts.push('</svg>');
   return parts.join('\n');
@@ -731,369 +743,4 @@ async function copySvgToClipboard() {
   }
 }
 
-async function shareImage(
-  format: ExportFormat,
-  quality: number,
-  scale = 1,
-  region?: { x: number; y: number; width: number; height: number },
-) {
-  const blob = await exportImage(format, quality, scale, region);
-  if (!blob) throw new Error('Could not prepare image');
-  const ext = formats.find((f) => f.id === format)?.ext || '.png';
-  const mime = formats.find((f) => f.id === format)?.mime || 'image/png';
-  const file = new File([blob], `snapty-export${ext}`, { type: mime });
-  if (typeof navigator.share !== 'function') {
-    await copyToClipboard(scale, region);
-    return 'copied' as const;
-  }
-  try {
-    await navigator.share({ title: 'Snapty screenshot', files: [file] });
-    return 'shared' as const;
-  } catch (error) {
-    // User cancellation is not an error; other share failures get a useful fallback.
-    if ((error as DOMException)?.name === 'AbortError') return 'cancelled' as const;
-    await copyToClipboard(scale, region);
-    return 'copied' as const;
-  }
-}
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '-';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 2 : 1)} MB`;
-}
-
-const ExportDialog: React.FC = () => {
-  const showExportDialog = useEditorStore((s) => s.showExportDialog);
-  const setShowExportDialog = useEditorStore((s) => s.setShowExportDialog);
-  const exportFormat = useEditorStore((s) => s.exportFormat);
-  const setExportFormat = useEditorStore((s) => s.setExportFormat);
-  const exportQuality = useEditorStore((s) => s.exportQuality);
-  const setExportQuality = useEditorStore((s) => s.setExportQuality);
-  const exportScale = useEditorStore((s) => s.exportScale);
-  const setExportScale = useEditorStore((s) => s.setExportScale);
-  const exportSelectionOnly = useEditorStore((s) => s.exportSelectionOnly);
-  const setExportSelectionOnly = useEditorStore((s) => s.setExportSelectionOnly);
-  const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
-  const imageSize = useEditorStore((s) => s.imageSize);
-  const canvasStyle = useEditorStore((s) => s.canvasStyle);
-  const setCanvasStyle = useEditorStore((s) => s.setCanvasStyle);
-  const elements = useEditorStore((s) => s.elements);
-  const [exporting, setExporting] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [copied, setCopied] = useState(false);
-  const [estimating, setEstimating] = useState(false);
-  const [estimatedBytes, setEstimatedBytes] = useState<number | null>(null);
-
-  const hasPadding = canvasStyle.padding > 0;
-  // Selection-only export crops the canvas to the selected elements' bounds;
-  // SVG is vector so the raster scale multiplier doesn't apply to it.
-  const region = exportSelectionOnly ? getSelectionRegion() : null;
-  const rasterScale = exportFormat === 'svg' ? 1 : exportScale;
-  const baseW = region?.width ?? imageSize.width;
-  const baseH = region?.height ?? imageSize.height;
-  const exportW = baseW + canvasStyle.padding * 2;
-  const exportH = baseH + canvasStyle.padding * 2;
-  const dimW = Math.round(exportW * rasterScale);
-  const dimH = Math.round(exportH * rasterScale);
-
-  // Debounced real size estimate when dialog is open (uses same pipeline as download)
-  useEffect(() => {
-    if (!showExportDialog || !imageSize.width) {
-      setEstimatedBytes(null);
-      return;
-    }
-    let cancelled = false;
-    setEstimating(true);
-    const timer = window.setTimeout(async () => {
-      try {
-        const q = exportFormat === 'png' ? 1 : exportQuality / 100;
-        const region = exportSelectionOnly ? getSelectionRegion() : null;
-        const blob = await exportImage(exportFormat, q, exportScale, region ?? undefined);
-        if (!cancelled && blob) setEstimatedBytes(blob.size);
-      } catch {
-        if (!cancelled) setEstimatedBytes(null);
-      } finally {
-        if (!cancelled) setEstimating(false);
-      }
-    }, 350);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [showExportDialog, exportFormat, exportQuality, exportScale, exportSelectionOnly, selectedElementIds, imageSize.width, imageSize.height, canvasStyle, elements]);
-
-  const handleDownload = async () => {
-    setExporting(true);
-    setProgress(30);
-    try {
-      const q = exportFormat === 'png' ? 1 : exportQuality / 100;
-      const region = exportSelectionOnly ? getSelectionRegion() : null;
-      setProgress(60);
-      const blob = await exportImage(exportFormat, q, exportScale, region ?? undefined);
-      if (!blob) {
-        toastError('Download failed', 'Couldn’t prepare the image');
-        return;
-      }
-      setEstimatedBytes(blob.size);
-      setProgress(90);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const ext = formats.find((f) => f.id === exportFormat)?.ext || '.png';
-      a.download = `snapty-export${ext}`;
-      a.click();
-      URL.revokeObjectURL(url);
-      setProgress(100);
-      toastSuccess(
-        'Downloaded',
-        `${exportFormat.toUpperCase()} · ${formatBytes(blob.size)}`,
-      );
-    } catch {
-      toastError('Download failed', 'Something went wrong - try again');
-    } finally {
-      setTimeout(() => { setExporting(false); setProgress(0); }, 300);
-    }
-  };
-
-  const handleCopy = async () => {
-    setExporting(true);
-    setCopied(false);
-    setProgress(30);
-    try {
-      const region = exportSelectionOnly ? getSelectionRegion() : null;
-      setProgress(60);
-      await copyToClipboard(exportScale, region ?? undefined);
-      setProgress(100);
-      setCopied(true);
-      toastSuccess('Copied', 'Image on clipboard - ready to paste');
-      setTimeout(() => setCopied(false), 2000);
-    } catch (error) {
-      console.error('Failed to copy image to clipboard:', error);
-      setCopied(false);
-      setProgress(0);
-      toastError('Couldn’t copy', 'Allow clipboard access and try again');
-    } finally {
-      setTimeout(() => { setExporting(false); setProgress(0); }, 300);
-    }
-  };
-
-  const handleShare = async () => {
-    setExporting(true);
-    try {
-      const region = exportSelectionOnly ? getSelectionRegion() : null;
-      const result = await shareImage(
-        exportFormat,
-        exportFormat === 'png' ? 1 : exportQuality / 100,
-        exportScale,
-        region ?? undefined,
-      );
-      if (result === 'shared') toastSuccess('Shared', 'Screenshot sent to the app you chose');
-      if (result === 'copied') toastSuccess('Copied', 'Sharing is unavailable, so the image is on your clipboard');
-    } catch {
-      toastError('Share failed', 'Couldn’t prepare the image');
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  return (
-    <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
-      <DialogContent
-        className={cn(
-          'bg-surface border-border text-foreground p-0 gap-0 overflow-hidden',
-          'max-w-md w-[min(26rem,calc(100vw-1.5rem))]',
-          'top-[max(10vh,1.5rem)] translate-y-0 max-h-[min(90dvh,36rem)] flex flex-col',
-        )}
-      >
-        <div className="shrink-0 px-5 pt-5 pb-3 border-b border-border">
-          <DialogHeader>
-            <DialogTitle className="text-lg tracking-tight">Export options</DialogTitle>
-          </DialogHeader>
-          <p className="text-xs text-muted-foreground mt-1">
-            Choose format, quality, and transparency before download
-          </p>
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-5">
-          <div className="rounded-2xl border border-border bg-secondary/25 px-3.5 py-3 space-y-1.5">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">Dimensions</span>
-              <span className="font-medium tabular-nums text-foreground">
-                {dimW} x {dimH}px
-                {hasPadding && (
-                  <span className="text-muted-foreground font-normal">
-                    {' '}(+pad {Math.round(exportW)} x {Math.round(exportH)})
-                  </span>
-                )}
-                {exportScale > 1 && exportFormat !== 'svg' && (
-                  <span className="text-muted-foreground font-normal">
-                    {' '}@{exportScale}x
-                  </span>
-                )}
-                {region && (
-                  <span className="text-muted-foreground font-normal">
-                    {' '}(selection)
-                  </span>
-                )}
-              </span>
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">Estimated size</span>
-              <span className="font-medium tabular-nums text-foreground inline-flex items-center gap-1.5">
-                {estimating && estimatedBytes == null
-                  ? 'Calculating...'
-                  : formatBytes(estimatedBytes ?? 0)}
-                {estimating && estimatedBytes != null && (
-                  <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-                )}
-              </span>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">Format</Label>
-            <div className="grid grid-cols-4 gap-1.5">
-              {formats.map((f) => (
-                <button
-                  key={f.id}
-                  type="button"
-                  className={cn(
-                    'px-2 py-3 rounded-xl text-sm font-semibold transition-all text-center cursor-pointer border',
-                    exportFormat === f.id
-                      ? 'bg-accent/15 text-accent border-accent/40'
-                      : 'bg-secondary/40 text-muted-foreground border-border hover:border-muted-foreground/40 hover:text-foreground',
-                  )}
-                  onClick={() => setExportFormat(f.id)}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-            {exportFormat === 'png' && (
-              <p className="text-[11px] text-muted-foreground">Lossless. Best for crisp UI shots.</p>
-            )}
-            {exportFormat === 'svg' && (
-              <p className="text-[11px] text-muted-foreground">Vector annotations with optional embedded image.</p>
-            )}
-            {(exportFormat === 'jpg' || exportFormat === 'webp') && (
-              <p className="text-[11px] text-muted-foreground">Smaller files. Adjust quality below.</p>
-            )}
-          </div>
-
-          {exportFormat !== 'png' && exportFormat !== 'svg' && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs text-muted-foreground">Quality</Label>
-                <span className="text-xs text-muted-foreground font-mono tabular-nums">{exportQuality}%</span>
-              </div>
-              <Slider
-                value={[exportQuality]}
-                onValueChange={([v]) => setExportQuality(v)}
-                min={10}
-                max={100}
-                step={5}
-              />
-            </div>
-          )}
-
-          {exportFormat !== 'svg' && (
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Resolution</Label>
-              <div className="grid grid-cols-3 gap-1.5">
-                {[1, 2, 3].map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    className={cn(
-                      'px-2 py-2.5 rounded-xl text-sm font-semibold transition-all text-center cursor-pointer border',
-                      exportScale === s
-                        ? 'bg-accent/15 text-accent border-accent/40'
-                        : 'bg-secondary/40 text-muted-foreground border-border hover:border-muted-foreground/40 hover:text-foreground',
-                    )}
-                    onClick={() => setExportScale(s)}
-                  >
-                    {s}x
-                  </button>
-                ))}
-              </div>
-              <p className="text-[11px] text-muted-foreground">
-                {exportScale === 1
-                  ? 'Original size. 2x / 3x re-raster at higher resolution - great for print or retina.'
-                  : `Re-rastered at ${exportScale}x the original resolution.`}
-              </p>
-            </div>
-          )}
-
-          {selectedElementIds.length > 0 && (
-            <label className="flex items-center justify-between gap-3 rounded-2xl border border-border px-3.5 py-3 cursor-pointer hover:bg-secondary/30 transition-colors">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">Export selection only</p>
-                <p className="text-[11px] text-muted-foreground">Crop to the {selectedElementIds.length} selected {selectedElementIds.length === 1 ? 'element' : 'elements'}</p>
-              </div>
-              <Switch
-                checked={exportSelectionOnly}
-                onCheckedChange={setExportSelectionOnly}
-              />
-            </label>
-          )}
-
-          <label className="flex items-center justify-between gap-3 rounded-2xl border border-border px-3.5 py-3 cursor-pointer hover:bg-secondary/30 transition-colors">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">Transparent background</p>
-              <p className="text-[11px] text-muted-foreground">Useful for overlays (PNG / SVG)</p>
-            </div>
-            <Switch
-              checked={!!canvasStyle.transparentExport}
-              onCheckedChange={(v) => setCanvasStyle({ transparentExport: v })}
-            />
-          </label>
-
-          {exporting && (
-            <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
-              <div className="h-full bg-accent transition-all duration-300" style={{ width: `${progress}%` }} />
-            </div>
-          )}
-        </div>
-
-        <div className="shrink-0 px-5 py-4 border-t border-border flex flex-col gap-2">
-          <Button
-            type="button"
-            className="w-full h-11 rounded-xl"
-            disabled={exporting || !imageSize.width}
-            onClick={() => void handleDownload()}
-          >
-            {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-            Download {exportFormat.toUpperCase()}
-          </Button>
-          <div className="grid grid-cols-2 gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              className="h-10 rounded-xl"
-              disabled={exporting || !imageSize.width}
-              onClick={() => void handleCopy()}
-            >
-              {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-              {copied ? 'Copied' : 'Copy'}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-10 rounded-xl"
-              disabled={exporting || !imageSize.width}
-              onClick={() => void handleShare()}
-            >
-              <Share2 className="w-4 h-4" />
-              Share
-            </Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-};
-
-export { exportImage, copyToClipboard, copySvgToClipboard, shareImage, exportCanvasBlob };
-export default ExportDialog;
+export { exportImage, copyToClipboard, copySvgToClipboard, getSelectionRegion };

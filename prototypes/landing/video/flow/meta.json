@@ -1,0 +1,83 @@
+{
+ "fps": 30,
+ "w": 1600,
+ "h": 1000,
+ "beats": [
+  {
+   "f": 0,
+   "label": "The tool stays selected",
+   "keys": [
+    "A"
+   ],
+   "cam": [
+    1217,
+    476,
+    1.5
+   ]
+  },
+  {
+   "f": 140,
+   "label": "Undo, redo",
+   "keys": [
+    "Ctrl",
+    "Z"
+   ],
+   "cam": [
+    1217,
+    476,
+    1.5
+   ]
+  },
+  {
+   "f": 180,
+   "label": "Dark mode",
+   "keys": [
+    "Alt",
+    "Shift",
+    "D"
+   ],
+   "cam": null
+  }
+ ],
+ "keys": [
+  {
+   "f": 140,
+   "keys": [
+    "Ctrl",
+    "Z"
+   ]
+  },
+  {
+   "f": 150,
+   "keys": [
+    "Ctrl",
+    "Z"
+   ]
+  },
+  {
+   "f": 160,
+   "keys": [
+    "Ctrl",
+    "Shift",
+    "Z"
+   ]
+  },
+  {
+   "f": 170,
+   "keys": [
+    "Ctrl",
+    "Shift",
+    "Z"
+   ]
+  },
+  {
+   "f": 180,
+   "keys": [
+    "Alt",
+    "Shift",
+    "D"
+   ]
+  }
+ ],
+ "frames": 237
+}

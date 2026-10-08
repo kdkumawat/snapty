@@ -18,6 +18,43 @@ export type MagnifierMetrics = {
   dist: number;
 };
 
+export const MIN_MAGNIFICATION = 1.2;
+export const MAX_MAGNIFICATION = 8;
+/** A new magnifier's bubble starts no larger than this on its long side. */
+const START_BUBBLE_RADIUS = 150;
+
+/** Zoom for a freshly drawn magnifier: the preferred zoom, eased down so a
+ *  big source does not start with a bubble that swallows the screenshot. */
+export function startMagnification(width: number, height: number, preferred: number): number {
+  const r = Math.max(4, Math.abs(width) / 2, Math.abs(height) / 2);
+  return Math.max(1.5, Math.min(preferred, START_BUBBLE_RADIUS / r));
+}
+
+/**
+ * Updates for resizing the SOURCE ring to a new box while leaving the bubble
+ * exactly as it is: same absolute centre, same size. The zoom changes
+ * instead (a smaller source shows more magnified), which is what two
+ * independent shapes joined by an arrow would do.
+ */
+export function resizeSourceKeepingBubble(
+  el: MagnifierElement,
+  box: { x: number; y: number; width: number; height: number },
+  imageSize?: ImageSize,
+): Pick<MagnifierElement, 'x' | 'y' | 'width' | 'height' | 'magnification' | 'previewOffset'> {
+  const m = magnifierMetrics(el);
+  const off = resolvePreviewOffset(el, imageSize);
+  const c = magnifierSourceCenter(el);
+  const bubbleX = c.cx + off.ox;
+  const bubbleY = c.cy + off.oy;
+  const bubbleR = Math.max(m.previewRx, m.previewRy);
+  const r = Math.max(4, box.width / 2, box.height / 2);
+  return {
+    ...box,
+    magnification: Math.max(MIN_MAGNIFICATION, Math.min(MAX_MAGNIFICATION, bubbleR / r)),
+    previewOffset: { x: bubbleX - (box.x + box.width / 2), y: bubbleY - (box.y + box.height / 2) },
+  };
+}
+
 /** Metrics shared by rendering, selection bounds and export bounds. */
 export function magnifierMetrics(
   el: Pick<MagnifierElement, 'width' | 'height' | 'magnification'>,
@@ -26,10 +63,12 @@ export function magnifierMetrics(
   const h = Math.abs(el.height);
   const rx = Math.max(4, w / 2);
   const ry = Math.max(4, h / 2);
-  const mag = Math.max(1.5, Math.min(4, el.magnification ?? 2.25));
+  // The bubble is sized by dragging its handles, so the zoom range is wide.
+  const mag = Math.max(MIN_MAGNIFICATION, Math.min(MAX_MAGNIFICATION, el.magnification ?? 2.25));
   const previewRx = rx * mag;
   const previewRy = ry * mag;
-  const gap = Math.max(20, (rx + ry) * 0.2);
+  // Room for a visible arrow (and a short label) between ring and bubble.
+  const gap = Math.max(56, (rx + ry) * 0.3);
   const dist = gap + Math.max(previewRx, previewRy) + Math.max(rx, ry);
   return { w, h, rx, ry, mag, previewRx, previewRy, gap, dist };
 }
@@ -89,6 +128,8 @@ const CANDIDATE_ANGLES = [
   (5 * Math.PI) / 4, // down-left
   -Math.PI / 2, // up
   0, // right
+  Math.PI / 2, // down
+  Math.PI, // left
 ];
 
 function previewFits(
@@ -112,7 +153,7 @@ function previewFits(
 
 /**
  * Deterministic default bubble direction that best fits within the image.
- * Falls back to the direction pointing away from the image center.
+ * Falls back to the direction pointing toward the image center.
  */
 export function defaultPreviewAngle(
   el: Pick<MagnifierElement, 'x' | 'y' | 'width' | 'height' | 'magnification'>,
@@ -127,7 +168,10 @@ export function defaultPreviewAngle(
   const { cx, cy } = magnifierSourceCenter(el);
   const centerX = (imageSize?.width ?? cx * 2) / 2;
   const centerY = (imageSize?.height ?? cy * 2) / 2;
-  return Math.atan2(cy - centerY, cx - centerX);
+  // Nothing fits whole: head for the middle of the image, where the most
+  // room is, so the bubble stays on the screenshot instead of hanging off it.
+  if (Math.hypot(centerX - cx, centerY - cy) < 1) return -Math.PI / 4;
+  return Math.atan2(centerY - cy, centerX - cx);
 }
 
 /** Bubble direction actually used: the persisted angle, or a deterministic default. */
@@ -137,6 +181,44 @@ export function resolvePreviewAngle(
 ): number {
   if (typeof el.previewAngle === 'number') return el.previewAngle;
   return defaultPreviewAngle(el, imageSize);
+}
+
+/**
+ * The source ring and the bubble move independently, like two shapes joined
+ * by a bound arrow. `previewOffset` is stored relative to the source, so when
+ * a commit moves the source on its own the offset is rewritten to leave the
+ * bubble where it was. A magnifier moved together with other elements stays
+ * rigid.
+ */
+export function pinMagnifierBubbles<T extends { id: string; type: string; x: number; y: number }>(
+  prev: T[], next: T[], imageSize?: ImageSize,
+): T[] {
+  if (prev === next) return next;
+  const before = new Map(prev.map((el) => [el.id, el]));
+  const moved = (a: T, b: T) => a.x !== b.x || a.y !== b.y;
+  let out: T[] | null = null;
+  next.forEach((el, i) => {
+    if (el.type !== 'magnifier') return;
+    const old = before.get(el.id);
+    if (!old || old === el || !moved(old, el)) return;
+    const o = old as unknown as MagnifierElement;
+    const c = el as unknown as MagnifierElement;
+    // A resize also shifts x/y; only a pure move pins. An explicit bubble
+    // drag (a new previewOffset object) is left exactly as given.
+    if (o.width !== c.width || o.height !== c.height || o.previewOffset !== c.previewOffset) return;
+    const group = (el as { groupId?: string }).groupId;
+    const others = next.some((x) => {
+      // Its own label travels with it and does not make this a group move.
+      if (x.id === el.id || (group && (x as { groupId?: string }).groupId === group)) return false;
+      const p = before.get(x.id);
+      return !!p && p !== x && moved(p, x);
+    });
+    if (others) return;
+    const off = resolvePreviewOffset(o, imageSize);
+    out = out ?? next.slice();
+    out[i] = { ...el, previewOffset: { x: off.ox - (el.x - old.x), y: off.oy - (el.y - old.y) } } as T;
+  });
+  return out ?? next;
 }
 
 /** Absolute center of the preview bubble. */

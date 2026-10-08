@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ScanText, Copy, Check, X, Loader2 } from 'lucide-react';
+import { ScanText, Copy, Check, X, Loader2 } from '@/components/editor/ui/icons';
 import { cn } from '@/lib/utils';
 
 type OcrPanelProps = {

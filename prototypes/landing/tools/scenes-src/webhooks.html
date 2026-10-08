@@ -1,0 +1,51 @@
+<!doctype html><meta charset=utf-8>
+<!-- Hero scene: a fake "Relay" webhook page laid out as four equal cells (680x425, the film's 16:10),
+     so the camera can frame one cell with its edges falling on whitespace, never through text.
+     Cells: x 40|720|1400, y 50|475|900. Each card is inset 16px in its cell and leaves room for the annotation. -->
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,"Segoe UI",system-ui,sans-serif;color:#0f172a;background:#f5f6f8;width:1440px;height:900px;overflow:hidden;font-size:15px;-webkit-font-smoothing:antialiased;position:relative}
+.bar{position:absolute;inset:0 0 auto 0;height:50px;background:#fff;border-bottom:1px solid #e6e8ec;display:flex;align-items:center;justify-content:space-between;padding:0 56px}
+.logo{display:flex;gap:10px;align-items:center;font-weight:700;font-size:17px}
+.logo i{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#6366f1,#4338ca);display:block}
+.crumb{color:#64748b;font-size:14px}.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#fdba74,#ea580c)}
+.card{position:absolute;width:648px;height:393px;background:#fff;border:1px solid #e6e8ec;border-radius:14px;padding:22px 26px}
+.card h3{font-size:17px;margin-bottom:16px}
+#a{left:56px;top:66px}#b{left:736px;top:66px}#c{left:56px;top:491px}#d{left:736px;top:491px}
+.f{display:flex;align-items:center;height:48px;border-top:1px solid #eef0f3}.f:first-of-type{border-top:0}
+.f label{width:150px;color:#64748b}.f code,.mono{font-family:"Cascadia Code",Consolas,monospace;font-size:14.5px}
+.pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:13.5px;font-weight:600;background:#eef2ff;color:#4338ca;margin-right:6px}
+.note{margin-top:26px;color:#475569}
+.s{display:flex;align-items:center;height:64px;padding-left:64px;border-top:1px solid #eef0f3;font-weight:600;font-size:16px}.s:first-of-type{border-top:0}
+.s span{color:#64748b;font-weight:400;margin-left:8px}
+table{width:100%;border-collapse:collapse}th{text-align:left;font-size:13.5px;color:#64748b;font-weight:600;height:34px;border-bottom:1px solid #e6e8ec}
+td{height:44px;border-bottom:1px solid #eef0f3}
+.ok,.bad{display:inline-block;padding:3px 11px;border-radius:20px;font-size:13.5px;font-weight:700}.ok{background:#e7f6ee;color:#0b7a55}.bad{background:#fde8e8;color:#b91c1c}
+.btn{display:inline-block;border:1px solid #cbd5e1;border-radius:8px;padding:6px 16px;font-weight:600;font-size:14px;background:#fff}
+pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:18px 22px;font:14.5px/2.1 "Cascadia Code",Consolas,monospace;height:196px}
+pre b{color:#fca5a5;font-weight:400}pre i{color:#94a3b8;font-style:normal}
+</style>
+<div class=bar><div class=logo><i></i>Relay</div><div class=crumb>northwind &nbsp;/&nbsp; deploy-hooks &nbsp;/&nbsp; Webhooks</div><div class=av></div></div>
+<div class=card id=a><h3>Endpoint</h3>
+ <div class=f><label>URL</label><code>https://api.northwind.dev/hooks/deploy</code></div>
+ <div class=f><label>Signing secret</label><code id=secret>whsec_9Zk2xQp7VbN4mT8wLr3Yd6HcA1sE</code></div>
+ <div class=f><label>Events</label><span class=pill>deploy.succeeded</span><span class=pill>deploy.failed</span></div>
+ <p class=note>Failed deliveries are <span id=hl>retried 5 times over 24 hours</span>, then the endpoint is paused.</p>
+</div>
+<div class=card id=b><h3>Set it up</h3>
+ <div class=s id=s1>Paste the endpoint URL into your server</div>
+ <div class=s id=s2>Copy the signing secret <span>and verify each request</span></div>
+ <div class=s id=s3>Send a test event</div>
+</div>
+<div class=card id=c><h3>Recent deliveries</h3>
+ <table><tr><th>Event</th><th>Status</th><th>Sent</th><th>Duration</th><th></th></tr>
+ <tr><td class=mono>deploy.succeeded</td><td><span class=ok>200</span></td><td>13:17</td><td>204 ms</td><td></td></tr>
+ <tr><td class=mono>deploy.failed</td><td><span class=ok>200</span></td><td>13:58</td><td>167 ms</td><td></td></tr>
+ <tr><td class=mono>deploy.succeeded</td><td><span class=bad id=bad>500</span></td><td>14:02</td><td>10.0 s</td><td style="text-align:right"><span class=btn id=retry>Retry</span></td></tr></table>
+</div>
+<div class=card id=d><h3>Last response</h3>
+<pre id=pre><b>HTTP/1.1 500 Internal Server Error</b>
+<i>x-request-id:</i> req_7f3a91c2
+<i>content-type:</i> application/json
+{ "error": "upstream timeout after 10000 ms" }</pre>
+</div>

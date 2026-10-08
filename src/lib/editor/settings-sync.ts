@@ -33,6 +33,8 @@ export type ToolSettingsState = {
   blurRadius: number;
   pixelSize: number;
   highlighterWidth: number;
+  highlighterColor: string;
+  spotlightDim: number;
   stepRadius: number;
   strokeStyle: StrokeStyle;
   fillStyle: FillStyle;
@@ -40,7 +42,7 @@ export type ToolSettingsState = {
   magnification: number;
   startArrowhead: Arrowhead;
   endArrowhead: Arrowhead;
-  arrowPath: 'straight' | 'elbow';
+  arrowPath: 'straight' | 'curved' | 'elbow';
   pointerLength: number;
   pointerWidth: number;
   pointerDirection: import('@/types/editor').CalloutPointerDirection;
@@ -77,6 +79,12 @@ export function applySettingToElement(
     }
     case 'fillColor':
       return { fill: String(value) };
+    case 'highlighterColor':
+      return { stroke: String(value) };
+    case 'spotlightDim': {
+      const v = num(value);
+      return v === null ? null : { dim: Math.max(0.1, Math.min(0.9, v)) };
+    }
     case 'strokeWidth': {
       const v = num(value);
       return v === null ? null : { strokeWidth: Math.max(0.5, v * s) };
@@ -137,7 +145,10 @@ export function applySettingToElement(
       return value && typeof value === 'object' ? { ...(value as object) } : null;
     case 'arrowPath': {
       const path = String(value);
-      if (el.type !== 'arrow' || path === 'straight') return { elbowed: false, bend: 0 };
+      if (el.type !== 'arrow' || path === 'straight') return { elbowed: false, curved: false, bend: 0 };
+      // Curved keeps the points and draws a curve through them (Excalidraw's
+      // roundness); a legacy `bend` already renders that way.
+      if (path === 'curved') return { elbowed: false, curved: true };
       const a = el as import('@/types/editor').ArrowElement;
       // Switching an existing arrow to elbow routes its interior immediately:
       // the endpoints stay put, the interior becomes the orthogonal corner(s).
@@ -152,12 +163,14 @@ export function applySettingToElement(
       );
       return {
         elbowed: true,
+        curved: false,
         bend: 0,
         points: routed as [number, number, number, number],
       };
     }
     case 'stepNumbering':
-      // Numbering is store-only; existing badges keep the number they were given.
+    case 'stepStyle':
+      // Numbering and style are store-only; existing badges keep the number they were given.
       return null;
     case 'pointerLength': {
       const v = num(value);
@@ -197,6 +210,11 @@ export function hydrateSettingsFromElement(
     if (typeof color === 'string' && color && color !== 'transparent') out.strokeColor = color;
   }
   if (has('fillColor') && typeof e.fill === 'string') out.fillColor = e.fill;
+  if (has('highlighterColor') && typeof e.stroke === 'string') out.highlighterColor = e.stroke;
+  if (has('spotlightDim')) {
+    const v = num(e.dim);
+    if (v !== null) out.spotlightDim = v;
+  }
 
   if (has('strokeWidth')) {
     const v = num(e.strokeWidth);
@@ -261,7 +279,7 @@ export function hydrateSettingsFromElement(
     if (e.endArrowhead) out.endArrowhead = e.endArrowhead as Arrowhead;
   }
   if (has('arrowPath')) {
-    out.arrowPath = e.elbowed ? 'elbow' : 'straight';
+    out.arrowPath = e.elbowed ? 'elbow' : (e.curved || e.bend) ? 'curved' : 'straight';
   }
   if (has('pointerLength')) {
     const v = num(e.pointerLength);

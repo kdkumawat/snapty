@@ -3,19 +3,21 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import {
-  MousePointer2, Hand, MoveUpRight, Square, Circle,
-  Diamond, Minus, Pencil, Highlighter, Type, Droplets, Grid3x3, ListOrdered,
-  Crop, Search, Eraser, ScanSearch, ScanText, MessageCircle,
-} from 'lucide-react';
+  Highlighter, Droplets, ListOrdered, Crop, ScanSearch, ScanText, MessageCircle, Spotlight,
+} from '@/components/editor/ui/icons';
+import {
+  SelectionIcon, RectangleIcon, EllipseIcon, ArrowIcon, LineIcon,
+  FreedrawIcon, TextIcon, ImageIcon, EraserIcon, handIcon, drawShapeToolIcon,
+} from '@/components/editor/ui/excalidraw-icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { FloatingSurface } from '@/components/editor/ui/floating-surface';
 import { Kbd } from '@/components/editor/ui/kbd';
 import { useEditorStore } from '@/store/editor-store';
+import { useFormFactor } from '@/hooks/use-form-factor';
 import type { ToolType } from '@/types/editor';
 import { cn } from '@/lib/utils';
-import { modKey } from '@/hooks/use-keyboard-shortcuts';
 import { TOOL_SHORTCUTS, formatToolKeys } from '@/lib/tool-shortcuts';
-import { cycleToolSetting } from '@/lib/editor/tool-setting-cycle';
+import { openOverlayImagePicker } from '@/lib/image-load';
 
 type ToolDef = {
   id: ToolType;
@@ -25,97 +27,170 @@ type ToolDef = {
 
 const shortcutById = Object.fromEntries(TOOL_SHORTCUTS.map((t) => [t.id, t]));
 
+const ICON = 'w-4 h-4';
+// Excalidraw fills these tools' icons while they are the active tool.
+const FILLABLE = new Set(['select', 'rectangle', 'circle']);
+/** Sizes an Excalidraw icon element to the toolbar's 20px glyph box. */
+const Ex = ({ children }: { children: React.ReactNode }) => (
+  <span className="inline-flex w-4 h-4 [&>svg]:w-full [&>svg]:h-full">{children}</span>
+);
+// Snapty-only tools have no Excalidraw glyph; lucide at Excalidraw's stroke
+// weight keeps them in the same family.
+const LUCIDE = { className: ICON, strokeWidth: 1.5 };
+
+// The main bar: the annotation tools used most on screenshots.
 const tools: ToolDef[] = [
-  { id: 'select', label: 'Selection', icon: <MousePointer2 className="w-[18px] h-[18px]" /> },
-  { id: 'arrow', label: 'Arrow', icon: <MoveUpRight className="w-[18px] h-[18px]" /> },
-  { id: 'rectangle', label: 'Rectangle', icon: <Square className="w-[18px] h-[18px]" /> },
-  { id: 'text', label: 'Text', icon: <Type className="w-[18px] h-[18px]" /> },
-  { id: 'step', label: 'Number', icon: <ListOrdered className="w-[18px] h-[18px]" /> },
-  { id: 'blur', label: 'Blur', icon: <Droplets className="w-[18px] h-[18px]" /> },
-  { id: 'pencil', label: 'Draw', icon: <Pencil className="w-[18px] h-[18px]" /> },
-  { id: 'circle', label: 'Ellipse', icon: <Circle className="w-[18px] h-[18px]" /> },
-  { id: 'line', label: 'Line', icon: <Minus className="w-[18px] h-[18px]" /> },
-  { id: 'magnifier', label: 'Magnifier', icon: <ScanSearch className="w-[18px] h-[18px]" /> },
-  { id: 'highlighter', label: 'Highlighter', icon: <Highlighter className="w-[18px] h-[18px]" /> },
-  { id: 'pixelate', label: 'Pixelate', icon: <Grid3x3 className="w-[18px] h-[18px]" /> },
-  { id: 'diamond', label: 'Diamond', icon: <Diamond className="w-[18px] h-[18px]" /> },
-  { id: 'callout', label: 'Callout', icon: <MessageCircle className="w-[18px] h-[18px]" /> },
-  { id: 'crop', label: 'Crop', icon: <Crop className="w-[18px] h-[18px]" /> },
-  { id: 'eraser', label: 'Eraser', icon: <Eraser className="w-[18px] h-[18px]" /> },
-  { id: 'hand', label: 'Hand', icon: <Hand className="w-[18px] h-[18px]" /> },
+  { id: 'select', label: 'Selection', icon: <Ex>{SelectionIcon}</Ex> },
+  { id: 'arrow', label: 'Arrow', icon: <Ex>{ArrowIcon}</Ex> },
+  { id: 'rectangle', label: 'Rectangle', icon: <Ex>{RectangleIcon}</Ex> },
+  { id: 'text', label: 'Text', icon: <Ex>{TextIcon}</Ex> },
+  { id: 'step', label: 'Number', icon: <ListOrdered {...LUCIDE} /> },
+  { id: 'blur', label: 'Blur', icon: <Droplets {...LUCIDE} /> },
+  { id: 'highlighter', label: 'Highlighter', icon: <Highlighter {...LUCIDE} /> },
+  { id: 'callout', label: 'Callout', icon: <MessageCircle {...LUCIDE} /> },
+  { id: 'crop', label: 'Crop', icon: <Crop {...LUCIDE} /> },
 ];
 
+// The More menu: the rest of the tools.
+const extraTools: ToolDef[] = [
+  { id: 'line', label: 'Line', icon: <Ex>{LineIcon}</Ex> },
+  { id: 'circle', label: 'Ellipse', icon: <Ex>{EllipseIcon}</Ex> },
+  { id: 'pencil', label: 'Draw', icon: <Ex>{FreedrawIcon}</Ex> },
+  { id: 'eraser', label: 'Eraser', icon: <Ex>{EraserIcon}</Ex> },
+  { id: 'magnifier', label: 'Magnifier', icon: <ScanSearch {...LUCIDE} /> },
+  { id: 'spotlight', label: 'Spotlight', icon: <Spotlight {...LUCIDE} /> },
+  { id: 'hand', label: 'Hand', icon: <Ex>{handIcon}</Ex> },
+];
+
+/** Every tool with its icon, in toolbar order then More menu order (used by the shortcuts dialog). */
+export const ALL_TOOLS = [...tools, ...extraTools];
+
+/** Pixelate is a mode of Blur (toggled in the panel), so Blur lights for both. */
+const isToolActive = (id: ToolType, active: ToolType) =>
+  id === active || (id === 'blur' && active === 'pixelate');
+
+function ExtraToolsMenu({ hasImage, items, dropUp, onInsertImage }: { hasImage: boolean; items: ToolDef[]; dropUp: boolean; onInsertImage: () => void }) {
+  const activeTool = useEditorStore((s) => s.activeTool);
+  const setActiveTool = useEditorStore((s) => s.setActiveTool);
+  const imageLocked = useEditorStore((s) => s.imageLocked);
+  const [open, setOpen] = React.useState(false);
+  const ref = React.useRef<HTMLDivElement>(null);
+  const activeExtra = items.find((t) => isToolActive(t.id, activeTool));
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const item = 'flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-secondary';
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className={cn('toolbar-btn', (open || activeExtra) && 'toolbar-btn-active')}
+            aria-label="More tools"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            disabled={!hasImage}
+            onClick={() => setOpen((v) => !v)}
+          >
+            {/* Like Excalidraw, the trigger shows the active extra tool. */}
+            {activeExtra ? activeExtra.icon : <Ex>{drawShapeToolIcon}</Ex>}
+          </button>
+        </TooltipTrigger>
+        {!open && <TooltipContent side="bottom">More tools</TooltipContent>}
+      </Tooltip>
+      {open && (
+        <div
+          role="menu"
+          className={cn(
+            'absolute right-0 z-[90] w-44 max-h-[60dvh] overflow-y-auto rounded-xl border border-border bg-surface p-1 shadow-[var(--floating-shadow)]',
+            dropUp ? 'bottom-[calc(100%+0.5rem)]' : 'top-[calc(100%+0.5rem)]',
+          )}
+        >
+          {items.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={isToolActive(t.id, activeTool)}
+              className={cn(item, isToolActive(t.id, activeTool) && 'bg-accent/15')}
+              onClick={() => { setActiveTool(t.id); setOpen(false); }}
+            >
+              {t.icon}
+              <span className="flex-1 text-left">{t.label}</span>
+              <Kbd>{shortcutById[t.id]?.letter}</Kbd>
+            </button>
+          ))}
+          <div className="my-1 h-px bg-border" aria-hidden />
+          <button type="button" role="menuitem" className={item} disabled={!hasImage || imageLocked} onClick={() => { onInsertImage(); setOpen(false); }}>
+            <Ex>{ImageIcon}</Ex>
+            <span className="flex-1 text-left">Insert image</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={item}
+            onClick={() => { window.dispatchEvent(new CustomEvent('snapty-ocr')); setOpen(false); }}
+          >
+            <ScanText {...LUCIDE} />
+            <span className="flex-1 text-left">Extract text</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function FloatingToolbar({
-  onOpenPalette,
   embedded = false,
 }: {
-  onOpenSettings?: () => void;
-  onOpenPalette?: () => void;
   embedded?: boolean;
 }) {
   const activeTool = useEditorStore((s) => s.activeTool);
   const setActiveTool = useEditorStore((s) => s.setActiveTool);
-  const stickyTool = useEditorStore((s) => s.stickyTool);
-  const setStickyTool = useEditorStore((s) => s.setStickyTool);
   const hasImage = useEditorStore((s) => s.backgroundImage !== null);
-  const lastClickRef = React.useRef<{ id: string; t: number }>({ id: '', t: 0 });
-
-  const handleToolClick = (id: ToolType) => {
-    const now = Date.now();
-    const last = lastClickRef.current;
-    const isDouble = last.id === id && now - last.t < 350;
-    lastClickRef.current = { id, t: now };
-    if (isDouble) {
-      setStickyTool(true);
-      setActiveTool(id);
-      return;
-    }
-    if (activeTool === id) {
-      cycleToolSetting(id);
-      return;
-    }
-    setActiveTool(id);
-  };
+  const formFactor = useFormFactor();
+  const phone = formFactor === 'phone';
 
   const renderTool = (tool: ToolDef) => {
     const drawingDisabled = !hasImage && !['select', 'hand'].includes(tool.id);
-    const active = activeTool === tool.id;
-    const keys = shortcutById[tool.id] ? formatToolKeys(shortcutById[tool.id]) : undefined;
-    const badge = shortcutById[tool.id]?.letter;
+    const active = isToolActive(tool.id, activeTool);
+    const def = shortcutById[tool.id];
 
     return (
       <Tooltip key={tool.id}>
         <TooltipTrigger asChild>
           <button
             type="button"
-            className={cn(
-              'toolbar-btn shrink-0',
-              active && 'toolbar-btn-active',
-              drawingDisabled && 'opacity-30 pointer-events-none',
-            )}
+            className={cn('toolbar-btn shrink-0', active && 'toolbar-btn-active', FILLABLE.has(tool.id) && 'toolbar-btn-fillable')}
             aria-label={tool.label}
             aria-pressed={active}
-            onClick={() => handleToolClick(tool.id)}
+            disabled={drawingDisabled}
+            onClick={() => setActiveTool(tool.id)}
           >
-            {/* Active highlight fills the inner icon chip, not the whole
-                button: the box stays quiet so the toolbar reads as a row of
-                tools with the current one emphasized, not a filled pill. */}
-            <span className={cn('toolbar-btn-icon', active && 'toolbar-btn-icon-active')}>
-              {tool.icon}
-            </span>
-            {badge && <span className="toolbar-btn-shortcut">{badge}</span>}
-            <span
-              className="toolbar-btn-sticky-dot"
-              style={{ opacity: stickyTool && active ? 1 : 0 }}
-              aria-hidden
-            />
+            {tool.icon}
           </button>
         </TooltipTrigger>
         <TooltipContent side="bottom" className="flex items-center gap-2">
           <span>{tool.label}</span>
-          {keys && (
+          {def && (
             <span className="flex gap-1">
-              {keys.split(' / ').map((k) => (
+              {formatToolKeys(def).split(' / ').map((k) => (
                 <Kbd key={k}>{k}</Kbd>
               ))}
             </span>
@@ -124,6 +199,8 @@ export default function FloatingToolbar({
       </Tooltip>
     );
   };
+
+  const divider = <div className="mx-1 h-6 w-px shrink-0 bg-border" aria-hidden />;
 
   return (
     <motion.div
@@ -136,84 +213,80 @@ export default function FloatingToolbar({
       )}
     >
       <FloatingSurface
-        pill
         data-snapty-toolbar
-        className="px-1 flex items-center gap-0.5 w-full max-w-full"
+        className="rounded-xl p-1 flex items-center gap-1 w-full max-w-full"
       >
-        {tools.map(renderTool)}
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              className="toolbar-btn shrink-0"
-              disabled={!hasImage}
-              aria-label="Extract text"
-              onClick={() => window.dispatchEvent(new CustomEvent('snapty-ocr'))}
-            >
-              <ScanText className="w-[18px] h-[18px]" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Extract text (OCR)</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              className="toolbar-btn shrink-0"
-              aria-label="Command palette"
-              onClick={() => onOpenPalette?.()}
-            >
-              <Search className="w-[18px] h-[18px]" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="flex items-center gap-2">
-            <span>Command palette</span>
-            <Kbd>{`${modKey}+K`}</Kbd>
-          </TooltipContent>
-        </Tooltip>
+        {phone ? (
+          // Phones: the same tight row as the top bar, scrolling sideways when
+          // it runs out of room. The "more tools" button stays outside the
+          // scroller so its menu is not clipped.
+          <div className="toolbar-scroll flex items-center gap-1 min-w-0 flex-1 overflow-x-auto">
+            {tools.map(renderTool)}
+          </div>
+        ) : tools.map(renderTool)}
+        {!phone && divider}
+        <ExtraToolsMenu
+          hasImage={hasImage}
+          items={extraTools}
+          dropUp={phone}
+          onInsertImage={() => openOverlayImagePicker()}
+        />
       </FloatingSurface>
     </motion.div>
   );
 }
 
+// Excalidraw's hint lines (locales/en.json "hints"), used wherever Snapty has
+// the same behaviour; shape tools show none, as in Excalidraw.
 const TOOL_TIPS: Record<string, React.ReactNode> = {
-  select: <>Click to select. <Kbd>Shift</Kbd> multi-select. Drag empty space for marquee.</>,
-  hand: <>Drag to pan. Hold <Kbd>Space</Kbd> anytime.</>,
-  magnifier: <>Drag an ellipse on a detail. <Kbd>Shift</Kbd> for a circle. Drag the bubble anywhere; drag its leader handle to curve the connector.</>,
-  arrow: <>Drag to draw. Drag the middle dot to bend; drag a dashed dot to add a point. <Kbd>A</Kbd> cycles stroke style.</>,
-  line: <>Drag to draw. Drag the middle dot to bend; drag a dashed dot to add a point. <Kbd>L</Kbd> cycles stroke style.</>,
-  rectangle: <>Drag to draw. <Kbd>R</Kbd> again cycles fill style.</>,
-  circle: <>Drag to draw. <Kbd>O</Kbd> again cycles fill style.</>,
-  diamond: <>Drag to draw. <Kbd>D</Kbd> again cycles fill style.</>,
-  text: <>Click to place text. Double-click the canvas or any annotation to add text anywhere. Double-click text to edit. <Kbd>Enter</Kbd> on a selection edits it too.</>,
-  pencil: <>Draw freely. <Kbd>P</Kbd> again cycles stroke width.</>,
-  highlighter: <>Semi-transparent highlight. <Kbd>K</Kbd> again cycles thickness.</>,
-  blur: <>Drag a region to blur. <Kbd>B</Kbd> again cycles intensity.</>,
-  pixelate: <>Drag a region to pixelate. <Kbd>X</Kbd> again cycles size.</>,
-  crop: <>Drag a crop region, then confirm.</>,
-  step: <>Click to place numbered badges. <Kbd>N</Kbd> again bumps the start number.</>,
-  eraser: <>Drag over annotations to erase.</>,
-  callout: <>Drag to draw a callout bubble. Use the pointer handle to aim the tail in any direction. <Kbd>C</Kbd> again cycles fill style.</>,
+  select: <>To move canvas, hold <Kbd>Scroll wheel</Kbd> or <Kbd>Space</Kbd> while dragging, or use the hand tool</>,
+  hand: null,
+  rectangle: null,
+  circle: null,
+  arrow: <>Drag for single line. Press <Kbd>A</Kbd> again to change arrow type.</>,
+  line: <>Drag for single line</>,
+  text: <><Kbd>Enter</Kbd> to finish, <Kbd>Ctrl</Kbd>+<Kbd>Enter</Kbd> or <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> for a new line. You can also add text by double-clicking with the selection tool</>,
+  pencil: <>Click and drag, release when you&apos;re finished</>,
+  highlighter: <>Click and drag, release when you&apos;re finished</>,
+  eraser: <>Hold <Kbd>Alt</Kbd> to revert the elements marked for deletion</>,
+  blur: <>Drag a region to blur</>,
+  pixelate: <>Drag a region to pixelate</>,
+  crop: <>Drag a region to crop the image</>,
+  step: <>Click to place a number, letter or stamp</>,
+  magnifier: <>Drag over a detail to magnify it</>,
+  spotlight: <>Drag a region to keep lit; everything else is dimmed</>,
+  callout: <>Press on what to point at, drag to place the bubble</>,
 };
 
 export function ToolbarTips() {
   const activeTool = useEditorStore((s) => s.activeTool);
-  const stickyTool = useEditorStore((s) => s.stickyTool);
   const hasImage = useEditorStore((s) => s.backgroundImage !== null);
   const modalOpen = useEditorStore((s) =>
     s.showHelpDialog || s.showExportDialog || s.showCommandPalette,
   );
 
-  const tipKey = `${activeTool}-${stickyTool ? 'sticky' : 'normal'}-${hasImage ? 'img' : 'noimg'}`;
+  const phone = useFormFactor() === 'phone';
+  // What is selected changes the hint, as in Excalidraw.
+  const selKind = useEditorStore((s) => {
+    if (s.activeTool !== 'select' || s.selectedElementIds.length !== 1) return s.selectedElementIds.length > 1 ? 'multi' : 'none';
+    const el = s.elements.find((x) => x.id === s.selectedElementIds[0]);
+    if (!el) return 'none';
+    if (el.type === 'text') return 'text';
+    const labelled = s.elements.some((t) => t.type === 'text' && t.id !== el.id && !!el.groupId && t.groupId === el.groupId);
+    return ['rectangle', 'circle', 'arrow', 'line', 'magnifier', 'callout'].includes(el.type) && !labelled ? 'bindable' : 'other';
+  });
+  const tipKey = `${activeTool}-${selKind}-${hasImage ? 'img' : 'noimg'}`;
   const tip = React.useMemo<React.ReactNode>(() => {
     if (!hasImage) return 'Open, paste, or drop an image to start annotating';
-    if (stickyTool) return <>Sticky mode: keep drawing. <Kbd>Esc</Kbd> returns to Selection.</>;
-    return TOOL_TIPS[activeTool] || <>Press <Kbd>?</Kbd> for shortcuts. <Kbd>{`${modKey}+K`}</Kbd> commands.</>;
-  }, [activeTool, stickyTool, hasImage]);
+    if (activeTool === 'select') {
+      if (selKind === 'text') return <>Double-click or press <Kbd>Enter</Kbd> to edit text; <Kbd>Enter</Kbd> finishes, <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> adds a line</>;
+      if (selKind === 'bindable') return <><Kbd>Enter</Kbd> to add text; <Kbd>Enter</Kbd> finishes, <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> adds a line</>;
+      if (selKind !== 'none') return null;
+    }
+    return TOOL_TIPS[activeTool] ?? null;
+  }, [activeTool, hasImage, selKind]);
 
-  if (modalOpen) return null;
+  if (modalOpen || phone || !tip) return null;
 
   return (
     <>
@@ -229,14 +302,14 @@ export function ToolbarTips() {
       >
         {flattenTip(tip)}
       </div>
-      <div className="absolute top-[3.85rem] left-1/2 -translate-x-1/2 z-[40] pointer-events-none max-w-[min(36rem,calc(100vw-2rem))] px-2">
+      <div className="absolute top-[4.25rem] left-1/2 -translate-x-1/2 z-[40] pointer-events-none w-max max-w-[min(36rem,calc(100vw-2rem))] px-2">
         <motion.p
           key={tipKey}
           initial={{ opacity: 0, y: -3 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.12 }}
-          className="text-center text-[10px] sm:text-[11px] text-muted-foreground/90 py-0.5 leading-snug"
+          className="text-center text-[0.75rem] text-muted-foreground py-0.5 leading-snug"
         >
           {tip}
         </motion.p>

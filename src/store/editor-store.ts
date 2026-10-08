@@ -1,13 +1,16 @@
 import { create } from 'zustand';
+import { setRoughScale } from '@/lib/rough-renderer';
 import type {
   EditorElement, ToolType, ExportFormat, CanvasStyle,
   StrokeStyle, FillStyle, Arrowhead, TextElement,
 } from '@/types/editor';
-import { HANDWRITTEN_FONT } from '@/types/editor';
+import { FONT_HAND_DRAWN, DEFAULT_STROKE_COLOR, HIGHLIGHTER_COLOR, IMAGE_BINDING_ID, ROUND_CORNER_RADIUS } from '@/types/editor';
 import { trackPageView } from '@/lib/analytics';
 import { getElementBounds, unionBounds } from '@/lib/editor/selection';
 import { labelAnchorForElement, expandLabelPairs, labelPairPartner } from '@/lib/editor/text-labels';
 import { reflowAllContainerText as reflowAllContainerTextFn } from '@/lib/editor/container-reflow';
+import { pinCalloutTips } from '@/lib/editor/callout-pointer';
+import { pinMagnifierBubbles } from '@/lib/editor/magnifier-geometry';
 import { applySettingToElement } from '@/lib/editor/settings-sync';
 import { DEVICE_FRAME_INSETS } from '@/lib/editor/device-frames';
 import type { SettingKey } from '@/lib/editor/tool-settings';
@@ -29,16 +32,35 @@ const PERSIST_KEYS = [
   'transparentExport', 'keepOriginal', 'isBindingEnabled',
   'exportScale', 'exportSelectionOnly',
   'pointerLength', 'pointerWidth', 'pointerDirection',
+  'highlighterColor', 'stepStyle', 'spotlightDim',
   // panelCollapsed is responsive/session - not persisted across reloads
 ] as const;
 type PersistKey = typeof PERSIST_KEYS[number];
+
+const SETTINGS_VERSION = 6;
+const STYLE_KEYS: PersistKey[] = [
+  'strokeColor', 'fillColor', 'strokeWidth', 'fontSize', 'fontFamily', 'opacity',
+  'cornerRadius', 'strokeStyle', 'fillStyle', 'roughness', 'endArrowhead',
+  'startArrowhead', 'arrowPath', 'fontStyle', 'textAlign', 'textVerticalAlign',
+  'highlighterColor', 'gridEnabled',
+];
 
 function loadPersisted(): Partial<Record<PersistKey, any>> {
   if (typeof window === 'undefined') return {};
   try {
     const raw = localStorage.getItem('snapty-settings')
       ?? localStorage.getItem('snapkit-settings');
-    return raw ? JSON.parse(raw) : {};
+    const saved = raw ? JSON.parse(raw) : {};
+    // Style settings saved before the Excalidraw redesign (free-form colors,
+    // fonts, widths) are outside its presets: drop them once so the new
+    // defaults apply. Export preferences are kept.
+    if (saved.settingsVersion !== SETTINGS_VERSION) {
+      for (const k of STYLE_KEYS) delete saved[k];
+    }
+    // Hand and crop are transient (Space-pan, a one-off crop), and diamond is
+    // no longer offered: none of them make sense to reopen on.
+    if (['hand', 'crop', 'diamond'].includes(saved.activeTool)) delete saved.activeTool;
+    return saved;
   } catch { return {}; }
 }
 
@@ -47,9 +69,11 @@ function savePersisted(state: Record<string, any>) {
   try {
     const toSave: Record<string, any> = {};
     for (const k of PERSIST_KEYS) toSave[k] = state[k];
+    if (state.activeTool === 'hand' || state.activeTool === 'crop') toSave.activeTool = 'select';
     // Members that live on canvasStyle (grid + transparent export)
     toSave.gridEnabled = state.canvasStyle?.gridEnabled ?? state.gridEnabled;
     toSave.transparentExport = state.canvasStyle?.transparentExport ?? false;
+    toSave.settingsVersion = SETTINGS_VERSION;
     localStorage.setItem('snapty-settings', JSON.stringify(toSave));
   } catch { /* quota exceeded */ }
 }
@@ -191,6 +215,11 @@ interface EditorState {
   blurRadius: number;
   pixelSize: number;
   highlighterWidth: number;
+  highlighterColor: string;
+  /** Number tool badge: numbers, letters, or an emoji stamp. */
+  stepStyle: string;
+  /** Default dim strength of new spotlights (0-1). */
+  spotlightDim: number;
   elements: EditorElement[];
   selectedElementIds: string[];
   stepCounter: number;
@@ -211,14 +240,12 @@ interface EditorState {
   showHelpDialog: boolean;
   showExportDialog: boolean;
   showCommandPalette: boolean;
-  showSettings: boolean;
   /** In-app About / Privacy dialog (PWA-safe - never navigates the editor). */
   infoDialog: 'about' | 'privacy' | null;
   setInfoDialog: (v: 'about' | 'privacy' | null) => void;
   panelCollapsed: boolean;
   /** True while a paste/URL/file image is decoding - drives skeleton UI */
   imageLoading: boolean;
-  stickyTool: boolean;
   strokeStyle: StrokeStyle;
   fillStyle: FillStyle;
   roughness: number;
@@ -227,8 +254,8 @@ interface EditorState {
   endArrowhead: Arrowhead;
   startArrowhead: Arrowhead;
   /** Arrow tool path routing: straight (default) or Excalidraw-style elbow. */
-  arrowPath: 'straight' | 'elbow';
-  setArrowPath: (v: 'straight' | 'elbow') => void;
+  arrowPath: 'straight' | 'curved' | 'elbow';
+  setArrowPath: (v: 'straight' | 'curved' | 'elbow') => void;
   imageLocked: boolean;
   annotationsLocked: boolean;
   /** Arrow/line endpoints snap to and follow shapes when enabled. */
@@ -256,7 +283,6 @@ interface EditorState {
   zoomToActual: () => void;
   zoomToSelection: () => void;
   setActiveTool: (tool: ToolType, opts?: { clearSelection?: boolean }) => void;
-  setStickyTool: (v: boolean) => void;
   setStrokeStyle: (v: StrokeStyle) => void;
   setFillStyle: (v: FillStyle) => void;
   setRoughness: (v: number) => void;
@@ -272,14 +298,15 @@ interface EditorState {
   alignSelected: (align: 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom') => void;
   /** Distribute multi-selected elements evenly along an axis (one undo step). */
   distributeSelected: (axis: 'horizontal' | 'vertical') => void;
+  /** Mirror the selection within its own bounds (one undo step). */
+  flipSelected: (axis: 'horizontal' | 'vertical') => void;
   lockSelected: () => void;
   unlockSelected: () => void;
   setShowCommandPalette: (show: boolean) => void;
-  setShowSettings: (show: boolean) => void;
   /** Attach a text label to a shape (shared groupId) as a single undo step. */
   attachText: (shapeId: string, textEl: import('@/types/editor').TextElement) => void;
   /** Live preview during drag, does not push undo history. */
-  updateElementSilent: (id: string, updates: Partial<EditorElement>) => void;
+  updateElementSilent: (id: string, updates: Partial<EditorElement>, reflow?: boolean) => void;
   /** Commit a previewed change as a single undo step. */
   commitElementUpdate: (id: string, updates: Partial<EditorElement>) => void;
   setStrokeColor: (color: string) => void;
@@ -296,10 +323,12 @@ interface EditorState {
   setBlurRadius: (r: number) => void;
   setPixelSize: (s: number) => void;
   setHighlighterWidth: (w: number) => void;
+  setHighlighterColor: (color: string) => void;
+  setStepStyle: (style: string) => void;
+  setSpotlightDim: (v: number) => void;
   setStepStartNumber: (n: number) => void;
   setPanelCollapsed: (collapsed: boolean) => void;
   handDrawn: boolean;
-  setHandDrawn: (v: boolean) => void;
   /** Reset stroke/fill/size prefs to factory defaults (keeps image + annotations). */
   resetToolSettings: () => void;
   addElement: (element: EditorElement) => void;
@@ -318,6 +347,8 @@ interface EditorState {
   sendToBack: (id: string) => void;
   undo: () => void;
   redo: () => void;
+  /** Drop the `n` history steps just below the newest one, so they undo together with it. */
+  squashHistory: (n: number) => void;
   canUndo: () => boolean;
   canRedo: () => boolean;
   setCanvasStyle: (style: Partial<CanvasStyle>) => void;
@@ -383,22 +414,23 @@ const initialCanvasStyle: CanvasStyle = {
   shadowBlur: 20, shadowOffsetX: 0, shadowOffsetY: 4,
   shadowColor: 'rgba(0,0,0,0.3)', bgStyle: 'none',
   bgColor: '#ffffff', bgGradientStart: '#667eea', bgGradientEnd: '#764ba2',
-  deviceFrame: 'none', gridEnabled: false, transparentExport: false,
+  deviceFrame: 'none', gridEnabled: true, transparentExport: false,
 };
 
 const defaults: Record<string, any> = {
   // First visit: arrow. After that, last used tool is restored from localStorage.
   activeTool: 'arrow' as ToolType,
-  strokeColor: '#ef4444',
+  strokeColor: DEFAULT_STROKE_COLOR,
   fillColor: 'transparent',
-  strokeWidth: 3,
-  fontSize: 24,
-  fontFamily: HANDWRITTEN_FONT,
+  strokeWidth: 2,
+  fontSize: 20,
+  fontFamily: FONT_HAND_DRAWN,
   fontStyle: 'normal',
   textAlign: 'left' as 'left' | 'center' | 'right',
   textVerticalAlign: 'middle' as 'top' | 'middle' | 'bottom',
   opacity: 1,
-  cornerRadius: 8,
+  // Excalidraw draws rectangles with round edges by default.
+  cornerRadius: ROUND_CORNER_RADIUS,
   pointerLength: 24,
   pointerWidth: 20,
   pointerDirection: 'bottom-left' as const,
@@ -410,15 +442,19 @@ const defaults: Record<string, any> = {
   blurRadius: 12,
   pixelSize: 10,
   highlighterWidth: 24,
+  highlighterColor: HIGHLIGHTER_COLOR,
+  stepStyle: 'number',
+  spotlightDim: 0.55,
   exportQuality: 92,
   panelCollapsed: false,
   strokeStyle: 'solid' as StrokeStyle,
-  fillStyle: 'none' as FillStyle,
-  roughness: 1.0,
+  fillStyle: 'solid' as FillStyle,
+  roughness: 1,
   magnification: 2.25,
   endArrowhead: 'arrow' as Arrowhead,
   startArrowhead: 'none' as Arrowhead,
-  arrowPath: 'straight' as 'straight' | 'elbow',
+  // Excalidraw's default arrow type is round.
+  arrowPath: 'curved' as 'straight' | 'curved' | 'elbow',
 };
 
 /** Quality is 10-100. Legacy values were 0-1 fractions. */
@@ -449,24 +485,19 @@ function getChromeReserve(container: HTMLElement | null): { top: number; left: n
   if (!container || typeof document === 'undefined') return { top: 0, left: 0 };
   const cRect = container.getBoundingClientRect();
   let top = 0;
-  let left = 0;
   const toolbar = document.querySelector('[data-snapty-toolbar]') as HTMLElement | null;
   if (toolbar) {
     const r = toolbar.getBoundingClientRect();
-    if (r.bottom > cRect.top && r.bottom < cRect.bottom) {
+    // Only a toolbar docked at the top eats into the top edge; on phones it
+    // is a bottom bar and must not be counted here.
+    if (r.bottom > cRect.top && r.top < cRect.top + cRect.height / 2) {
       // The contextual tool-tip line sits just under the toolbar; reserve it too
       // so a fitted image never slides under either floating strip.
       top = Math.max(top, r.bottom - cRect.top + 30);
     }
   }
-  const rail = document.querySelector('[data-snapty-rail]') as HTMLElement | null;
-  if (rail) {
-    const r = rail.getBoundingClientRect();
-    if (r.right > cRect.left && r.right < cRect.right) {
-      left = Math.max(left, r.right - cRect.left + 12);
-    }
-  }
-  return { top, left };
+  // The properties panel overlays the canvas, as in Excalidraw: no left inset.
+  return { top, left: 0 };
 }
 
 function syncEditorRoute(launched: boolean) {
@@ -546,6 +577,18 @@ function pushHistory(
   elements: EditorElement[],
   image?: { imageDataURL: string | null; imageSize: { width: number; height: number } },
 ) {
+  // Callout tips stay on their targets when the bubble alone moves or resizes.
+  elements = pinCalloutTips((s as { elements?: EditorElement[] }).elements ?? elements, elements);
+  // A magnifier's bubble stays put when its source ring alone is moved.
+  const beforeMagPin = elements;
+  elements = pinMagnifierBubbles((s as { elements?: EditorElement[] }).elements ?? elements, elements, image ? image.imageSize : s.imageSize);
+  if (elements !== beforeMagPin) {
+    // The arrow's midpoint moved with the pin: re-seat any label riding it.
+    const size = image ? image.imageSize : s.imageSize;
+    beforeMagPin.forEach((el, i) => {
+      if (elements[i] !== el) elements = reflowAttachedLabel(elements, el.id, size);
+    });
+  }
   const imageDataURL = image ? image.imageDataURL : s.imageDataURL;
   const imageSize = image ? image.imageSize : s.imageSize;
   const snap = makeSnapshot(
@@ -640,6 +683,26 @@ function reflowAttachedLabel(
 }
 
 /**
+ * recomputeBindings, then re-seat the label of every arrow it moved, so the
+ * label and its gap stay on the arrow's midpoint.
+ */
+function rebind(
+  elements: EditorElement[],
+  targetId: string,
+  imageSize: { width: number; height: number },
+): EditorElement[] {
+  let next = recomputeBindings(elements, targetId, imageSize);
+  if (next === elements) return next;
+  const before = new Map(elements.map((el) => [el.id, el]));
+  for (const el of next) {
+    if ((el.type === 'arrow' || el.type === 'line') && before.get(el.id) !== el) {
+      next = reflowAttachedLabel(next, el.id, imageSize);
+    }
+  }
+  return next;
+}
+
+/**
  * Translate an element by a delta. Freehand strokes store absolute points
  * (element pinned at 0,0 — an invariant cropToRegion relies on), so they
  * shift their points instead of x/y; everything else shifts x/y.
@@ -712,16 +775,27 @@ function moveElementsImpl(
 ): Partial<EditorState> {
   const els = s.elements.map((el) => {
     if (!toMove.has(el.id) || el.locked) return el;
-    return { ...el, x: el.x + dx, y: el.y + dy } as EditorElement;
+    const moved = { ...el, x: el.x + dx, y: el.y + dy } as EditorElement;
+    // Excalidraw: dragging an arrow without its target detaches that end
+    // (the whole arrow moves rigidly). Elbow arrows stay bound and re-pin.
+    if (isLineLike(moved) && !(moved.type === 'arrow' && moved.elbowed)) {
+      const keep = (b: typeof moved.startBinding) =>
+        b && (toMove.has(b.elementId) || b.elementId === IMAGE_BINDING_ID) ? b : null;
+      moved.startBinding = keep(moved.startBinding);
+      moved.endBinding = keep(moved.endBinding);
+    }
+    return moved;
   });
   let out = els;
-  // Moved bound arrows: re-pin anchored endpoints to their targets.
+  // Moved elbow arrows: re-pin anchored endpoints to their targets.
   for (const el of els) {
-    if (toMove.has(el.id) && isLineLike(el)) out = pinBoundEndpoints(out, el.id, s.imageSize);
+    if (toMove.has(el.id) && isLineLike(el) && (el.startBinding || el.endBinding)) {
+      out = pinBoundEndpoints(out, el.id, s.imageSize);
+    }
   }
   // Moved shapes: pull every arrow bound to them along.
   for (const el of els) {
-    if (toMove.has(el.id) && isBindableElement(el)) out = recomputeBindings(out, el.id, s.imageSize);
+    if (toMove.has(el.id) && isBindableElement(el)) out = rebind(out, el.id, s.imageSize);
   }
   return pushHistory(s, out);
 }
@@ -871,7 +945,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   strokeWidth: persisted.strokeWidth ?? defaults.strokeWidth,
   fontSize: persisted.fontSize ?? defaults.fontSize,
   fontFamily: persisted.fontFamily ?? defaults.fontFamily,
-  fontStyle: persisted.fontStyle ?? defaults.fontStyle,
+  // Excalidraw has no bold/italic; an old persisted value must not stick.
+  fontStyle: 'normal',
   textAlign: persisted.textAlign ?? defaults.textAlign,
   textVerticalAlign: persisted.textVerticalAlign ?? defaults.textVerticalAlign,
   opacity: persisted.opacity ?? defaults.opacity,
@@ -882,12 +957,24 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   blurRadius: persisted.blurRadius ?? defaults.blurRadius,
   pixelSize: persisted.pixelSize ?? defaults.pixelSize,
   highlighterWidth: persisted.highlighterWidth ?? defaults.highlighterWidth,
+  highlighterColor: persisted.highlighterColor ?? defaults.highlighterColor,
+  stepStyle: persisted.stepStyle ?? defaults.stepStyle,
+  spotlightDim: persisted.spotlightDim ?? defaults.spotlightDim,
   elements: projectPersisted?.elements ?? [],
   selectedElementIds: [],
   stepCounter: projectPersisted?.stepCounter ?? persisted.stepStartNumber ?? defaults.stepStartNumber,
   stepStartNumber: persisted.stepStartNumber ?? defaults.stepStartNumber,
   stepRadius: persisted.stepRadius ?? defaults.stepRadius,
-  ...emptyHistory(projectPersisted?.imageDataURL ?? null, projectPersisted?.imageSize ?? { width: 0, height: 0 }),
+  // The undo baseline is the restored project, not an empty canvas: undoing
+  // the first edit after a reload must not wipe every saved annotation.
+  _history: [makeSnapshot(
+    projectPersisted?.elements ?? [],
+    projectPersisted?.imageDataURL ?? null,
+    projectPersisted?.imageSize ?? { width: 0, height: 0 },
+    undefined,
+    projectPersisted?.stepCounter,
+  )] as HistorySnapshot[],
+  _historyIndex: 0,
   canvasStyle: {
     ...initialCanvasStyle,
     ...(projectPersisted?.canvasStyle ?? {}),
@@ -901,12 +988,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   showExportDialog: false,
   showHelpDialog: false,
   showCommandPalette: false,
-  showSettings: false,
   infoDialog: null,
   setInfoDialog: (v) => set({ infoDialog: v }),
   panelCollapsed: typeof window !== 'undefined' && window.innerWidth < 900,
   imageLoading: false,
-  stickyTool: false,
   strokeStyle: persisted.strokeStyle ?? defaults.strokeStyle,
   fillStyle: persisted.fillStyle ?? defaults.fillStyle,
   roughness: persisted.roughness ?? defaults.roughness,
@@ -916,19 +1001,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   arrowPath: persisted.arrowPath ?? defaults.arrowPath,
   imageLocked: false,
   annotationsLocked: false,
-  isBindingEnabled: persisted.isBindingEnabled ?? true,
+  // Always on, as in Excalidraw; holding Ctrl/Cmd suspends it for a drag.
+  isBindingEnabled: true,
   keepOriginal: persisted.keepOriginal ?? false,
-  // Hand-drawn mode: default true unless explicitly disabled in previous settings
-  handDrawn: (typeof window !== 'undefined')
-    ? ((): boolean => { try { return JSON.parse(localStorage.getItem('snapty-tool-settings') || '{"handDrawn":true}').handDrawn !== false; } catch { return true; } })()
-    : true,
+  // Always rough.js; "Architect" sloppiness (roughness 0) is the clean look.
+  handDrawn: true,
 
   launchEditor: () => {
     syncEditorRoute(true);
     set({ isEditorLaunched: true });
   },
 
-  setStickyTool: (v) => set({ stickyTool: v }),
   setStrokeStyle: (v) => {
     set((s) => ({ strokeStyle: v, ...applyToSelection(s, 'strokeStyle', v) }));
     savePersisted({ ...get(), strokeStyle: v });
@@ -988,7 +1071,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
   },
   setShowCommandPalette: (show) => set({ showCommandPalette: show }),
-  setShowSettings: (show) => set({ showSettings: show }),
 
   duplicateSelected: () => {
     set((s) => {
@@ -1176,6 +1258,32 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return pushHistory(s, els);
     });
   },
+  flipSelected: (axis) => {
+    set((s) => {
+      const ids = expandGroupMembers(s.elements, new Set(s.selectedElementIds));
+      const targets = s.elements.filter((el) => ids.has(el.id) && !el.locked);
+      const union = unionBounds(targets.map((el) => getElementBounds(el, s.imageSize)));
+      if (!union) return s;
+      const h = axis === 'horizontal';
+      const els = s.elements.map((el) => {
+        if (!targets.includes(el)) return el;
+        const before = getElementBounds(el, s.imageSize);
+        // Mirror the element's own geometry (only point-based shapes have a
+        // handedness), then slide it to its mirrored slot in the selection.
+        let next = el;
+        if ('points' in el && Array.isArray(el.points)) {
+          const points = el.points.map((v, i) => ((i % 2 === 0) === h ? -v : v));
+          // A mirrored arrow no longer sits where its bindings say it does.
+          next = { ...el, points, startBinding: null, endBinding: null } as EditorElement;
+        }
+        const now = getElementBounds(next, s.imageSize);
+        const dx = h ? union.x + union.w - (before.x - union.x) - before.w - now.x : 0;
+        const dy = h ? 0 : union.y + union.h - (before.y - union.y) - before.h - now.y;
+        return translateElement(next, dx, dy);
+      });
+      return pushHistory(s, els);
+    });
+  },
   lockSelected: () => {
     set((s) => {
       const ids = new Set(s.selectedElementIds);
@@ -1193,10 +1301,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
 
-  setHandDrawn: (v) => {
-    try { if (typeof window !== 'undefined') localStorage.setItem('snapty-tool-settings', JSON.stringify({ handDrawn: v })); } catch { /* storage unavailable */ }
-    set({ handDrawn: v });
-  },
 
   setImageLoading: (loading) => set({ imageLoading: loading }),
 
@@ -1306,17 +1410,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (get().imageLocked) return;
     syncEditorRoute(true);
     void import('@/lib/editor/annotation-clipboard').then((m) => m.clearAnnotationClipboard());
-    void import('@/lib/editor/autosave').then(({ clearAutosave }) => clearAutosave());
-    set({
+    // One undo step brings the image and every annotation back.
+    set((s) => ({
       backgroundImage: null,
-      imageDataURL: null,
-      imageSize: { width: 0, height: 0 },
-      elements: [], selectedElementIds: [],
-      ...emptyHistory(undefined, undefined, undefined, undefined, get().canvasStyle),
-      stepCounter: get().stepStartNumber,
+      selectedElementIds: [],
+      ...pushHistory(s, [], { imageDataURL: null, imageSize: { width: 0, height: 0 } }),
       zoom: 1, stagePosition: { x: 0, y: 0 },
       // intentionally keep activeTool, colors, sizes, canvasStyle
-    });
+    }));
     saveProjectNow({ ...get() });
   },
 
@@ -1406,12 +1507,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set(clearSelection ? { activeTool: tool, selectedElementIds: [] } : { activeTool: tool });
     savePersisted({ ...get(), activeTool: tool });
   },
-  updateElementSilent: (id, updates) => {
-    set((s) => ({
-      elements: s.elements.map((el) =>
+  updateElementSilent: (id, updates, reflow) => {
+    set((s) => {
+      const els = s.elements.map((el) =>
         el.id === id ? { ...el, ...updates } as EditorElement : el
-      ),
-    }));
+      );
+      if (!reflow) return { elements: pinCalloutTips(s.elements, els) };
+      // Same follow-ups as updateElement (label box, bound arrows), no history.
+      let next = reflowAttachedLabel(pinCalloutTips(s.elements, els), id, s.imageSize);
+      const moved = next.find((el) => el.id === id);
+      if (moved && isBindableElement(moved)) next = rebind(next, id, s.imageSize);
+      return { elements: next };
+    });
   },
   commitElementUpdate: (id, updates) => {
     set((s) => {
@@ -1421,7 +1528,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       let next = reflowAttachedLabel(els, id, s.imageSize);
       // A shape edit re-anchors every arrow bound to it (fully sticky).
       const moved = next.find((el) => el.id === id);
-      if (moved && isBindableElement(moved)) next = recomputeBindings(next, id, s.imageSize);
+      if (moved && isBindableElement(moved)) next = rebind(next, id, s.imageSize);
       return pushHistory(s, next);
     });
     scheduleProjectSave({ ...get() });
@@ -1496,6 +1603,25 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => ({ highlighterWidth: v, ...applyToSelection(s, 'highlighterWidth', v) }));
     savePersisted({ ...get(), highlighterWidth: v });
   },
+  setHighlighterColor: (color) => {
+    set((s) => ({ highlighterColor: color, ...applyToSelection(s, 'highlighterColor', color) }));
+    savePersisted({ ...get(), highlighterColor: color });
+  },
+  setStepStyle: (style) => {
+    // Switching between numbers and letters starts the count again (A after
+    // 1, 2, 3; not D). Stamps do not count, so passing through one keeps it.
+    const kind = (v: unknown) => (typeof v === 'string' ? 'letter' : 'number');
+    const next = style.endsWith('letter') ? 'letter' : style.endsWith('number') ? 'number' : null;
+    const last = [...get().elements].reverse().find((el) => el.type === 'step');
+    const restart = !!next && !!last && kind((last as { stepNumber: unknown }).stepNumber) !== next;
+    set({ stepStyle: style, ...(restart ? { stepCounter: 1 } : {}) });
+    savePersisted({ ...get(), stepStyle: style });
+  },
+  setSpotlightDim: (v) => {
+    const dim = Math.max(0.1, Math.min(0.9, v));
+    set((s) => ({ spotlightDim: dim, ...applyToSelection(s, 'spotlightDim', dim) }));
+    savePersisted({ ...get(), spotlightDim: dim });
+  },
   setStepStartNumber: (n) => {
     const start = Math.max(0, Math.round(n));
     set({ stepStartNumber: start, stepCounter: start });
@@ -1522,6 +1648,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       blurRadius: defaults.blurRadius as number,
       pixelSize: defaults.pixelSize as number,
       highlighterWidth: defaults.highlighterWidth as number,
+      highlighterColor: defaults.highlighterColor as string,
+      stepStyle: defaults.stepStyle as string,
+      spotlightDim: defaults.spotlightDim as number,
       stepRadius: defaults.stepRadius as number,
       stepStartNumber: defaults.stepStartNumber as number,
       stepCounter: defaults.stepStartNumber as number,
@@ -1531,14 +1660,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       magnification: defaults.magnification as number,
       endArrowhead: defaults.endArrowhead as Arrowhead,
       startArrowhead: defaults.startArrowhead as Arrowhead,
-      arrowPath: defaults.arrowPath as 'straight' | 'elbow',
+      arrowPath: defaults.arrowPath as 'straight' | 'curved' | 'elbow',
       handDrawn: true,
     };
     set(next);
     savePersisted({ ...get(), ...next });
     try {
       localStorage.setItem('snapty-toolbar', JSON.stringify({ orientation: 'horizontal' }));
-      localStorage.setItem('snapty-tool-settings', JSON.stringify({ handDrawn: true }));
       window.dispatchEvent(new Event('snapty-toolbar-settings'));
     } catch { /* storage is optional */ }
   },
@@ -1576,7 +1704,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         if (dx !== 0 || dy !== 0) next = pinBoundEndpoints(next, id, s.imageSize);
       }
       // A shape edit re-anchors every arrow bound to it (fully sticky).
-      if (isBindableElement(moved)) next = recomputeBindings(next, id, s.imageSize);
+      if (isBindableElement(moved)) next = rebind(next, id, s.imageSize);
       return pushHistory(s, next);
     });
     scheduleProjectSave({ ...get() });
@@ -1935,6 +2063,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (s._historyIndex >= s._history.length - 1) return;
     applyHistorySnapshot(set, get, s._history[s._historyIndex + 1], s._historyIndex + 1);
   },
+  squashHistory: (n) => set((s) => {
+    const top = s._historyIndex;
+    if (n < 1 || top - n < 0) return s;
+    return { _history: [...s._history.slice(0, top - n), ...s._history.slice(top)], _historyIndex: top - n };
+  }),
   canUndo: () => get()._historyIndex > 0,
   canRedo: () => get()._historyIndex < get()._history.length - 1,
 
@@ -2116,3 +2249,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 }));
 
 export { generateId, isStandalonePwa };
+
+// rough.js dash / hachure constants follow the image tool scale (see rough-renderer).
+useEditorStore.subscribe((s) => setRoughScale(getImageToolScale(s.imageSize.width, s.imageSize.height)));
