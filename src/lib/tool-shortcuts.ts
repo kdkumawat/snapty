@@ -33,6 +33,15 @@ export const TOOL_SHORTCUTS: ToolShortcutDef[] = [
   { id: 'hand', label: 'Hand', hint: 'Pan the canvas', letter: 'H' },
 ];
 
+/** The main toolbar's default tools, in order; digits 1-9 follow the bar. */
+export const DEFAULT_MAIN_TOOLS: ToolType[] = TOOL_SHORTCUTS.filter((t) => t.digit && t.digit !== '0').map((t) => t.id);
+
+/** Digit key for a tool: its place on the main bar (1-9), or the eraser's fixed 0. */
+export function toolDigit(main: readonly ToolType[], id: ToolType): string | undefined {
+  const i = main.indexOf(id);
+  return i >= 0 && i < 9 ? String(i + 1) : id === 'eraser' ? '0' : undefined;
+}
+
 export const letterToTool: Record<string, ToolType> = Object.fromEntries(
   TOOL_SHORTCUTS.map((t) => [t.letter.toLowerCase(), t.id]),
 );
@@ -41,6 +50,6 @@ export const digitToTool: Record<string, ToolType> = Object.fromEntries(
   TOOL_SHORTCUTS.filter((t) => t.digit != null).map((t) => [t.digit!, t.id]),
 );
 
-export function formatToolKeys(t: ToolShortcutDef): string {
-  return t.digit ? `${t.letter} / ${t.digit}` : t.letter;
+export function formatToolKeys(t: ToolShortcutDef, digit = t.digit): string {
+  return digit ? `${t.letter} / ${digit}` : t.letter;
 }

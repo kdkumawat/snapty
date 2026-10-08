@@ -119,7 +119,10 @@ export default function TextEditOverlay({
   const autoSize = isPathLabel || (!hasInnerBox && !editEl?.width);
   // Fitted boxes hug their text so a one-line label sits centred while typing.
   const fit = autoSize || hasInnerBox;
-  const boxTop = stagePos.y + (state.y + contentOffset.y) * zoom;
+  // A path label is re-seated as it grows, so follow the element, not the open-time point.
+  const posX = isPathLabel && editEl ? editEl.x : state.x;
+  const posY = isPathLabel && editEl ? editEl.y : state.y;
+  const boxTop = stagePos.y + (posY + contentOffset.y) * zoom;
 
   const textarea = (
     <textarea
@@ -147,6 +150,7 @@ export default function TextEditOverlay({
           : editEl?.width
             ? Math.max(100, editEl.width * zoom)
             : undefined,
+        maxWidth: isPathLabel && editEl?.width ? editEl.width * zoom : undefined,
         minWidth: fit ? 0 : 100,
         minHeight: fit ? 0 : 40,
         overflow: fit ? 'hidden' : undefined,
@@ -218,7 +222,7 @@ export default function TextEditOverlay({
       style={{
         left:
           stagePos.x +
-          (state.x + contentOffset.x + (isPathLabel ? (editEl?.width ?? 0) / 2 : 0)) * zoom,
+          (posX + contentOffset.x + (isPathLabel ? (editEl?.width ?? 0) / 2 : 0)) * zoom,
         top: boxTop,
         transform: isPathLabel ? 'translateX(-50%)' : undefined,
       }}

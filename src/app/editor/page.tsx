@@ -4,7 +4,7 @@ import EditorPageClient from "@/components/editor/editor-page-client";
 export const metadata: Metadata = {
   title: "Screenshot Editor",
   description:
-    "Paste, annotate, and export screenshots entirely in your browser. Hand-drawn arrows, shapes, text, blur, and step numbers - nothing is uploaded.",
+    "Paste, annotate and export screenshots. Arrows, numbered steps, callouts, blur and spotlight. Nothing is uploaded.",
   robots: { index: false, follow: true },
 };
 

@@ -3,13 +3,13 @@ import LandingPage from "@/components/landing/landing-page";
 
 /** Root = marketing surface (SEO-first). The editor lives at /editor. */
 export const metadata: Metadata = {
-  title: "Snapty - Free Browser Screenshot Editor",
+  title: "Snapty: Point at exactly what you mean.",
   description:
-    "Annotate screenshots with a hand-drawn feel - arrows, shapes, text, step numbers, blur and pixelate. 100% in your browser, nothing uploaded. Free, keyboard-first, installs as a PWA.",
+    "Snapty is the fastest way to mark up a screenshot: arrows, numbered steps, callouts, blur and spotlight. Free, no account, nothing uploaded.",
   openGraph: {
-    title: "Snapty: Free Browser Screenshot Editor",
+    title: "Snapty: Point at exactly what you mean.",
     description:
-      "Professional screenshot annotations in seconds. No installation needed. Privacy-first, open source, works offline.",
+      "Snapty is the fastest way to mark up a screenshot: arrows, numbered steps, callouts, blur and spotlight. Free, no account, nothing uploaded.",
     type: "website",
   },
 };

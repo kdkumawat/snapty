@@ -8,7 +8,8 @@ import { SPOTLIGHT_RADIUS, TEXT_LINE_HEIGHT, TEXT_PADDING, stepFingerBox } from 
 import { magnifierBounds } from '@/lib/editor/magnifier-geometry';
 import { freehandOutline } from '@/lib/editor/freehand';
 import { quadBounds, quadPathD, polylinePathD, tangentAtStart, tangentAtEnd } from '@/lib/editor/curve';
-import { clipPolylineAgainstRect, pointAlongPath, estimateLabelHeight } from '@/lib/editor/text-labels';
+import { clipPolylineAgainstRect, pointAlongPath, labelTailEnd, placeLinearLabels } from '@/lib/editor/text-labels';
+import { layoutText, measureTextWidth } from '@/lib/editor/text-layout';
 import { arrowHeadPoints, generateRoughDrawable, generateLinearDrawables } from '@/lib/rough-renderer';
 import type { RoughDrawInput } from '@/lib/rough-renderer';
 import { RoughSVG } from 'roughjs/bin/svg';
@@ -402,7 +403,8 @@ async function exportImage(
 
 async function buildSvgExport(region?: { x: number; y: number; width: number; height: number }): Promise<string> {
   const store = useEditorStore.getState();
-  const { imageSize, imageDataURL, elements, canvasStyle } = store;
+  const { imageSize, imageDataURL, canvasStyle } = store;
+  const elements = placeLinearLabels(store.elements, imageSize);
   const w = imageSize.width || 800;
   const h = imageSize.height || 600;
   const transparent = canvasStyle.transparentExport;
@@ -534,19 +536,17 @@ async function buildSvgExport(region?: { x: number; y: number; width: number; he
       const attachedLabel = elements.find(
         (x) => x.type === 'text' && !!x.groupId && x.groupId === el.groupId,
       ) as TextElement | undefined;
-      const labelBoxH = attachedLabel
-        ? Math.max(
-            (attachedLabel.fontSize ?? 24) * TEXT_LINE_HEIGHT + (attachedLabel.padding ?? TEXT_PADDING) * 2,
-            estimateLabelHeight(attachedLabel, attachedLabel.fontSize ?? 24),
-          )
-        : 0;
-      const labelRect = attachedLabel
-        ? {
-            x: attachedLabel.x - el.x,
-            y: attachedLabel.y - el.y - (labelBoxH - ((attachedLabel.fontSize ?? 24) * TEXT_LINE_HEIGHT + (attachedLabel.padding ?? TEXT_PADDING) * 2)) / 2,
-            w: Math.max(1, attachedLabel.width ?? 0),
-            h: Math.max(1, labelBoxH),
-          }
+      // A label beyond the arrow's headless end never touches the shaft.
+      const labelRect = attachedLabel && !labelTailEnd(el)
+        ? (() => {
+            const lay = layoutText(attachedLabel);
+            return {
+              x: attachedLabel.x - el.x,
+              y: attachedLabel.y - el.y,
+              w: Math.max(1, attachedLabel.width ?? 0),
+              h: Math.max(1, lay.h),
+            };
+          })()
         : null;
       // Same drawables the canvas paints (Excalidraw's shaft + arrowheads). The
       // label gap is a clip on the shaft only, so heads stay whole.
@@ -681,7 +681,21 @@ async function buildSvgExport(region?: { x: number; y: number; width: number; he
         parts.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${el.type === 'highlighter' ? 0.4 : opacity}" stroke-linecap="round" stroke-linejoin="round"/>`);
       }
     } else if (el.type === 'text') {
-      parts.push(`<text x="${el.x}" y="${el.y + (el.fontSize || 24)}" font-size="${el.fontSize || 24}" font-family="${el.fontFamily || 'sans-serif'}" fill="${el.fill || stroke}" opacity="${opacity}">${escapeXml(el.text || '')}</text>`);
+      // Every line, wrapped like the canvas; path labels hug their text.
+      const fs = el.fontSize || 24;
+      const pad = el.padding ?? TEXT_PADDING;
+      const lh = el.lineHeight ?? TEXT_LINE_HEIGHT;
+      const lay = layoutText(el);
+      const boxW = el.width || lay.w;
+      const tight = el.groupId && el.width ? Math.max(24, Math.min(el.width, measureTextWidth(el) + pad * 2)) : boxW;
+      const bx = el.x + (boxW - tight) / 2;
+      const al = el.align ?? 'left';
+      const tx = al === 'center' ? bx + tight / 2 : al === 'right' ? bx + tight - pad : bx + pad;
+      const anchor = al === 'center' ? 'middle' : al === 'right' ? 'end' : 'start';
+      const tspans = lay.lines
+        .map((ln, i) => `<tspan x="${tx}" y="${el.y + pad + (i + 0.5) * fs * lh}">${escapeXml(ln)}</tspan>`)
+        .join('');
+      parts.push(`<text text-anchor="${anchor}" dominant-baseline="central" xml:space="preserve" font-size="${fs}" font-family="${el.fontFamily || 'sans-serif'}" fill="${el.fill || stroke}" opacity="${opacity}">${tspans}</text>`);
     } else if (el.type === 'step') {
       const r = el.radius || 16;
       if (el.pointer) {

@@ -2,12 +2,12 @@
 
 import { useEffect, useRef } from 'react';
 import { useEditorStore } from '@/store/editor-store';
-import { copyToClipboard } from '@/components/editor/export-dialog';
 import { loadImageFileIntoEditor, capImageSize } from '@/lib/image-load';
 import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
 import { captureScreenRegion, isScreenCaptureSupported } from '@/lib/screen-capture';
 import type { ToolType } from '@/types/editor';
-import { letterToTool, digitToTool } from '@/lib/tool-shortcuts';
+import { STEP_CYCLE, STROKE_PICKS, ROUND_CORNER_RADIUS, FONT_HAND_DRAWN, FONT_NORMAL, FONT_CODE, STANDARD_FONT } from '@/types/editor';
+import { letterToTool } from '@/lib/tool-shortcuts';
 import { copyStyleToClipboard, getClipboardStyle } from '@/lib/editor/clipboard-style';
 import { copySelectedAnnotations, pasteAnnotationsFromClipboard, hasAnnotationClipboard, suppressNextImagePaste, isImagePasteSuppressed } from '@/lib/editor/annotation-clipboard';
 
@@ -111,13 +111,58 @@ export function useKeyboardShortcuts() {
       // the renumbered digits, 1 = select and 2 = arrow (which is disabled on
       // an empty canvas), so only the select/hand letters plus digit 1 apply.
       if (!isCtrl && !isShift && (backgroundImage || ['v', 'h', '1'].includes(key))) {
-        const tool = letterToTool[key] || digitToTool[key];
+        // Digits follow the main bar's order (the eraser keeps 0).
+        const tool = letterToTool[key] || (key === '0' ? 'eraser' : /^[1-9]$/.test(key) ? st.mainTools[Number(key) - 1] : undefined);
         if (tool) {
           e.preventDefault();
+          // Re-pressing a tool's key cycles its main option and shows the result by the cursor.
+          const hint = (kind: string, value: string) =>
+            window.dispatchEvent(new CustomEvent('snapty-tool-hint', { detail: { kind, value } }));
           // Excalidraw: pressing A with the arrow tool active cycles its type.
           if (tool === 'arrow' && st.activeTool === 'arrow') {
             const order = ['straight', 'curved', 'elbow'] as const;
-            st.setArrowPath(order[(order.indexOf(st.arrowPath) + 1) % order.length]);
+            const next = order[(order.indexOf(st.arrowPath) + 1) % order.length];
+            st.setArrowPath(next);
+            hint('arrowPath', next);
+            return;
+          }
+          // N again: Number, Letter, Number with finger, Letter with finger, Finger only (a stamp returns to Number).
+          if (tool === 'step' && st.activeTool === 'step') {
+            const i = STEP_CYCLE.indexOf(st.stepStyle as (typeof STEP_CYCLE)[number]);
+            const next = STEP_CYCLE[(i + 1) % STEP_CYCLE.length];
+            st.setStepStyle(next);
+            hint('stepStyle', next);
+            return;
+          }
+          // B again: Blur, Pixelate (the panel's Mode row).
+          if (tool === 'blur' && (st.activeTool === 'blur' || st.activeTool === 'pixelate')) {
+            const next = st.activeTool === 'blur' ? 'pixelate' : 'blur';
+            st.setActiveTool(next, { clearSelection: false });
+            hint('blurMode', next);
+            return;
+          }
+          // R again: sharp / round edges.
+          if (tool === 'rectangle' && st.activeTool === 'rectangle') {
+            const next = st.cornerRadius > 0 ? 'sharp' : 'round';
+            st.setCornerRadius(next === 'round' ? ROUND_CORNER_RADIUS : 0);
+            hint('edges', next);
+            return;
+          }
+          // T again: font family, in the panel's order.
+          if (tool === 'text' && st.activeTool === 'text') {
+            const order = [['hand', FONT_HAND_DRAWN], ['normal', FONT_NORMAL], ['code', FONT_CODE]] as const;
+            const cur = st.fontFamily === FONT_CODE ? 2 : st.fontFamily === FONT_NORMAL || st.fontFamily === STANDARD_FONT ? 1 : 0;
+            const [name, family] = order[(cur + 1) % order.length];
+            st.setFontFamily(family);
+            hint('font', name);
+            return;
+          }
+          // K again: the highlighter's quick-pick colours.
+          if (tool === 'highlighter' && st.activeTool === 'highlighter') {
+            const i = (STROKE_PICKS as readonly string[]).indexOf(st.highlighterColor);
+            const next = STROKE_PICKS[(i + 1) % STROKE_PICKS.length];
+            st.setHighlighterColor(next);
+            hint('hlColor', next);
             return;
           }
           st.setActiveTool(tool);
@@ -185,21 +230,14 @@ export function useKeyboardShortcuts() {
       }
       if (isCtrl && isShift && (e.key === 'Backspace' || e.key === 'Delete')) {
         e.preventDefault();
-        const n = st.elements.length;
-        if (n) {
-          st.clearElements();
-          toastSuccess('Cleared', n === 1 ? 'Removed 1 annotation' : `Removed ${n} annotations`);
-        }
+        if (st.elements.length) st.clearElements();
         return;
       }
       if (isCtrl && !isShift && key === 's') {
         e.preventDefault();
         // Save project (.snapty) — faster than export if user wants to continue editing later
         if (st.backgroundImage || st.elements.length) {
-          void import('@/lib/editor/project-file').then((m) => {
-            m.downloadProject();
-            toastSuccess('Project saved', 'Downloaded .snapty file — reopen to continue editing');
-          });
+          void import('@/lib/editor/project-file').then((m) => m.downloadProject());
         } else {
           toastInfo('Nothing to save', 'Add an image or annotation first');
         }
@@ -222,7 +260,6 @@ export function useKeyboardShortcuts() {
             }
             const { image: capped } = await capImageSize(result.image);
             useEditorStore.getState().setBackgroundImage(capped);
-            toastSuccess('Captured', 'Screenshot loaded in the editor');
           } catch {
             toastError('Capture failed', 'Something went wrong - try again');
           } finally {
@@ -237,14 +274,12 @@ export function useKeyboardShortcuts() {
         const copied = copySelectedAnnotations();
         if (copied > 0) {
           e.preventDefault();
-          toastSuccess('Copied', `${copied} annotation${copied > 1 ? 's' : ''} copied — paste with ${modKey}+V`);
           return;
         }
         if (st.backgroundImage) {
           e.preventDefault();
-          void copyToClipboard()
-            .then(() => toastSuccess('Copied', 'Image on clipboard - ready to paste'))
-            .catch(() => toastError('Couldn’t copy', 'Allow clipboard access and try again'));
+          // The action cluster copies and flashes its Copy icon.
+          window.dispatchEvent(new Event('snapty-copy'));
         }
         return;
       }
@@ -256,7 +291,6 @@ export function useKeyboardShortcuts() {
           if (pasted > 0) {
             e.preventDefault();
             suppressNextImagePaste();
-            toastSuccess('Pasted', `${pasted} annotation${pasted > 1 ? 's' : ''} pasted`);
             return;
           }
         }

@@ -9,8 +9,11 @@ import type {
   TextElement,
 } from '@/types/editor';
 import { getElementBounds } from '@/lib/editor/selection';
-import { TEXT_PADDING, TEXT_LINE_HEIGHT, HANDWRITTEN_FONT, fontFamilyForCanvas, type CalloutElement } from '@/types/editor';
+import { TEXT_PADDING, TEXT_LINE_HEIGHT, HANDWRITTEN_FONT, type CalloutElement } from '@/types/editor';
 import { controlPoint } from '@/lib/editor/curve';
+import { layoutText, measureTextWidth } from '@/lib/editor/text-layout';
+
+export { measureTextWidth };
 
 /**
  * Centralized geometry + creation for text labels attached to drawn shapes.
@@ -228,7 +231,7 @@ export function labelAnchorForElement(
   imageSize: { width: number; height: number },
   fontSize: number,
   scale: number,
-  label?: { labelOffset?: number; labelOffsetY?: number; text?: string; width?: number },
+  label?: Partial<Pick<TextElement, 'labelOffset' | 'labelOffsetY' | 'text' | 'width' | 'fontSize' | 'fontFamily' | 'fontStyle' | 'padding' | 'lineHeight'>>,
 ): LabelAnchor {
   const bounds = getElementBounds(el, imageSize);
   const pad = TEXT_PADDING * scale;
@@ -255,23 +258,41 @@ export function labelAnchorForElement(
     el.type === 'arrow' || el.type === 'line' || el.type === 'pencil' || el.type === 'highlighter';
 
   if (isLineLike && (el.type === 'arrow' || el.type === 'line')) {
-    const t = clamp01(label?.labelOffset ?? 0.5);
-    const pt = pointAlongPath(el, t);
     // Fixed wrap width, independent of the arrow's bbox (a vertical arrow must
     // not squeeze its label into a column).
     const width = 220;
-    let x = pt.x + el.x - width / 2;
-    let y = pt.y + el.y - (fontSize * TEXT_LINE_HEIGHT + TEXT_PADDING * 2) / 2;
-    // Perpendicular offset (image px): the label sits beside the stroke on the
-    // side picked by the drag. The offset is applied along the path normal so
-    // bends keep the label at the same visual distance from the line.
-    const offsetY = label?.labelOffsetY ?? 0;
-    if (offsetY !== 0) {
-      const tan = tangentAlongPath(el, t);
-      x += -tan.y * offsetY;
-      y += tan.x * offsetY;
+    const lay = layoutText({ ...label, fontSize: label?.fontSize ?? fontSize }, label?.text ?? '', width);
+    const boxW = Math.max(24, lay.w);
+    const tail = labelTailEnd(el);
+    let cx: number;
+    let cy: number;
+    if (tail) {
+      // Words belong at the end without the head: sit just beyond that end,
+      // continuing the arrow's direction away from the head, clear of the shaft.
+      const a = el as ArrowElement;
+      const start = tail === 'start';
+      const tan = tangentAlongPath(a, start ? 0 : 1);
+      const d = start ? { x: -tan.x, y: -tan.y } : tan;
+      const pts = a.points;
+      const sx = start ? pts[0] : pts[pts.length - 2];
+      const sy = start ? pts[1] : pts[pts.length - 1];
+      const reach = 8 + (a.strokeWidth ?? 2) / 2 + Math.abs(d.x) * boxW / 2 + Math.abs(d.y) * lay.h / 2;
+      cx = el.x + sx + d.x * reach;
+      cy = el.y + sy + d.y * reach;
+    } else {
+      const t = clamp01(label?.labelOffset ?? 0.5);
+      const pt = pointAlongPath(el, t);
+      cx = pt.x + el.x;
+      cy = pt.y + el.y;
+      // Perpendicular offset (image px): beside the stroke, along the path normal.
+      const offsetY = label?.labelOffsetY ?? 0;
+      if (offsetY !== 0) {
+        const tan = tangentAlongPath(el, t);
+        cx += -tan.y * offsetY;
+        cy += tan.x * offsetY;
+      }
     }
-    return { x, y, width };
+    return { x: cx - width / 2, y: cy - lay.h / 2, width };
   }
 
   // Freehand: center of the stroke's bounds.
@@ -281,44 +302,69 @@ export function labelAnchorForElement(
   return { x: cx - width / 2, y: cy - (fontSize * TEXT_LINE_HEIGHT) / 2, width };
 }
 
-let measureCtx: CanvasRenderingContext2D | null | undefined;
-
-/** Real rendered width of the widest line of a text element (no padding). */
-export function measureTextWidth(t: TextElement, text = t.text): number {
-  const fs = t.fontSize ?? 24;
-  const lines = text.split('\n');
-  if (measureCtx === undefined) {
-    measureCtx = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d');
-  }
-  if (!measureCtx) return Math.max(...lines.map((l) => l.length)) * fs * 0.58;
-  measureCtx.font = `${t.fontStyle?.includes('italic') ? 'italic ' : ''}${t.fontStyle?.includes('bold') ? 'bold ' : ''}${fs}px ${fontFamilyForCanvas(t.fontFamily)}`;
-  return Math.max(...lines.map((l) => measureCtx!.measureText(l).width));
-}
-
 /**
  * Gap rect (parent-local) cut out of an arrow/line behind its label. `text`
  * overrides the stored text so the gap tracks what is being typed.
  */
 export function pathLabelClipRect(
   t: TextElement,
-  parent: { x: number; y: number },
+  parent: { x: number; y: number; type?: string; startArrowhead?: string; endArrowhead?: string },
   imageSize: { width: number; height: number },
   text = t.text,
 ): { x: number; y: number; w: number; h: number } | null {
-  if (!text.trim()) return null;
+  // A label beyond the tail end never touches the shaft: nothing to cut.
+  if (!text.trim() || labelTailEnd(parent)) return null;
   const tb = getElementBounds(t, imageSize);
-  const fs = t.fontSize ?? 24;
-  const pad = t.padding ?? TEXT_PADDING;
-  const lines = text.split('\n');
-  const longest = Math.max(...lines.map((l) => l.length));
-  const w = Math.max(24, Math.min(tb.w, longest * fs * 0.58 + pad * 2 + 12));
+  const lay = layoutText(t, text, t.width);
+  const w = Math.max(24, Math.min(tb.w, lay.w + 12));
   let x = tb.x - parent.x;
   if (t.align === 'center') x += (tb.w - w) / 2;
   else if (t.align === 'right') x += tb.w - w;
-  const h = lines.length * fs * (t.lineHeight ?? TEXT_LINE_HEIGHT) + pad * 2;
-  // Keep the box centred on the stroke point as lines are added.
-  const y = tb.y - parent.y - (h - tb.h) / 2;
-  return { x, y, w, h };
+  return { x, y: t.y - parent.y, w, h: lay.h };
+}
+
+/**
+ * Which end of an arrow carries no head (its label sits beyond that end), or
+ * null for midpoint labels: lines, and arrows with heads at both ends or none.
+ */
+export function labelTailEnd(el: { type?: string; startArrowhead?: string; endArrowhead?: string }): 'start' | 'end' | null {
+  if (el.type !== 'arrow') return null;
+  const s = (el.startArrowhead ?? 'none') !== 'none';
+  const e = (el.endArrowhead ?? 'arrow') !== 'none';
+  return s === e ? null : e ? 'start' : 'end';
+}
+
+/**
+ * Re-seat every arrow/line label from its arrow's geometry and its (optionally
+ * live, mid-typing) text. Returns the same array when nothing moved, so older
+ * projects whose labels were stored at the midpoint settle in one pass.
+ */
+export function placeLinearLabels(
+  elements: EditorElement[],
+  imageSize: { width: number; height: number },
+  live?: { id: string; text: string } | null,
+): EditorElement[] {
+  let byId: Map<string, EditorElement> | undefined;
+  let out = elements;
+  for (let i = 0; i < elements.length; i++) {
+    const t = elements[i];
+    if (t.type !== 'text' || !(t.containerId || t.groupId)) continue;
+    byId ??= new Map(elements.map((e) => [e.id, e]));
+    let owner = t.containerId ? byId.get(t.containerId) : undefined;
+    if (!owner && t.groupId && isLabelPairGroup(t.groupId, elements)) {
+      owner = elements.find((e) => e.id !== t.id && e.groupId === t.groupId);
+    }
+    if (!owner || (owner.type !== 'arrow' && owner.type !== 'line')) continue;
+    const text = t as TextElement;
+    const a = labelAnchorForElement(owner, imageSize, text.fontSize ?? 24, 1, {
+      ...text,
+      text: live?.id === t.id ? live.text : text.text,
+    });
+    if (Math.abs(a.x - t.x) < 0.01 && Math.abs(a.y - t.y) < 0.01 && text.width === a.width) continue;
+    if (out === elements) out = elements.slice();
+    out[i] = { ...text, x: a.x, y: a.y, width: a.width };
+  }
+  return out;
 }
 
 /** Clamp a value to [0, 1]. */

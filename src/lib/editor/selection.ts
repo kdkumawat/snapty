@@ -2,6 +2,8 @@ import type { EditorElement } from '@/types/editor';
 import type { Bounds } from '@/lib/editor/snap-guides';
 import { magnifierBounds, type ImageSize } from '@/lib/editor/magnifier-geometry';
 import { quadBounds, polylineBounds } from '@/lib/editor/curve';
+import { textBox } from '@/lib/editor/text-layout';
+import type { TextElement } from '@/types/editor';
 import { calloutFullBounds, calloutTipOf } from '@/lib/editor/callout-pointer';
 
 export function getElementBounds(el: EditorElement, imageSize?: ImageSize): Bounds {
@@ -56,10 +58,9 @@ export function getElementBounds(el: EditorElement, imageSize?: ImageSize): Boun
       return { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 };
     }
     case 'text': {
-      const t = el as { width?: number; fontSize?: number; text?: string };
-      const w = t.width || Math.max(40, (t.text?.length || 1) * (t.fontSize || 24) * 0.55);
-      const h = (t.fontSize || 24) * 1.4;
-      return { x: el.x - pad, y: el.y - pad, w: w + pad * 2, h: h + pad * 2 };
+      // The box Konva really draws (every line, wrapped at the element's width).
+      const b = textBox(el as TextElement);
+      return { x: el.x - pad, y: el.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
     }
     case 'step': {
       const r = (el as { radius?: number }).radius || 16;

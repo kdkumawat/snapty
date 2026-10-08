@@ -4,7 +4,8 @@ import type {
   EditorElement, ToolType, ExportFormat, CanvasStyle,
   StrokeStyle, FillStyle, Arrowhead, TextElement,
 } from '@/types/editor';
-import { FONT_HAND_DRAWN, DEFAULT_STROKE_COLOR, HIGHLIGHTER_COLOR, IMAGE_BINDING_ID, ROUND_CORNER_RADIUS } from '@/types/editor';
+import { normalizeStepStyle, FONT_HAND_DRAWN, DEFAULT_STROKE_COLOR, HIGHLIGHTER_COLOR, IMAGE_BINDING_ID, ROUND_CORNER_RADIUS } from '@/types/editor';
+import { DEFAULT_MAIN_TOOLS, TOOL_SHORTCUTS } from '@/lib/tool-shortcuts';
 import { trackPageView } from '@/lib/analytics';
 import { getElementBounds, unionBounds } from '@/lib/editor/selection';
 import { labelAnchorForElement, expandLabelPairs, labelPairPartner } from '@/lib/editor/text-labels';
@@ -32,7 +33,7 @@ const PERSIST_KEYS = [
   'transparentExport', 'keepOriginal', 'isBindingEnabled',
   'exportScale', 'exportSelectionOnly',
   'pointerLength', 'pointerWidth', 'pointerDirection',
-  'highlighterColor', 'stepStyle', 'spotlightDim',
+  'highlighterColor', 'stepStyle', 'spotlightDim', 'mainTools',
   // panelCollapsed is responsive/session - not persisted across reloads
 ] as const;
 type PersistKey = typeof PERSIST_KEYS[number];
@@ -44,6 +45,15 @@ const STYLE_KEYS: PersistKey[] = [
   'startArrowhead', 'arrowPath', 'fontStyle', 'textAlign', 'textVerticalAlign',
   'highlighterColor', 'gridEnabled',
 ];
+
+const BLUR_DEFAULT_REV = 2;
+
+/** Saved main-bar order: known tools only, no repeats; empty falls back to the default bar. */
+function normalizeMainTools(v: unknown): ToolType[] {
+  const known = new Set<string>(TOOL_SHORTCUTS.map((t) => t.id));
+  const out = Array.isArray(v) ? v.filter((id, i, a) => known.has(id) && a.indexOf(id) === i) : [];
+  return out.length ? out : [...DEFAULT_MAIN_TOOLS];
+}
 
 function loadPersisted(): Partial<Record<PersistKey, any>> {
   if (typeof window === 'undefined') return {};
@@ -60,6 +70,10 @@ function loadPersisted(): Partial<Record<PersistKey, any>> {
     // Hand and crop are transient (Space-pan, a one-off crop), and diamond is
     // no longer offered: none of them make sense to reopen on.
     if (['hand', 'crop', 'diamond'].includes(saved.activeTool)) delete saved.activeTool;
+    // Blur got a stronger default (the old 12 left small text readable).
+    if (saved.blurDefault !== BLUR_DEFAULT_REV) delete saved.blurRadius;
+    saved.stepStyle = normalizeStepStyle(saved.stepStyle);
+    saved.mainTools = normalizeMainTools(saved.mainTools);
     return saved;
   } catch { return {}; }
 }
@@ -74,6 +88,7 @@ function savePersisted(state: Record<string, any>) {
     toSave.gridEnabled = state.canvasStyle?.gridEnabled ?? state.gridEnabled;
     toSave.transparentExport = state.canvasStyle?.transparentExport ?? false;
     toSave.settingsVersion = SETTINGS_VERSION;
+    toSave.blurDefault = BLUR_DEFAULT_REV;
     localStorage.setItem('snapty-settings', JSON.stringify(toSave));
   } catch { /* quota exceeded */ }
 }
@@ -218,6 +233,9 @@ interface EditorState {
   highlighterColor: string;
   /** Number tool badge: numbers, letters, or an emoji stamp. */
   stepStyle: string;
+  /** Tools on the main toolbar, in order; the rest live in More. Digits 1-9 follow this. */
+  mainTools: ToolType[];
+  setMainTools: (ids: ToolType[]) => void;
   /** Default dim strength of new spotlights (0-1). */
   spotlightDim: number;
   elements: EditorElement[];
@@ -439,11 +457,12 @@ const defaults: Record<string, any> = {
   exportSelectionOnly: false,
   stepStartNumber: 1,
   stepRadius: 16,
-  blurRadius: 12,
+  blurRadius: 16,
   pixelSize: 10,
   highlighterWidth: 24,
   highlighterColor: HIGHLIGHTER_COLOR,
   stepStyle: 'number',
+  mainTools: DEFAULT_MAIN_TOOLS,
   spotlightDim: 0.55,
   exportQuality: 92,
   panelCollapsed: false,
@@ -959,6 +978,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   highlighterWidth: persisted.highlighterWidth ?? defaults.highlighterWidth,
   highlighterColor: persisted.highlighterColor ?? defaults.highlighterColor,
   stepStyle: persisted.stepStyle ?? defaults.stepStyle,
+  mainTools: persisted.mainTools ?? defaults.mainTools,
   spotlightDim: persisted.spotlightDim ?? defaults.spotlightDim,
   elements: projectPersisted?.elements ?? [],
   selectedElementIds: [],
@@ -1345,23 +1365,23 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // A fresh screenshot starts with an empty annotation clipboard, so a
       // stale Ctrl+V never hijacks the primary paste-a-screenshot flow.
       void import('@/lib/editor/annotation-clipboard').then((m) => m.clearAnnotationClipboard());
-      set({
+      // Pushed as one history step (not a reset) so undo returns to the
+      // previous image / the empty editor, and redo brings the new one back.
+      set((s) => ({
         backgroundImage: img,
-        imageDataURL: dataURL,
-        imageSize: size,
-        elements: [], selectedElementIds: [],
-        ...emptyHistory(dataURL, size, undefined, undefined, get().canvasStyle),
+        selectedElementIds: [],
+        ...pushHistory({ ...s, stepCounter: start }, [], { imageDataURL: dataURL, imageSize: size }),
         stepCounter: start, isEditorLaunched: true,
         imageLoading: false,
-      });
+      }));
     } else {
-      set({
+      set((s) => ({
         backgroundImage: img,
-        imageDataURL: dataURL,
-        imageSize: size,
+        selectedElementIds: [],
+        ...pushHistory(s, s.elements, { imageDataURL: dataURL, imageSize: size }),
         isEditorLaunched: true,
         imageLoading: false,
-      });
+      }));
     }
     // Fit the view in the SAME synchronous pass as the image state: both sets
     // batch into one render, so the image first paints already centered
@@ -1589,7 +1609,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     savePersisted({ ...get(), pointerDirection: dir });
   },
   setBlurRadius: (r) => {
-    const v = Math.max(2, Math.min(40, r));
+    const v = Math.max(8, Math.min(40, r));
     set((s) => ({ blurRadius: v, ...applyToSelection(s, 'blurRadius', v) }));
     savePersisted({ ...get(), blurRadius: v });
   },
@@ -1610,12 +1630,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setStepStyle: (style) => {
     // Switching between numbers and letters starts the count again (A after
     // 1, 2, 3; not D). Stamps do not count, so passing through one keeps it.
+    style = normalizeStepStyle(style);
     const kind = (v: unknown) => (typeof v === 'string' ? 'letter' : 'number');
     const next = style.endsWith('letter') ? 'letter' : style.endsWith('number') ? 'number' : null;
     const last = [...get().elements].reverse().find((el) => el.type === 'step');
     const restart = !!next && !!last && kind((last as { stepNumber: unknown }).stepNumber) !== next;
     set({ stepStyle: style, ...(restart ? { stepCounter: 1 } : {}) });
     savePersisted({ ...get(), stepStyle: style });
+  },
+  setMainTools: (ids) => {
+    const mainTools = normalizeMainTools(ids);
+    set({ mainTools });
+    savePersisted({ ...get(), mainTools });
   },
   setSpotlightDim: (v) => {
     const dim = Math.max(0.1, Math.min(0.9, v));
@@ -1650,6 +1676,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       highlighterWidth: defaults.highlighterWidth as number,
       highlighterColor: defaults.highlighterColor as string,
       stepStyle: defaults.stepStyle as string,
+      mainTools: [...DEFAULT_MAIN_TOOLS],
       spotlightDim: defaults.spotlightDim as number,
       stepRadius: defaults.stepRadius as number,
       stepStartNumber: defaults.stepStartNumber as number,

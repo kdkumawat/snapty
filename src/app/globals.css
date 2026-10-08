@@ -826,3 +826,25 @@ html.editor-accent :is(kbd, .snapty-kbd):not(.lp *) {
 .theme-menu-btn { display: flex; align-items: center; width: 100%; height: 32px; padding: 0 8px 0 34px; border: 0; border-radius: 6px; background: transparent; color: var(--foreground); font-size: 0.875rem; text-align: left; cursor: pointer; }
 .theme-menu-btn:hover { background: var(--secondary); }
 .theme-menu-btn > svg { inset: 0 auto 0 8px; width: 18px; height: 18px; }
+
+/* Reading pages (/guide, /privacy): the landing surface with a 65-character measure. */
+.lp .doc { max-width: 760px; padding-block: clamp(32px, 5vw, 64px) clamp(48px, 7vw, 96px); }
+.lp .doc > * + * { margin-top: 1.25rem; }
+.lp .doc h1 { max-width: none; font-size: clamp(2.2rem, 4.4vw, 3.4rem); line-height: 1.04; }
+.lp .doc h2 { max-width: none; margin-top: 3rem; font-size: clamp(1.6rem, 2.6vw, 2.1rem); line-height: 1.12; }
+.lp .doc h3 { font-size: 1.15rem; line-height: 1.25; }
+.lp .doc p, .lp .doc li { max-width: 68ch; font-size: 1.0625rem; line-height: 1.65; color: var(--ink-2); }
+.lp .doc .lead { font-size: 1.25rem; line-height: 1.55; }
+.lp .doc strong { color: var(--ink); }
+.lp .doc a:not(.btn) { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+.lp .doc ol, .lp .doc ul { padding-left: 1.4rem; list-style: revert; display: grid; gap: .6rem; }
+.lp .doc .cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.lp .doc .card { padding: 14px 16px; border: 1px solid var(--rule); border-radius: 12px; background: var(--paper-2); }
+.lp .doc .card p { margin-top: .4rem; font-size: 1rem; line-height: 1.5; }
+.lp .doc .card .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.lp .doc .rows > div { padding: 10px 0; border-top: 1px solid var(--rule); }
+.lp .doc .rows.keyrows > div { display: flex; justify-content: space-between; align-items: baseline; gap: 20px; }
+.lp .doc .rows p { margin-top: .3rem; font-size: 1rem; line-height: 1.5; }
+.lp .doc .rows kbd { flex: none; }
+.lp .doc .note-box { padding: 18px 20px; border: 1px solid var(--rule); border-radius: 14px; background: var(--paper-2); }
+

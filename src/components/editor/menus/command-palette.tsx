@@ -14,8 +14,7 @@ import { useEditorStore } from '@/store/editor-store';
 import type { ToolType } from '@/types/editor';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { isScreenCaptureSupported } from '@/lib/screen-capture';
-import { toastSuccess } from '@/lib/app-toast';
-import { TOOL_SHORTCUTS, formatToolKeys } from '@/lib/tool-shortcuts';
+import { TOOL_SHORTCUTS, formatToolKeys, toolDigit } from '@/lib/tool-shortcuts';
 import { openOverlayImagePicker } from '@/lib/image-load';
 import { modKey } from '@/hooks/use-keyboard-shortcuts';
 import { cn } from '@/lib/utils';
@@ -64,13 +63,14 @@ export default function CommandPalette() {
   }, [open]);
 
   const st = () => useEditorStore.getState();
+  const mainTools = useEditorStore((s) => s.mainTools);
   const groups: { heading: string; items: Cmd[] }[] = [
     {
       heading: 'Tools',
       items: TOOL_SHORTCUTS.map((t) => ({
         label: t.label,
         icon: TOOL_ICONS[t.id] ?? <MousePointer2 className={I} />,
-        keys: formatToolKeys(t).split(' / '),
+        keys: formatToolKeys(t, toolDigit(mainTools, t.id)).split(' / '),
         keywords: [t.hint, 'tool'],
         run: () => st().setActiveTool(t.id),
       })),
@@ -85,7 +85,7 @@ export default function CommandPalette() {
         { label: 'Clear annotations', icon: <Trash2 className={I} />, keys: [modKey, 'Shift', 'Backspace'], keywords: ['remove', 'delete', 'all'], needsImage: true, run: () => st().clearElements() },
         {
           label: 'Reset tool defaults', icon: <RotateCcw className={I} />, keywords: ['stroke', 'style', 'restore'],
-          run: () => { st().resetToolSettings(); toastSuccess('Tools reset', 'Snapty defaults restored'); },
+          run: () => st().resetToolSettings(),
         },
       ],
     },
@@ -97,10 +97,7 @@ export default function CommandPalette() {
         { label: 'Close image', icon: <ImageOff className={I} />, keys: [modKey, 'Shift', 'X'], keywords: ['clear', 'new', 'start over'], needsImage: true, run: emit('snapty-clear') },
         {
           label: 'Save project', icon: <Save className={I} />, keys: [modKey, 'S'], keywords: ['snapty file'], needsImage: true,
-          run: () => {
-            void import('@/lib/editor/project-file').then((m) => m.downloadProject());
-            toastSuccess('Project saved', 'Downloaded .snapty file. Reopen it to continue editing');
-          },
+          run: () => void import('@/lib/editor/project-file').then((m) => m.downloadProject()),
         },
         { label: 'Open project', icon: <FileJson className={I} />, keywords: ['snapty file', 'load'], run: () => void import('@/lib/editor/project-file').then((m) => m.openProjectPicker()) },
       ],

@@ -1,7 +1,6 @@
 'use client';
 
 import { loadImageFromUrl } from '@/lib/image-load';
-import { toastInfo } from '@/lib/app-toast';
 
 /**
  * Load the sample screenshot (a made-up analytics dashboard, the same clean
@@ -13,7 +12,6 @@ import { toastInfo } from '@/lib/app-toast';
 export async function loadSampleImageIntoEditor(): Promise<boolean> {
   try {
     await loadImageFromUrl('/examples/bug-report-before.webp', { mode: 'background', clearAnnotations: true });
-    toastInfo('Sample loaded', 'Drag, select, or draw. Nothing is saved or uploaded');
     return true;
   } catch {
     return false;

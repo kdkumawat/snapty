@@ -15,6 +15,7 @@ import InfoDialog from '@/components/editor/dialogs/info-dialog';
 import CommandPalette from '@/components/editor/menus/command-palette';
 import CanvasContextMenu from '@/components/editor/menus/canvas-context-menu';
 import ImageLoadingSkeleton from '@/components/editor/image-loading-skeleton';
+import ToolHintChip from '@/components/editor/tool-hint-chip';
 import SessionRecovery from '@/components/editor/session-recovery';
 import { EditorErrorBoundary } from '@/components/editor/editor-error-boundary';
 import { scheduleAutosave, type AutosaveSnapshot } from '@/lib/editor/autosave';
@@ -160,9 +161,7 @@ export default function EditorShell() {
               if (file.name.endsWith('.snapty') || file.name.endsWith('.json')) {
                 void import('@/lib/editor/project-file').then(async (m) => {
                   const res = await m.loadProjectFromFile(file);
-                  const { toastError, toastSuccess } = await import('@/lib/app-toast');
-                  if (res.ok) toastSuccess('Project opened', file.name);
-                  else toastError('Could not open project', res.error);
+                  if (!res.ok) (await import('@/lib/app-toast')).toastError('Could not open project', res.error);
                 });
               } else {
                 void import('@/lib/image-load').then(({ loadImageFileIntoEditor }) => loadImageFileIntoEditor(file));
@@ -182,9 +181,7 @@ export default function EditorShell() {
               if (file.name.endsWith('.snapty') || file.name.endsWith('.json')) {
                 void import('@/lib/editor/project-file').then(async (m) => {
                   const res = await m.loadProjectFromFile(file);
-                  const { toastError, toastSuccess } = await import('@/lib/app-toast');
-                  if (res.ok) toastSuccess('Project opened', file.name);
-                  else toastError('Could not open project', res.error);
+                  if (!res.ok) (await import('@/lib/app-toast')).toastError('Could not open project', res.error);
                 });
               } else {
                 void import('@/lib/image-load').then(({ addImageOverlay }) => addImageOverlay(file));
@@ -194,6 +191,7 @@ export default function EditorShell() {
           }}
         />
 
+        <ToolHintChip />
         <SessionRecovery onResolved={() => setRecoveryResolved(true)} />
         <HelpDialog />
         <InfoDialog />

@@ -36,13 +36,11 @@ export const metadata: Metadata = {
     template: "%s | Snapty",
   },
   description:
-    "Free browser screenshot editor. Capture, annotate, and share. Professional arrows, shapes, blur, text, and step numbers. Privacy-first: all processing stays on your device. Install as a PWA.",
+    "Snapty is the fastest way to mark up a screenshot: arrows, numbered steps, callouts, blur and spotlight. Free, no account, nothing uploaded.",
   keywords: [
     "screenshot editor",
-    "browser screenshot editor",
     "image annotation",
     "online editor",
-    "browser editor",
     "free screenshot tool",
     "annotate screenshots",
     "arrow tool",
@@ -54,7 +52,7 @@ export const metadata: Metadata = {
     "privacy first editor",
     "no signup editor",
     "open source screenshot tool",
-    "PWA screenshot editor",
+    "desktop screenshot editor",
   ],
   authors: [{ name: "Snapty" }],
   icons: {
@@ -73,9 +71,9 @@ export const metadata: Metadata = {
     statusBarStyle: "black-translucent",
   },
   openGraph: {
-    title: "Snapty: Free Browser Screenshot Editor",
+    title: "Snapty: Point at exactly what you mean.",
     description:
-      "Professional screenshot annotations in seconds. No installation needed. Privacy-first, open source, works offline. Install as a PWA.",
+      "Snapty is the fastest way to mark up a screenshot: arrows, numbered steps, callouts, blur and spotlight. Free, no account, nothing uploaded.",
     type: "website",
     siteName: "Snapty",
     locale: "en_US",
@@ -84,15 +82,15 @@ export const metadata: Metadata = {
         url: "/og-image.svg",
         width: 1200,
         height: 630,
-        alt: "Snapty - browser screenshot editor",
+        alt: "Snapty: Point at exactly what you mean.",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Snapty: Free Browser Screenshot Editor",
+    title: "Snapty: Point at exactly what you mean.",
     description:
-      "Professional screenshot annotations in seconds. No installation needed.",
+      "Snapty is the fastest way to mark up a screenshot: arrows, numbered steps, callouts, blur and spotlight. Free, no account, nothing uploaded.",
     images: ["/og-image.svg"],
   },
   robots: {

@@ -1,13 +1,13 @@
 # Snapty
 
-Browser-native screenshot editor. Annotate, style, and export - all in your browser.
+**Point at exactly what you mean.** Snapty is the fastest way to mark up a screenshot: arrows, numbered steps, callouts, blur and spotlight. Free, no account, nothing uploaded.
 
 ## Features
 
 - **15+ Tools** - Arrow, shapes, pencil, highlighter, text, step numbers, blur, pixelate, spotlight, eraser
 - **Canvas Styling** - Padding, border radius, shadows, backgrounds (solid/gradient/glass), device frames
 - **Export** - PNG, JPG, WEBP with quality control. Copy to clipboard instantly.
-- **Privacy** - All processing is local. No data leaves your browser.
+- **Privacy** - All processing is local. Nothing is uploaded. Your screenshots stay on your device.
 - **Themes** - Light, dark, and system
 - **Keyboard First** - Full shortcut support (V, H, A, R, O, P, T, N, B, X, S, E, etc.)
 - **PWA** - Install as a browser app for quick access

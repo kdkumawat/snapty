@@ -30,7 +30,7 @@ export function SegmentedControl<T extends string>({
           role="radio"
           aria-checked={value === opt.value}
           className={cn(
-            'h-8 px-2.5 rounded-lg text-xs font-medium transition-colors inline-flex items-center gap-1.5',
+            'h-8 px-2.5 rounded-lg text-[0.8125rem] font-medium transition-colors inline-flex items-center gap-1.5',
             value === opt.value
               ? 'bg-surface text-foreground shadow-sm'
               : 'text-muted-foreground hover:text-foreground',

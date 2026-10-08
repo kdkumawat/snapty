@@ -81,7 +81,7 @@ export const SETTING_SPECS: Record<SettingKey, SettingSpec> = {
   },
   blurRadius: {
     kind: 'slider', key: 'blurRadius', label: 'Blur amount',
-    min: 2, max: 40, step: 1, scaled: true,
+    min: 8, max: 40, step: 1, scaled: true,
   },
   pixelSize: {
     kind: 'slider', key: 'pixelSize', label: 'Pixel size',

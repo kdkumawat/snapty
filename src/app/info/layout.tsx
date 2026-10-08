@@ -3,11 +3,11 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'About',
   description:
-    'Snapty is a free browser screenshot editor. Annotate with hand-drawn arrows, shapes, blur, and text. Privacy-first and installable as a PWA.',
+    'Snapty is the fastest way to mark up a screenshot: arrows, numbered steps, callouts, blur and spotlight. Free, no account, nothing uploaded.',
   openGraph: {
-    title: 'About Snapty: Free Browser Screenshot Editor',
+    title: 'About Snapty',
     description:
-      'Learn how Snapty helps you annotate screenshots locally with a hand-drawn feel.',
+      'Point at exactly what you mean. Nothing is uploaded. Your screenshots stay on your device.',
   },
 };
 

@@ -339,6 +339,28 @@ export function stepFingerBox(pointer: string, r: number) {
     : { x: near, y: -r, size, tipX: near + size, tipY: 0 };
 }
 export const STEP_STAMPS = ['👉', '👆', '✅', '❌', '⚠️', '❓', '⭐', '🔥'] as const;
+/** Number shortcut cycle: Number, Letter, Number with finger, Letter with finger, Finger only. */
+export const STEP_CYCLE = ['number', 'letter', '👉number', '👉letter', '👉'] as const;
+/** Step style = optional finger + count ('number' | 'letter' | none); a stamp is an emoji alone. */
+export function parseStepStyle(style: string): { finger: string; count: 'number' | 'letter' | ''; stamp: boolean } {
+  const count = style.endsWith('number') ? 'number' : style.endsWith('letter') ? 'letter' : '';
+  const finger = STEP_FINGERS.find((f) => style.startsWith(f)) ?? '';
+  return { finger, count, stamp: !count && !finger };
+}
+/** Saved or stale step styles fall back to Number. */
+export function normalizeStepStyle(v: unknown): string {
+  if (typeof v !== 'string') return 'number';
+  if (v === 'number' || v === 'letter' || (STEP_STAMPS as readonly string[]).includes(v)) return v;
+  return STEP_FINGERS.some((f) => v === `${f}number` || v === `${f}letter`) ? v : 'number';
+}
+/** Name of a step style, e.g. "Letter with finger", "Finger"; `dir` adds right/up. */
+export function stepStyleLabel(style: string, dir = false): string {
+  const { finger, count, stamp } = parseStepStyle(style);
+  if (stamp) return `Stamp ${style}`;
+  const f = dir ? `${finger === '👉' ? 'right' : 'up'} finger` : 'finger';
+  const c = count === 'letter' ? 'Letter' : 'Number';
+  return !count ? f[0].toUpperCase() + f.slice(1) : finger ? `${c} with ${f}` : c;
+}
 
 /** Marker yellow: the highlighter's default and its quick-pick swatch. */
 export const HIGHLIGHTER_COLOR = COLOR_PALETTE.yellow[2];
