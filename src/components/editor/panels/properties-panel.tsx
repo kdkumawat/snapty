@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Droplets, Grid3x3, Lock, Unlock } from '@/components/editor/ui/icons';
+import { Droplets, Grid3x3, Lock, Unlock, X } from '@/components/editor/ui/icons';
 import { FloatingSurface } from '@/components/editor/ui/floating-surface';
 import { useEditorStore } from '@/store/editor-store';
 import { useFormFactor } from '@/hooks/use-form-factor';
@@ -35,14 +35,14 @@ export default function FloatingPropertiesPanel() {
   const formFactor = useFormFactor();
   const isMobile = formFactor === 'phone';
   const [sheetOpen, setSheetOpen] = React.useState(false);
-  // Compact column: which single colour the popover shows, or null for all options.
-  const [only, setOnly] = React.useState<'strokeColor' | 'fillColor' | null>(null);
+  // Compact layout: the one panel can fold into a single button.
+  const [folded, setFolded] = React.useState(false);
   const { selectedElementIds, selected, keys, visible, locked } = useToolSettingsPanel();
 
   const activeTool = useEditorStore((s) => s.activeTool);
   const strokeColor = useEditorStore((s) => s.strokeColor);
   const fillColor = useEditorStore((s) => s.fillColor);
-  const setActiveTool = useEditorStore((s) => s.setActiveTool);
+  const setBlurMode = useEditorStore((s) => s.setBlurMode);
   const removeElements = useEditorStore((s) => s.removeElements);
   const duplicateSelected = useEditorStore((s) => s.duplicateSelected);
   const bringForward = useEditorStore((s) => s.bringForward);
@@ -61,30 +61,35 @@ export default function FloatingPropertiesPanel() {
   const hasSelection = selected.length > 0;
   const multi = selected.length > 1;
   const grouped = hasSelection && selected.some((el) => el.groupId);
-  const blurTool = !hasSelection && (activeTool === 'blur' || activeTool === 'pixelate');
+  const blurSel = selected.filter((el) => el.type === 'blur' || el.type === 'pixelate');
+  const blurTool = activeTool === 'blur' || activeTool === 'pixelate' || blurSel.length > 0;
+  // Selected regions decide what Mode shows ('mixed' lights neither); otherwise the tool does.
+  const mode = blurSel.length
+    ? (blurSel.every((el) => el.type === blurSel[0].type) ? blurSel[0].type : 'mixed')
+    : activeTool;
 
   const body = (
     <div className="flex flex-col gap-3">
       {blurTool && (
         <Section label="Mode">
           <ButtonRow>
-            <PanelButton label="Blur" active={activeTool === 'blur'} onClick={() => setActiveTool('blur')}>
+            <PanelButton label="Blur" active={mode === 'blur'} onClick={() => setBlurMode('blur')}>
               <Droplets strokeWidth={1.5} />
             </PanelButton>
-            <PanelButton label="Pixelate" active={activeTool === 'pixelate'} onClick={() => setActiveTool('pixelate')}>
+            <PanelButton label="Pixelate" active={mode === 'pixelate'} onClick={() => setBlurMode('pixelate')}>
               <Grid3x3 strokeWidth={1.5} />
             </PanelButton>
           </ButtonRow>
         </Section>
       )}
 
-      {keys.filter((key) => !only || formFactor !== 'compact' || key === only).map((key) => (
+      {keys.map((key) => (
         <Section key={key} label={SETTING_SPECS[key].label}>
           <SettingControl spec={SETTING_SPECS[key]} />
         </Section>
       ))}
 
-      {hasSelection && !(only && formFactor === 'compact') && (
+      {hasSelection && (
         <>
           <Section label="Layers">
             <ButtonRow>
@@ -179,56 +184,30 @@ export default function FloatingPropertiesPanel() {
     );
   }
 
-  // Excalidraw's compact styles panel: an icon column whose first button
-  // opens the full set of options beside it.
-  if (formFactor === 'compact') {
+  // Compact windows: the same single panel, with a corner control that folds
+  // it into one button (options icon plus the current colours).
+  if (formFactor === 'compact' && folded) {
     return (
-      <div className="absolute top-[4.25rem] left-4 z-[60] flex items-start gap-2 pointer-events-none">
-        <FloatingSurface data-snapty-panel className="p-2 flex flex-col gap-2 pointer-events-auto">
-          {/* Excalidraw leads the column with the current stroke and background. */}
-          {keys.includes('strokeColor') && (
-            <button type="button" aria-label="Stroke" className="toolbar-btn !w-8 !h-8" onClick={() => { setSheetOpen(!(sheetOpen && only === 'strokeColor')); setOnly('strokeColor'); }}>
-              <span className="w-8 h-8 rounded-lg border border-border" style={{ background: strokeColor }} />
-            </button>
-          )}
-          {keys.includes('fillColor') && (
-            <button type="button" aria-label="Background" className="toolbar-btn !w-8 !h-8" onClick={() => { setSheetOpen(!(sheetOpen && only === 'fillColor')); setOnly('fillColor'); }}>
-              <span
-                className="w-8 h-8 rounded-lg border border-border"
-                style={fillColor === 'transparent'
-                  ? { background: 'repeating-conic-gradient(#e9e9ef 0% 25%, #fff 0% 50%) 50% / 12px 12px' }
-                  : { background: fillColor }}
-              />
-            </button>
-          )}
-          <button
-            type="button"
-            aria-label="Shape properties"
-            aria-expanded={sheetOpen && !only}
-            onClick={() => { setSheetOpen(!(sheetOpen && !only)); setOnly(null); }}
-            className={cn('toolbar-btn !w-8 !h-8', sheetOpen && !only && 'toolbar-btn-active')}
-          >
-            <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M14 6m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M4 6l8 0M16 6l4 0M8 12m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M4 12l2 0M10 12l10 0M17 18m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M4 18l11 0M19 18l1 0" />
-            </svg>
-          </button>
-          {hasSelection && (
-            <>
-              <button type="button" aria-label="Duplicate" className="toolbar-btn !w-8 !h-8 [&>svg]:w-4 [&>svg]:h-4" onClick={duplicateSelected}>
-                {DuplicateIcon}
-              </button>
-              <button type="button" aria-label="Delete" className="toolbar-btn !w-8 !h-8 [&>svg]:w-4 [&>svg]:h-4" onClick={() => removeElements(selectedElementIds)}>
-                {TrashIcon}
-              </button>
-            </>
-          )}
-        </FloatingSurface>
-        {sheetOpen && (
-          <FloatingSurface className="w-[12.625rem] p-3 pointer-events-auto overflow-y-auto panel-scroll max-h-[calc(100dvh-9rem)]">
-            {body}
-          </FloatingSurface>
+      <button
+        type="button"
+        aria-label="Show tool options"
+        aria-expanded={false}
+        onClick={() => setFolded(false)}
+        className="floating-surface absolute top-[4.75rem] left-4 z-[60] pointer-events-auto rounded-xl p-2 flex items-center gap-2 text-foreground"
+      >
+        <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M14 6m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M4 6l8 0M16 6l4 0M8 12m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M4 12l2 0M10 12l10 0M17 18m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M4 18l11 0M19 18l1 0" />
+        </svg>
+        {keys.includes('strokeColor') && <span className="w-5 h-5 rounded-md border border-border" style={{ background: strokeColor }} />}
+        {keys.includes('fillColor') && (
+          <span
+            className="w-5 h-5 rounded-md border border-border"
+            style={fillColor === 'transparent'
+              ? { background: 'repeating-conic-gradient(#e9e9ef 0% 25%, #fff 0% 50%) 50% / 8px 8px' }
+              : { background: fillColor }}
+          />
         )}
-      </div>
+      </button>
     );
   }
 
@@ -237,6 +216,20 @@ export default function FloatingPropertiesPanel() {
       data-snapty-panel
       className="absolute top-[4.75rem] left-4 z-[60] w-[12.625rem] rounded-xl p-3 pointer-events-auto overflow-y-auto panel-scroll max-h-[calc(100dvh-9rem)]"
     >
+      {formFactor === 'compact' && (
+        <div className="-mt-1 mb-2 flex items-center justify-between">
+          <span className="text-[0.75rem] text-muted-foreground">Options</span>
+          <button
+            type="button"
+            aria-label="Hide tool options"
+            aria-expanded
+            onClick={() => setFolded(true)}
+            className="w-6 h-6 rounded-md inline-flex items-center justify-center text-muted-foreground hover:bg-secondary hover:text-foreground"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       {body}
     </FloatingSurface>
   );

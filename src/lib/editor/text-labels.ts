@@ -276,9 +276,19 @@ export function labelAnchorForElement(
       const pts = a.points;
       const sx = start ? pts[0] : pts[pts.length - 2];
       const sy = start ? pts[1] : pts[pts.length - 1];
-      const reach = 8 + (a.strokeWidth ?? 2) / 2 + Math.abs(d.x) * boxW / 2 + Math.abs(d.y) * lay.h / 2;
-      cx = el.x + sx + d.x * reach;
-      cy = el.y + sy + d.y * reach;
+      // Anchor the label's NEAR EDGE a fixed gap from the tail, never its
+      // centre, so typing (wider, taller) never slides the anchored edge.
+      const gap = 8 + (a.strokeWidth ?? 2) / 2;
+      const px = el.x + sx;
+      const py = el.y + sy;
+      if (Math.abs(d.y) >= Math.abs(d.x)) {
+        // More vertical: above/below the tail, centred on it; lines grow away.
+        const y = d.y < 0 ? py - gap - lay.h : py + gap;
+        return { x: px - width / 2, y, width };
+      }
+      // More horizontal: beside the tail, vertically centred on it.
+      cx = d.x < 0 ? px - gap - boxW / 2 : px + gap + boxW / 2;
+      cy = py;
     } else {
       const t = clamp01(label?.labelOffset ?? 0.5);
       const pt = pointAlongPath(el, t);
@@ -358,7 +368,7 @@ export function placeLinearLabels(
     const text = t as TextElement;
     const a = labelAnchorForElement(owner, imageSize, text.fontSize ?? 24, 1, {
       ...text,
-      text: live?.id === t.id ? live.text : text.text,
+      text: (live?.id === t.id ? live.text : text.text).trim(),
     });
     if (Math.abs(a.x - t.x) < 0.01 && Math.abs(a.y - t.y) < 0.01 && text.width === a.width) continue;
     if (out === elements) out = elements.slice();

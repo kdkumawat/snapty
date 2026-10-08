@@ -66,6 +66,8 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
   const [capturing, setCapturing] = useState(false);
   const isMobile = useIsMobile();
   const rootRef = useRef<HTMLDivElement>(null);
+  // Phones: 40px targets with 4px between them.
+  const tap = isMobile ? '!w-10 !h-10' : undefined;
 
   useEffect(() => {
     if (!menu) return;
@@ -208,11 +210,12 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
       ref={rootRef}
       className={cn('relative', !embedded && 'absolute top-3 right-3 z-[80]')}
     >
-      <FloatingSurface pill className="action-flat flex items-center gap-2 w-fit">
+      <FloatingSurface pill className={cn('action-flat flex items-center w-fit', isMobile ? 'gap-1' : 'gap-2')}>
         {!isMobile && isScreenCaptureSupported() && (
           <Tooltip>
             <TooltipTrigger asChild>
               <IconButton
+                className={tap}
                 aria-label="Capture screen"
                 onClick={() => void handleCapture()}
                 disabled={capturing}
@@ -228,7 +231,7 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
           <>
             <Tooltip>
               <TooltipTrigger asChild>
-                <IconButton aria-label="Copy image" onClick={() => void handleCopy()}>
+                <IconButton className={tap} aria-label="Copy image" onClick={() => void handleCopy()}>
                   <SwapIcon on={copied} from={<Copy className="w-4 h-4" />} to={<Check className="w-4 h-4" />} />
                 </IconButton>
               </TooltipTrigger>
@@ -238,6 +241,7 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
             <Tooltip>
               <TooltipTrigger asChild>
                 <IconButton
+                  className={tap}
                   aria-label="Download"
                   aria-expanded={menu === 'download'}
                   onClick={() => setMenu((m) => (m === 'download' ? null : 'download'))}
@@ -250,7 +254,7 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
 
             <Tooltip>
               <TooltipTrigger asChild>
-                <IconButton aria-label="Share" onClick={() => void handleShare()}>
+                <IconButton className={tap} aria-label="Share" onClick={() => void handleShare()}>
                   <Share2 className="w-4 h-4" />
                 </IconButton>
               </TooltipTrigger>
@@ -262,7 +266,7 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
         {backgroundImage && (
           <Tooltip>
             <TooltipTrigger asChild>
-              <IconButton aria-label="Close image" onClick={requestClear}>
+              <IconButton className={tap} aria-label="Close image" onClick={requestClear}>
                 <X className="w-4 h-4" />
               </IconButton>
             </TooltipTrigger>

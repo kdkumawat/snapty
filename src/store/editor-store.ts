@@ -234,6 +234,10 @@ interface EditorState {
   /** Number tool badge: numbers, letters, or an emoji stamp. */
   stepStyle: string;
   /** Tools on the main toolbar, in order; the rest live in More. Digits 1-9 follow this. */
+  /** Blur or pixelate: the mode new regions use and the Blur tool opens in. */
+  blurMode: 'blur' | 'pixelate';
+  /** Set the mode: converts selected blur/pixelate regions (one undo step) and the tool default. */
+  setBlurMode: (mode: 'blur' | 'pixelate') => void;
   mainTools: ToolType[];
   setMainTools: (ids: ToolType[]) => void;
   /** Default dim strength of new spotlights (0-1). */
@@ -979,6 +983,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   highlighterColor: persisted.highlighterColor ?? defaults.highlighterColor,
   stepStyle: persisted.stepStyle ?? defaults.stepStyle,
   mainTools: persisted.mainTools ?? defaults.mainTools,
+  blurMode: persisted.activeTool === 'pixelate' ? 'pixelate' : 'blur',
   spotlightDim: persisted.spotlightDim ?? defaults.spotlightDim,
   elements: projectPersisted?.elements ?? [],
   selectedElementIds: [],
@@ -1522,7 +1527,26 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
 
+  setBlurMode: (mode) => {
+    set((s) => {
+      const inBlurTool = s.activeTool === 'blur' || s.activeTool === 'pixelate';
+      const ids = new Set(s.selectedElementIds);
+      let changed = false;
+      const els = s.elements.map((el) => {
+        if (!ids.has(el.id) || (el.type !== 'blur' && el.type !== 'pixelate') || el.type === mode) return el;
+        changed = true;
+        const sh = el as unknown as { blurRadius?: number; pixelSize?: number };
+        return { ...el, type: mode, blurRadius: sh.blurRadius ?? s.blurRadius, pixelSize: sh.pixelSize ?? s.pixelSize } as EditorElement;
+      });
+      return { blurMode: mode, ...(inBlurTool ? { activeTool: mode } : {}), ...(changed ? pushHistory(s, els) : {}) };
+    });
+    savePersisted({ ...get() });
+    scheduleProjectSave({ ...get() });
+  },
   setActiveTool: (tool, opts) => {
+    // The Blur tool opens in the last chosen mode.
+    if (tool === 'blur') tool = get().blurMode;
+    else if (tool === 'pixelate') set({ blurMode: 'pixelate' });
     const clearSelection = opts?.clearSelection !== false;
     set(clearSelection ? { activeTool: tool, selectedElementIds: [] } : { activeTool: tool });
     savePersisted({ ...get(), activeTool: tool });

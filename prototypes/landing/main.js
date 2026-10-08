@@ -37,9 +37,9 @@
   const RATES = [0.5, 0.75, 1, 1.5];                   // one speed for every film, kept for the visit
   let rate = 1; try { rate = RATES.find((r) => r === +sessionStorage.getItem('snapty-rate')) || 1; } catch {}
   let sound = false;                                   // one shared music bed; the file is not requested until sound is turned on
-  let bgm = null, fade = 0;
+  let bgm = null, fade = 0, target = 0;
   const soundBtns = [], rateBtns = [];
-  const fadeTo = (to, done) => { cancelAnimationFrame(fade); const from = bgm.volume, t0 = performance.now(), dur = reduce.matches ? 1 : 700;
+  const fadeTo = (to, done) => { cancelAnimationFrame(fade); target = to; const from = bgm.volume, t0 = performance.now(), dur = reduce.matches ? 1 : 700;
     const tick = (t) => { const k = Math.max(0, Math.min(1, (t - t0) / dur)); bgm.volume = from + (to - from) * k; if (k < 1) fade = requestAnimationFrame(tick); else done?.(); }; fade = requestAnimationFrame(tick); };
   const filmPlaying = () => clips.some((c) => !c.v.paused);
   // the hero film is cut to the music: while it plays, the audio follows its clock (seek, loop, speed); other films just run alongside
@@ -51,6 +51,7 @@
   const musicSync = () => {                            // music plays only while a film plays (visible, tab shown)
     if (!bgm) return; const on = sound && filmPlaying();
     if (on && bgm.paused) { bgm.volume = 0; bgm.play().then(() => { follow(true); fadeTo(0.35); }).catch(() => {}); }
+    else if (on && target !== 0.35) fadeTo(0.35);       // a fade-out that a following film interrupted (hero paused, tool film started)
     else if (!on && !bgm.paused) fadeTo(0, () => { if (!(sound && filmPlaying())) bgm.pause(); });
   };
   const paintSound = () => soundBtns.forEach((b) => { b.innerHTML = sound ? ICON.speaker : ICON.mute; b.setAttribute('aria-pressed', sound); b.setAttribute('aria-label', sound ? 'Sound on' : 'Sound off'); b.title = sound ? 'Sound on' : 'Sound off'; });
@@ -59,7 +60,7 @@
   const clips = $$('[data-clip]').map((fig) => {
     const v = $('video', fig), btn = document.createElement('button'), ctl = document.createElement('div');
     ctl.className = 'clip-ctl'; fig.appendChild(ctl);
-    const c = { fig, v, visible: false, active: !fig.closest('[data-step]'), userPaused: reduce.matches || saveData };
+    const c = { fig, v, visible: false, ratio: 0, active: !fig.closest('[data-step]'), userPaused: reduce.matches || saveData };
     btn.type = 'button'; btn.className = 'clip-btn';
     const paint = () => { const playing = !v.paused; btn.innerHTML = playing ? ICON.pause : ICON.play; btn.setAttribute('aria-label', playing ? 'Pause clip' : 'Play clip'); };
     v.addEventListener('play', paint); v.addEventListener('pause', paint); paint();
@@ -102,12 +103,15 @@
       for (const [ext, type] of v.hasAttribute('data-mp4only') ? [['mp4', 'video/mp4']] : [['webm', 'video/webm'], ['mp4', 'video/mp4']]) { const s = document.createElement('source'); s.src = `media/${film}.${ext}`; s.type = type; v.appendChild(s); }
       v.load(); };
     c.wants = () => c.visible && c.active && !c.userPaused && !document.hidden;
+    c.claims = () => c.active && !c.userPaused && !document.hidden && c.ratio > 0;   // the film the visitor asked for
     ctl.appendChild(btn);
     return c;
   });
   setRate(rate); paintSound();
   const syncAll = () => {
-    const win = clips.includes(lead) && lead.wants() ? lead : clips.find((c) => c.wants());
+    // exactly one film plays: the one the visitor asked for; else the one already playing; else the most visible
+    const wanting = clips.filter((c) => c.wants());
+    const win = lead && lead.claims() ? lead : wanting.find((c) => !c.v.paused) || wanting.sort((a, b) => b.ratio - a.ratio)[0];
     clips.forEach((c) => { if (c === win) { c.load(); c.v.play().catch(() => {}); } else c.v.pause(); });
     musicSync();
   };
@@ -115,7 +119,8 @@
   document.addEventListener('visibilitychange', syncAll);
   const byFig = new Map(clips.map((c) => [c.fig, c]));
   inView(clips.map((c) => c.fig), (fig, on) => { const c = byFig.get(fig); if (on && c.active) c.near(); }, { rootMargin: '700px 0px' });
-  inView(clips.map((c) => c.fig), (fig, on) => { byFig.get(fig).visible = on; syncAll(); }, { threshold: 0.35 });
+  const ratioIO = new IntersectionObserver((es) => { es.forEach((e) => { const c = byFig.get(e.target); c.ratio = e.intersectionRatio; c.visible = e.intersectionRatio >= 0.35; }); syncAll(); }, { threshold: [0, 0.1, 0.2, 0.35, 0.5, 0.75, 1] });
+  clips.forEach((c) => ratioIO.observe(c.fig));
 
   // 4. Tour: a playlist. Choosing a step plays its film; when a film ends the next step takes over.
   const steps = $$('[data-step]');
@@ -126,7 +131,7 @@
   steps.forEach((s, i) => {
     const c = byFig.get($('[data-clip]', s)); c.v.loop = false;
     $('.step-head', s).addEventListener('click', () => setStep(s, true));
-    c.v.addEventListener('ended', () => { if (current === s) setStep(steps[(i + 1) % steps.length]); });
+    c.v.addEventListener('ended', () => { if (current === s) { const n = steps[(i + 1) % steps.length]; setStep(n); lead = byFig.get($('[data-clip]', n)); syncAll(); } });
   });
   setStep(current);
   // a tool's own key selects its film (N plays the badges film, U the callout film...)

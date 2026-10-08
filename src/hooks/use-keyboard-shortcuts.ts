@@ -135,9 +135,10 @@ export function useKeyboardShortcuts() {
             return;
           }
           // B again: Blur, Pixelate (the panel's Mode row).
-          if (tool === 'blur' && (st.activeTool === 'blur' || st.activeTool === 'pixelate')) {
-            const next = st.activeTool === 'blur' ? 'pixelate' : 'blur';
-            st.setActiveTool(next, { clearSelection: false });
+          const sel = st.elements.find((el) => st.selectedElementIds.includes(el.id) && (el.type === 'blur' || el.type === 'pixelate'));
+          if (tool === 'blur' && (sel || st.activeTool === 'blur' || st.activeTool === 'pixelate')) {
+            const next = (sel?.type ?? st.activeTool) === 'blur' ? 'pixelate' : 'blur';
+            st.setBlurMode(next);
             hint('blurMode', next);
             return;
           }

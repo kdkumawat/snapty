@@ -139,7 +139,7 @@ html.dark .lp {
 .lp .mark.is-in path:nth-child(2) { transition-delay: .55s; transition-duration: .2s; }
 .lp .mark.is-in path:nth-child(3) { transition-delay: .7s; transition-duration: .2s; }
 .lp .note-hero { position: absolute; right: 2%; bottom: -50px; white-space: nowrap; transform: rotate(-3deg); }
-.lp .mark-hero { position: absolute; right: calc(2% + 268px); bottom: -64px; width: 80px; transform: rotate(108deg); }
+.lp .mark-hero { position: absolute; right: calc(2% + 288px); bottom: -46px; width: 80px; height: 44px; }
 @media (max-width: 1023px) {
 .lp .note-hero, .lp .mark-hero { display: none; }
 }

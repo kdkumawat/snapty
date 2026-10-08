@@ -15,10 +15,15 @@ const L = require('./lib');
   await fc.setFiles(L.PNG + '/phone.png');
   await p.waitForFunction(() => !!window.__snapty_stage && window.__snapty_stage.findOne('.annotation-layer'), null, { timeout: 15000 }); await p.waitForTimeout(1500); await R.readT();
   await R.to(200, 600, { ms: 300 }); await R.hold(500);
-  // 2 arrow + label at its tail: the total
-  await toS(240, 676, { ms: 500 }); await R.hold(150); await R.down(); await toS(331, 581, { ms: 650, arc: 0.03 }); await R.hold(100); await R.up(); await R.hold(200);
-  await toS(285, 628, { ms: 300 }); await R.hold(100); await R.dbl(150); await R.type('wrong?', 150); await R.key('Enter', 250);
-  await toS(300, 700, { ms: 350 }); await R.hold(600);
+  // silent (no frames): make the Text tool "Very large" so the note stays readable at phone size
+  await p.getByRole('button', { name: 'Text', exact: true }).click(); await p.getByRole('button', { name: 'Shape properties' }).click();
+  await p.getByRole('button', { name: 'Very large' }).click(); await p.getByRole('button', { name: 'Shape properties' }).click();
+  await p.getByRole('button', { name: 'Arrow', exact: true }).click(); await p.waitForTimeout(300);
+  // 2 arrow onto the total, with a large note at its tail
+  await toS(236, 668, { ms: 500 }); await R.hold(150); await R.down(); await toS(331, 581, { ms: 650, arc: 0.03 }); await R.hold(100); await R.up(); await R.hold(250);
+  await R.clickEl(p.getByRole('button', { name: 'Text', exact: true }), { ms: 450 }); await R.hold(150);
+  await toS(150, 694, { ms: 450 }); await R.hold(120); await R.click(250); await R.type('wrong?', 200); await R.key('Escape', 300);
+  await toS(300, 720, { ms: 350 }); await R.hold(1000);
   // 3 number badges on the three items
   await R.clickEl(p.getByRole('button', { name: 'Number', exact: true }), { ms: 600 }); await R.hold(300);
   for (const y of [244, 317, 390]) { await toS(44, y, { ms: 300 }); await R.hold(80); await R.click(150); }
