@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Snapty: mark up a screenshot in your browser</title>
-<meta name="description" content="Snapty is a free, open-source screenshot editor that runs in a browser tab. Paste a screenshot, annotate it, copy it back out. Nothing is uploaded.">
+<title>Snapty: Point at exactly what you mean</title>
+<meta name="description" content="Snapty is the fastest way to mark up a screenshot: arrows, numbered steps, callouts, blur and spotlight. Free, no account, nothing uploaded.">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="preload" href="assets/BricolageGrotesque-Variable.woff2" as="font" type="font/woff2" crossorigin>
@@ -46,6 +46,8 @@
   </div>
 </header>
 
+<span class="top-sentinel" aria-hidden="true"></span>
+
 <main id="main">
 
 <!-- ───────────── Hero ───────────── -->
@@ -53,7 +55,7 @@
   <div class="wrap hero-grid">
     <div class="hero-copy">
       <h1>Point at exactly what you mean.</h1>
-      <p class="lede">Snapty is a free screenshot editor that lives in a browser tab. Paste a screenshot, mark it up, copy it back out. Nothing is uploaded and there is no account.</p>
+      <p class="lede">Snapty is the fastest way to mark up a screenshot: arrows, numbered steps, callouts, blur and spotlight. Free, no account, nothing uploaded.</p>
       <div class="hero-act">
         <a class="btn btn-lg" href="http://localhost:3001/editor" data-prod="/editor">Open the editor</a>
         <p class="paste-hint" id="paste-hint">or paste a screenshot here <kbd>Ctrl</kbd><kbd>V</kbd></p>
@@ -63,8 +65,8 @@
 
     <div class="hero-stage">
       <figure class="shot shot-hero" data-clip>
-        <video width="1920" height="1280" muted playsinline loop preload="metadata" poster="media/hero.webp" data-eager
-          aria-label="Film: the Snapty logo, then a screenshot of a failing webhook page is pasted into the editor and marked up with an arrow, a rectangle, numbered badges, a pixelated secret, a highlighter stroke and a callout, then copied."><source src="media/hero.webm" type="video/webm"><source src="media/hero.mp4" type="video/mp4"></video>
+        <video width="1920" height="1280" muted playsinline loop preload="none" poster="media/hero.webp" data-film="hero"
+          aria-label="Film: the Snapty logo, then a screenshot of a failing webhook page is pasted into the editor and marked up with an arrow, a rectangle, numbered badges, a pixelated secret, a highlighter stroke and a callout, then copied."></video>
       </figure>
       <p class="note note-hero" aria-hidden="true">the real editor, recorded</p>
       <svg class="mark mark-hero" data-mark="heroArrow" viewBox="0 0 160 104" aria-hidden="true"></svg>
@@ -77,7 +79,7 @@
   <div class="wrap">
     <div class="sec-head">
       <h2 id="tools-h">Every tool is one key away.</h2>
-      <p>Press a tool&rsquo;s key right now, or pick it from the list, and watch it work. Every film is the editor itself, recorded in a browser.</p>
+      <p>Press a tool&rsquo;s key right now, or pick it from the list, and watch it work. Every film is the editor itself, recorded.</p>
     </div>
 
     <div class="tour" id="tour">
@@ -197,17 +199,18 @@
       <p>Drag the divider to compare the raw screenshot with what you would actually send.</p>
     </div>
 
+    <div class="uses-body">
     <div class="tabs" role="tablist" aria-label="Use cases">
-      <button role="tab" id="tab-bug" aria-controls="panel-bug" aria-selected="true">Bug report</button>
-      <button role="tab" id="tab-tut" aria-controls="panel-tut" aria-selected="false" tabindex="-1">Step-by-step</button>
-      <button role="tab" id="tab-red" aria-controls="panel-red" aria-selected="false" tabindex="-1">Redaction</button>
-      <button role="tab" id="tab-des" aria-controls="panel-des" aria-selected="false" tabindex="-1">Design feedback</button>
+      <button role="tab" id="tab-bug" aria-controls="panel-bug" aria-selected="true">Bug report<span class="tab-note" aria-hidden="true"><span>“The total is wrong” becomes a ticket nobody has to ask about.</span><span>Magnifier, rectangle, two callouts.</span></span></button>
+      <button role="tab" id="tab-tut" aria-controls="panel-tut" aria-selected="false" tabindex="-1">Step-by-step<span class="tab-note" aria-hidden="true"><span>Five clicks, five numbers, and the docs page writes itself.</span><span>Number badges, text.</span></span></button>
+      <button role="tab" id="tab-red" aria-controls="panel-red" aria-selected="false" tabindex="-1">Redaction<span class="tab-note" aria-hidden="true"><span>Hide the key before the screenshot reaches a chat that never forgets.</span><span>Pixelate, callout.</span></span></button>
+      <button role="tab" id="tab-des" aria-controls="panel-des" aria-selected="false" tabindex="-1">Design feedback<span class="tab-note" aria-hidden="true"><span>Feedback pinned to the pixel it is about, not paragraph four of a message.</span><span>Spotlight, highlighter, stamps, text.</span></span></button>
     </div>
 
     <div class="panel" role="tabpanel" id="panel-bug" aria-labelledby="tab-bug" tabindex="0">
       <div class="cmp" data-cmp>
-        <img class="cmp-before" src="media/ex-bug-before.webp" width="2888" height="1808" alt="Dashboard screenshot, unannotated." decoding="async">
-        <img class="cmp-after" src="media/ex-bug-after.webp" width="2888" height="1808" alt="The same dashboard: a magnifier enlarges the revenue figure, a rectangle marks the order total, and two callouts say the numbers disagree." decoding="async">
+        <img class="cmp-before" loading="lazy" src="media/ex-bug-before.webp" width="2888" height="1808" alt="Dashboard screenshot, unannotated." decoding="async">
+        <img class="cmp-after" loading="lazy" src="media/ex-bug-after.webp" width="2888" height="1808" alt="The same dashboard: a magnifier enlarges the revenue figure, a rectangle marks the order total, and two callouts say the numbers disagree." decoding="async">
         <span class="cmp-tag cmp-tag-b" aria-hidden="true">Before</span><span class="cmp-tag cmp-tag-a" aria-hidden="true">After</span>
         <span class="cmp-line" aria-hidden="true"></span>
         <input type="range" min="0" max="100" value="100" aria-label="Divider position between before and after">
@@ -259,6 +262,7 @@
         <p class="panel-tools">Spotlight, highlighter, stamps, text.</p>
       </div>
     </div>
+    </div>
   </div>
 </section>
 
@@ -266,8 +270,8 @@
 <section class="privacy" id="privacy" aria-labelledby="privacy-h">
   <div class="wrap privacy-grid">
     <div class="privacy-copy">
-      <h2 id="privacy-h">Your screenshot never leaves the tab.</h2>
-      <p>There is no upload to trust, because there is no server that handles images. Pasting, drawing, blurring and exporting all happen in your browser.</p>
+      <h2 id="privacy-h">Nothing is uploaded. Your screenshots stay on your device.</h2>
+      <p>There is no upload to trust, because there is no server that handles images. Pasting, drawing, blurring and exporting all happen on your device.</p>
       <ul class="facts">
         <li><strong>No account.</strong> Nothing to sign up for, nothing to log in to.</li>
         <li><strong>One optional counter.</strong> The site counts anonymous page views with Google Analytics. It never sees an image, and Settings has an off switch.</li>

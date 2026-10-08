@@ -60,14 +60,14 @@ export default function CanvasContextMenu({ children }: { children: React.ReactN
         <ContextMenu.Content className="z-[300] min-w-[12rem] rounded-xl border border-border bg-surface/95 backdrop-blur-md p-1 shadow-xl">
           <ContextMenu.Item
             className={itemClass}
-            onSelect={() => void copyToClipboard().then(() => toastSuccess('Copied', 'Image on clipboard'))}
+            onSelect={() => void copyToClipboard().catch(() => toastError('Couldn’t copy', 'Allow clipboard access and try again'))}
           >
             Copy
           </ContextMenu.Item>
           <ContextMenu.Item
             className={itemClass}
             disabled={!hasImage}
-            onSelect={() => void copySvgToClipboard().then(() => toastSuccess('Copied SVG', 'Vector annotations with embedded image'))}
+            onSelect={() => void copySvgToClipboard().catch(() => toastError('Couldn’t copy', 'Allow clipboard access and try again'))}
           >
             Copy as SVG
           </ContextMenu.Item>
@@ -187,7 +187,6 @@ export default function CanvasContextMenu({ children }: { children: React.ReactN
               const style = getClipboardStyle();
               if (style) {
                 updateSelectedElements(style);
-                toastSuccess('Style pasted', 'Applied to selection');
               }
             }}
           >

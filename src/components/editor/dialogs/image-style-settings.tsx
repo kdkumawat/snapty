@@ -14,8 +14,8 @@ function Row({ label, value, children }: { label: string; value?: string; childr
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <Label className="text-xs text-muted-foreground">{label}</Label>
-        {value && <span className="text-xs text-muted-foreground font-mono tabular-nums">{value}</span>}
+        <Label className="text-[13px] text-muted-foreground">{label}</Label>
+        {value && <span className="text-[13px] text-muted-foreground font-mono tabular-nums">{value}</span>}
       </div>
       {children}
     </div>
@@ -61,7 +61,7 @@ export default function ImageStyleSettings() {
         />
         {canvasStyle.bgStyle === 'solid' && (
           <div className="flex items-center justify-between pt-1">
-            <Label className="text-xs">Fill color</Label>
+            <Label className="text-[13px]">Fill color</Label>
             <input
               type="color"
               value={canvasStyle.bgColor || '#ffffff'}
@@ -80,7 +80,7 @@ export default function ImageStyleSettings() {
               key={f}
               type="button"
               className={cn(
-                'h-9 rounded-lg border text-xs font-medium transition-colors',
+                'h-9 rounded-lg border text-[13px] font-medium transition-colors',
                 canvasStyle.deviceFrame === f
                   ? 'border-accent bg-accent/12 text-accent'
                   : 'border-border text-muted-foreground hover:bg-secondary hover:text-foreground',
@@ -116,11 +116,11 @@ export default function ImageStyleSettings() {
       </Row>
 
       <label className="flex items-center justify-between gap-3 cursor-pointer">
-        <span className="text-xs text-muted-foreground">Shadow</span>
+        <span className="text-[13px] text-muted-foreground">Shadow</span>
         <Switch checked={canvasStyle.shadowEnabled} onCheckedChange={(v) => setCanvasStyle({ shadowEnabled: v })} />
       </label>
       <label className="flex items-center justify-between gap-3 cursor-pointer">
-        <span className="text-xs text-muted-foreground">Keep full resolution on huge images</span>
+        <span className="text-[13px] text-muted-foreground">Keep full resolution on huge images</span>
         <Switch checked={keepOriginal} onCheckedChange={setKeepOriginal} />
       </label>
     </div>

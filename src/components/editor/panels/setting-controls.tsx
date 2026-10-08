@@ -2,14 +2,15 @@
 
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { RotateCcw } from '@/components/editor/ui/icons';
+import { RotateCcw, X } from '@/components/editor/ui/icons';
+import { SegmentedControl } from '@/components/editor/ui/segmented-control';
 import { Slider } from '@/components/ui/slider';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useEditorStore } from '@/store/editor-store';
 import {
   COLOR_PALETTE, PALETTE_ORDER, STROKE_PICKS, BACKGROUND_PICKS, STROKE_SHADE, BACKGROUND_SHADE,
   ROUGHNESS_PRESETS, STROKE_WIDTHS, FONT_SIZE_PRESETS, ROUND_CORNER_RADIUS,
-  FONT_HAND_DRAWN, FONT_NORMAL, FONT_CODE, STANDARD_FONT, STEP_STAMPS, STEP_FINGERS,
+  FONT_HAND_DRAWN, FONT_NORMAL, FONT_CODE, STANDARD_FONT, STEP_STAMPS, STEP_FINGERS, parseStepStyle, stepStyleLabel,
 } from '@/types/editor';
 import type { Arrowhead, FillStyle, StrokeStyle, RoughnessPreset } from '@/types/editor';
 import type { SettingSpec } from '@/lib/editor/tool-settings';
@@ -333,23 +334,34 @@ export function SettingControl({ spec }: { spec: SettingSpec }) {
       return <ColorSetting kind="stroke" label="Stroke" value={s.highlighterColor} onChange={s.setHighlighterColor} />;
 
     case 'stepStyle': {
-      const options: [string, string, React.ReactNode][] = [
-        ['number', 'Numbers', '1 2'],
-        ['letter', 'Letters', 'A B'],
-        ...STEP_FINGERS.flatMap((f): [string, string, React.ReactNode][] => [
-          [`${f}number`, `Numbers with ${f}`, `1${f}`],
-          [`${f}letter`, `Letters with ${f}`, `A${f}`],
-        ]),
-        ...STEP_STAMPS.map((e): [string, string, React.ReactNode] => [e, `Stamp ${e}`, <span key={e} className="text-base leading-none">{e}</span>]),
-      ];
+      const { finger, count, stamp } = parseStepStyle(s.stepStyle);
+      const emoji = (e: string) => <span className="text-base leading-none">{e}</span>;
+      const make = (f: string, c: string) => (f || c ? `${f}${c}` : 'number');
       return (
-        <ButtonRow>
-          {options.map(([v, label, content]) => (
-            <PanelButton key={v} label={label} active={s.stepStyle === v} className="text-[0.7rem] font-semibold" onClick={() => s.setStepStyle(v)}>
-              {content}
+        <div className="space-y-2">
+          <SegmentedControl
+            ariaLabel="Count"
+            className="w-full [&>button]:flex-1 [&>button]:justify-center"
+            value={count || 'none'}
+            options={[{ value: 'number', label: 'Number' }, { value: 'letter', label: 'Letter' }, { value: 'none', label: 'None' }]}
+            onChange={(v) => s.setStepStyle(make(stamp ? '' : finger, v === 'none' ? '' : v))}
+          />
+          <ButtonRow>
+            <PanelButton label={`No emoji (${stepStyleLabel(make('', count))})`} active={!stamp && !finger} onClick={() => s.setStepStyle(make('', stamp ? '' : count))}>
+              <X />
             </PanelButton>
-          ))}
-        </ButtonRow>
+            {STEP_FINGERS.map((f) => (
+              <PanelButton key={f} label={stepStyleLabel(make(f, stamp ? '' : count), true)} active={finger === f} onClick={() => s.setStepStyle(make(f, stamp ? '' : count))}>
+                {emoji(f)}
+              </PanelButton>
+            ))}
+            {STEP_STAMPS.filter((e) => !(STEP_FINGERS as readonly string[]).includes(e)).map((e) => (
+              <PanelButton key={e} label={stepStyleLabel(e)} active={s.stepStyle === e} onClick={() => s.setStepStyle(e)}>
+                {emoji(e)}
+              </PanelButton>
+            ))}
+          </ButtonRow>
+        </div>
       );
     }
 
@@ -597,7 +609,7 @@ export function SettingControl({ spec }: { spec: SettingSpec }) {
         <div className="flex items-center gap-2">
           <Slider
             value={[value]}
-            min={spec.min}
+            min={spec.key === 'blurRadius' ? 8 : spec.min}
             max={spec.max}
             step={spec.step}
             aria-label={spec.label}

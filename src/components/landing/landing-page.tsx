@@ -42,6 +42,8 @@ export default function LandingPage() {
         </div>
       </header>
       
+      <span className="top-sentinel" aria-hidden="true"></span>
+      
       <main id="main">
       
       
@@ -49,7 +51,7 @@ export default function LandingPage() {
         <div className="wrap hero-grid">
           <div className="hero-copy">
             <h1>Point at exactly what you mean.</h1>
-            <p className="lede">Snapty is a free screenshot editor that lives in a browser tab. Paste a screenshot, mark it up, copy it back out. Nothing is uploaded and there is no account.</p>
+            <p className="lede">Snapty is the fastest way to mark up a screenshot: arrows, numbered steps, callouts, blur and spotlight. Free, no account, nothing uploaded.</p>
             <div className="hero-act">
               <Link className="btn btn-lg" href="/editor">Open the editor</Link>
               <p className="paste-hint" id="paste-hint">or paste a screenshot here <kbd>Ctrl</kbd><kbd>V</kbd></p>
@@ -59,8 +61,8 @@ export default function LandingPage() {
       
           <div className="hero-stage">
             <figure className="shot shot-hero" data-clip>
-              <video width="1920" height="1280" muted playsInline loop preload="metadata" poster="/landing/hero.webp" data-eager
-                aria-label="Film: the Snapty logo, then a screenshot of a failing webhook page is pasted into the editor and marked up with an arrow, a rectangle, numbered badges, a pixelated secret, a highlighter stroke and a callout, then copied."><source src="/landing/hero.webm" type="video/webm" /><source src="/landing/hero.mp4" type="video/mp4" /></video>
+              <video width="1920" height="1280" muted playsInline loop preload="none" poster="/landing/hero.webp" data-film="hero"
+                aria-label="Film: the Snapty logo, then a screenshot of a failing webhook page is pasted into the editor and marked up with an arrow, a rectangle, numbered badges, a pixelated secret, a highlighter stroke and a callout, then copied."></video>
             </figure>
             <p className="note note-hero" aria-hidden="true">the real editor, recorded</p>
             <Mark name="heroArrow" className="mark mark-hero" viewBox="0 0 160 104" />
@@ -73,7 +75,7 @@ export default function LandingPage() {
         <div className="wrap">
           <div className="sec-head">
             <h2 id="tools-h">Every tool is one key away.</h2>
-            <p>Press a tool&rsquo;s key right now, or pick it from the list, and watch it work. Every film is the editor itself, recorded in a browser.</p>
+            <p>Press a tool&rsquo;s key right now, or pick it from the list, and watch it work. Every film is the editor itself, recorded.</p>
           </div>
       
           <div className="tour" id="tour">
@@ -193,17 +195,18 @@ export default function LandingPage() {
             <p>Drag the divider to compare the raw screenshot with what you would actually send.</p>
           </div>
       
+          <div className="uses-body">
           <div className="tabs" role="tablist" aria-label="Use cases">
-            <button role="tab" id="tab-bug" aria-controls="panel-bug" aria-selected="true">Bug report</button>
-            <button role="tab" id="tab-tut" aria-controls="panel-tut" aria-selected="false" tabIndex={-1}>Step-by-step</button>
-            <button role="tab" id="tab-red" aria-controls="panel-red" aria-selected="false" tabIndex={-1}>Redaction</button>
-            <button role="tab" id="tab-des" aria-controls="panel-des" aria-selected="false" tabIndex={-1}>Design feedback</button>
+            <button role="tab" id="tab-bug" aria-controls="panel-bug" aria-selected="true">Bug report<span className="tab-note" aria-hidden="true"><span>“The total is wrong” becomes a ticket nobody has to ask about.</span><span>Magnifier, rectangle, two callouts.</span></span></button>
+            <button role="tab" id="tab-tut" aria-controls="panel-tut" aria-selected="false" tabIndex={-1}>Step-by-step<span className="tab-note" aria-hidden="true"><span>Five clicks, five numbers, and the docs page writes itself.</span><span>Number badges, text.</span></span></button>
+            <button role="tab" id="tab-red" aria-controls="panel-red" aria-selected="false" tabIndex={-1}>Redaction<span className="tab-note" aria-hidden="true"><span>Hide the key before the screenshot reaches a chat that never forgets.</span><span>Pixelate, callout.</span></span></button>
+            <button role="tab" id="tab-des" aria-controls="panel-des" aria-selected="false" tabIndex={-1}>Design feedback<span className="tab-note" aria-hidden="true"><span>Feedback pinned to the pixel it is about, not paragraph four of a message.</span><span>Spotlight, highlighter, stamps, text.</span></span></button>
           </div>
       
           <div className="panel" role="tabpanel" id="panel-bug" aria-labelledby="tab-bug" tabIndex={0}>
             <div className="cmp" data-cmp>
-              <img className="cmp-before" src="/landing/ex-bug-before.webp" width="2888" height="1808" alt="Dashboard screenshot, unannotated." decoding="async" />
-              <img className="cmp-after" src="/landing/ex-bug-after.webp" width="2888" height="1808" alt="The same dashboard: a magnifier enlarges the revenue figure, a rectangle marks the order total, and two callouts say the numbers disagree." decoding="async" />
+              <img className="cmp-before" loading="lazy" src="/landing/ex-bug-before.webp" width="2888" height="1808" alt="Dashboard screenshot, unannotated." decoding="async" />
+              <img className="cmp-after" loading="lazy" src="/landing/ex-bug-after.webp" width="2888" height="1808" alt="The same dashboard: a magnifier enlarges the revenue figure, a rectangle marks the order total, and two callouts say the numbers disagree." decoding="async" />
               <span className="cmp-tag cmp-tag-b" aria-hidden="true">Before</span><span className="cmp-tag cmp-tag-a" aria-hidden="true">After</span>
               <span className="cmp-line" aria-hidden="true"></span>
               <input type="range" min="0" max="100" defaultValue={100} aria-label="Divider position between before and after" />
@@ -255,6 +258,7 @@ export default function LandingPage() {
               <p className="panel-tools">Spotlight, highlighter, stamps, text.</p>
             </div>
           </div>
+          </div>
         </div>
       </section>
       
@@ -262,8 +266,8 @@ export default function LandingPage() {
       <section className="privacy" id="privacy" aria-labelledby="privacy-h">
         <div className="wrap privacy-grid">
           <div className="privacy-copy">
-            <h2 id="privacy-h">Your screenshot never leaves the tab.</h2>
-            <p>There is no upload to trust, because there is no server that handles images. Pasting, drawing, blurring and exporting all happen in your browser.</p>
+            <h2 id="privacy-h">Nothing is uploaded. Your screenshots stay on your device.</h2>
+            <p>There is no upload to trust, because there is no server that handles images. Pasting, drawing, blurring and exporting all happen on your device.</p>
             <ul className="facts">
               <li><strong>No account.</strong> Nothing to sign up for, nothing to log in to.</li>
               <li><strong>One optional counter.</strong> The site counts anonymous page views with Google Analytics. It never sees an image, and Settings has an off switch.</li>

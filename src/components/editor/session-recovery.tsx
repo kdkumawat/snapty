@@ -8,7 +8,6 @@ import {
   isRecoveryPromptEnabled, setRecoveryPromptEnabled,
   type AutosaveSnapshot,
 } from '@/lib/editor/autosave';
-import { toastInfo, toastSuccess } from '@/lib/app-toast';
 import type { HistorySnapshot } from '@/store/editor-store';
 
 function timeAgo(ts: number): string {
@@ -87,7 +86,7 @@ export default function SessionRecovery({ onResolved }: { onResolved: () => void
       });
       setTimeout(() => useEditorStore.getState().resetView(), 30);
       // The other saved sessions stay; this one is re-saved as editing goes on.
-      resolve(() => toastSuccess('Session restored', 'Your image and annotations are back'));
+      resolve();
     };
     img.onerror = () => {
       resolve(() => { void removeAutosave(snap.updatedAt); });
@@ -118,20 +117,20 @@ export default function SessionRecovery({ onResolved }: { onResolved: () => void
           <RotateCcw className="w-4 h-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold leading-tight">
+          <p className="text-[0.9375rem] font-semibold leading-tight text-foreground">
             {multiple ? 'Recover a recent session?' : 'Recover your last session?'}
           </p>
-          <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+          <p className="text-[0.8125rem] text-muted-foreground mt-1 leading-snug">
             Restores the image, annotations, and view. Drafts stay on your device.
           </p>
 
-          <div className="mt-2.5 space-y-1.5">
+          <div className="mt-3 space-y-2">
             {pending.map((snap) => (
               <div
                 key={snap.updatedAt}
                 className="rounded-xl border border-border bg-secondary/25 px-3 py-2"
               >
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-[0.8125rem] text-foreground">
                   Edited {timeAgo(snap.updatedAt)}
                   {' · '}
                   {snap.elements.length} annotation{snap.elements.length === 1 ? '' : 's'}
@@ -139,14 +138,14 @@ export default function SessionRecovery({ onResolved }: { onResolved: () => void
                 <div className="flex gap-1.5 mt-1.5">
                   <button
                     type="button"
-                    className="flex-1 h-8 rounded-lg bg-accent text-accent-foreground text-xs font-semibold hover:opacity-90 transition-opacity"
+                    className="flex-1 h-9 rounded-lg bg-accent text-accent-foreground text-[0.8125rem] font-semibold hover:opacity-90 transition-opacity"
                     onClick={() => recover(snap)}
                   >
                     Recover
                   </button>
                   <button
                     type="button"
-                    className="flex-1 h-8 rounded-lg border border-border text-xs hover:bg-secondary transition-colors"
+                    className="flex-1 h-9 rounded-lg border border-border text-[0.8125rem] font-medium text-foreground hover:bg-secondary transition-colors"
                     onClick={() => discard(snap)}
                   >
                     Discard
@@ -164,17 +163,14 @@ export default function SessionRecovery({ onResolved }: { onResolved: () => void
                 const checked = e.target.checked;
                 setDontAsk(checked);
                 setRecoveryPromptEnabled(!checked);
-                toastInfo(checked ? 'Recovery prompt off' : 'Recovery prompt on', checked
-                  ? 'You can re-enable it in the main menu'
-                  : 'You will be asked again next time');
               }}
-              className="w-3.5 h-3.5 accent-[var(--accent)]"
+              className="w-4 h-4 accent-[var(--accent)]"
             />
-            <span className="text-[11px] text-muted-foreground">Don't ask again</span>
+            <span className="text-[0.8125rem] text-muted-foreground">Don't ask again</span>
           </label>
         </div>
       </div>
-      <p className="mt-2 text-[10px] text-muted-foreground flex items-center gap-1">
+      <p className="mt-2.5 text-[0.75rem] text-muted-foreground flex items-center gap-1">
         <Trash2 className="w-3 h-3" /> Stays on your device - these drafts were never uploaded.
       </p>
       {/* Auto-hide countdown: hover or focus pauses it; timing out only

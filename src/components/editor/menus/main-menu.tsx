@@ -15,7 +15,6 @@ import { useEditorStore } from '@/store/editor-store';
 import { modKey } from '@/hooks/use-keyboard-shortcuts';
 import { readAnalyticsConsent, setAnalyticsConsent } from '@/components/google-analytics';
 import { isRecoveryPromptEnabled, setRecoveryPromptEnabled } from '@/lib/editor/autosave';
-import { toastSuccess } from '@/lib/app-toast';
 import { cn } from '@/lib/utils';
 
 const ICON = 'inline-flex w-4 h-4 shrink-0 [&>svg]:w-full [&>svg]:h-full';
@@ -173,7 +172,7 @@ export default function MainMenu() {
           <Item
             icon={<RotateCcw {...LUCIDE} />}
             label="Reset tool defaults"
-            onSelect={run(() => { resetToolSettings(); toastSuccess('Tools reset', 'Snapty defaults restored'); })}
+            onSelect={run(resetToolSettings)}
           />
 
           <Divider />

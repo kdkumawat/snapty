@@ -6,7 +6,7 @@ export default function JsonLd() {
     name: "Snapty",
     url: siteUrl,
     description:
-      "Free browser screenshot editor with professional annotations. Privacy-first PWA, no installation required, nothing uploaded.",
+      "Snapty is the fastest way to mark up a screenshot: arrows, numbered steps, callouts, blur and spotlight. Free, no account, nothing uploaded.",
     applicationCategory: "DesignApplication",
     operatingSystem: "Any",
     offers: {
@@ -26,7 +26,7 @@ export default function JsonLd() {
       "Copy to clipboard",
       "Keyboard shortcuts",
       "Works offline",
-      "Privacy-first - no data leaves browser",
+      "Nothing is uploaded. Your screenshots stay on your device",
     ],
   };
   return (

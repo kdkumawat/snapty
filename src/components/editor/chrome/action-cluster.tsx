@@ -29,6 +29,16 @@ const FORMATS: { value: ExportFormat; label: string }[] = [
 ];
 const SCALES = [{ value: '1', label: '1x' }, { value: '2', label: '2x' }];
 
+/** Crossfades two icons with CSS only; the icon is the button's confirmation. */
+function SwapIcon({ on, from, to }: { on: boolean; from: React.ReactNode; to: React.ReactNode }) {
+  return (
+    <span className="inline-grid">
+      <span className={cn('col-start-1 row-start-1 transition-opacity duration-150', on && 'opacity-0')}>{from}</span>
+      <span className={cn('col-start-1 row-start-1 transition-opacity duration-150', !on && 'opacity-0')}>{to}</span>
+    </span>
+  );
+}
+
 export default function ActionCluster({ embedded = false }: { embedded?: boolean }) {
   const backgroundImage = useEditorStore((s) => s.backgroundImage);
   const showExport = useEditorStore((s) => s.showExportDialog);
@@ -49,6 +59,7 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
   const setImageLoading = useEditorStore((s) => s.setImageLoading);
 
   const [copied, setCopied] = useState(false);
+  const [downloaded, setDownloaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState<'download' | null>(null);
   const [downloading, setDownloading] = useState(false);
@@ -96,8 +107,7 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
       if (exportFormat === 'svg') await copySvgToClipboard();
       else await copyToClipboard(exportScale, exportArgs()[2]);
       setCopied(true);
-      toastSuccess('Copied', 'Image on clipboard. Ready to paste');
-      setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => setCopied(false), 1200);
     } catch {
       toastError('Couldn’t copy', 'Allow clipboard access and try again');
     } finally {
@@ -113,7 +123,6 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
       const file = new File([blob], 'snapty.png', { type: 'image/png' });
       if (navigator.share && navigator.canShare?.({ files: [file] })) {
         await navigator.share({ files: [file], title: 'Snapty annotation' });
-        toastSuccess('Shared', 'Image sent');
       } else {
         await copyToClipboard();
         toastSuccess('Copied', 'Share unavailable. Image copied instead');
@@ -134,8 +143,8 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
       a.download = `snapty-export.${exportFormat}`;
       a.click();
       URL.revokeObjectURL(url);
-      toastSuccess('Downloaded', `Saved as ${exportFormat.toUpperCase()}`);
-      setMenu(null);
+      setDownloaded(true);
+      setTimeout(() => { setDownloaded(false); setMenu(null); }, 1200);
     } catch {
       toastError('Download failed', 'Try again');
     } finally {
@@ -163,7 +172,6 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
       }
       const { image: capped } = await capImageSize(result.image);
       useEditorStore.getState().setBackgroundImage(capped);
-      toastSuccess('Captured', 'Screenshot loaded');
     } catch {
       toastError('Capture failed', 'Try again');
     } finally {
@@ -221,7 +229,7 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
             <Tooltip>
               <TooltipTrigger asChild>
                 <IconButton aria-label="Copy image" onClick={() => void handleCopy()}>
-                  {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  <SwapIcon on={copied} from={<Copy className="w-4 h-4" />} to={<Check className="w-4 h-4" />} />
                 </IconButton>
               </TooltipTrigger>
               <TooltipContent side="bottom">Copy image ({modKey}+C)</TooltipContent>
@@ -267,7 +275,7 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
         <div
           role="dialog"
           aria-label="Download"
-          className={cn(popoverClass, 'w-[min(19rem,calc(100vw-2rem))] max-h-[calc(100dvh-6rem)] overflow-y-auto p-3 space-y-3')}
+          className={cn(popoverClass, 'w-[min(19rem,calc(100vw-2rem))] max-h-[calc(100dvh-6rem)] overflow-y-auto p-4 space-y-4')}
         >
           <SegmentedControl<ExportFormat>
             className="w-full [&>button]:flex-1 [&>button]:justify-center"
@@ -287,14 +295,14 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
           )}
           {(exportFormat === 'jpg' || exportFormat === 'webp') && (
             <div className="space-y-1.5">
-              <div className="flex justify-between text-xs text-muted-foreground">
+              <div className="flex justify-between text-[0.8125rem] text-foreground">
                 <span>Quality</span>
                 <span className="font-mono tabular-nums">{exportQuality}%</span>
               </div>
               <Slider value={[exportQuality]} onValueChange={([v]) => setExportQuality(v)} min={10} max={100} step={5} />
             </div>
           )}
-          {exportFormat !== 'jpg' && <label className="flex items-center justify-between gap-3 text-sm cursor-pointer">
+          {exportFormat !== 'jpg' && <label className="flex items-center justify-between gap-3 text-[0.875rem] text-foreground cursor-pointer">
             Transparent background
             <Switch
               checked={!!canvasStyle.transparentExport}
@@ -302,13 +310,13 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
             />
           </label>}
           {hasSelection && (
-            <label className="flex items-center justify-between gap-3 text-sm cursor-pointer">
+            <label className="flex items-center justify-between gap-3 text-[0.875rem] text-foreground cursor-pointer">
               Selection only
               <Switch checked={exportSelectionOnly} onCheckedChange={setExportSelectionOnly} />
             </label>
           )}
           <details className="group border-t border-border pt-2">
-            <summary className="flex items-center justify-between cursor-pointer list-none text-sm [&::-webkit-details-marker]:hidden">
+            <summary className="flex items-center justify-between cursor-pointer list-none text-[0.875rem] text-foreground [&::-webkit-details-marker]:hidden">
               Frame and background
               <span className="text-muted-foreground transition-transform group-open:rotate-90">&rsaquo;</span>
             </summary>
@@ -317,20 +325,20 @@ export default function ActionCluster({ embedded = false }: { embedded?: boolean
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
-              className="h-9 rounded-lg bg-secondary text-sm font-medium inline-flex items-center justify-center gap-1.5 hover:bg-[var(--accent-container)] disabled:opacity-50"
+              className="h-10 rounded-lg border border-border bg-secondary text-foreground text-[0.875rem] font-medium inline-flex items-center justify-center gap-1.5 hover:bg-[var(--accent-container)] disabled:opacity-50"
               disabled={busy}
               onClick={() => void handleCopy()}
             >
-              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-              {copied ? 'Copied' : 'Copy'}
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <SwapIcon on={copied} from={<Copy className="w-4 h-4" />} to={<Check className="w-4 h-4" />} />}
+              Copy
             </button>
             <button
               type="button"
-              className="h-9 rounded-lg bg-accent text-accent-foreground text-sm font-medium inline-flex items-center justify-center gap-1.5 hover:opacity-90 disabled:opacity-50"
+              className="h-10 rounded-lg bg-accent text-accent-foreground text-[0.875rem] font-semibold inline-flex items-center justify-center gap-1.5 hover:opacity-90 disabled:opacity-50"
               disabled={downloading}
               onClick={() => void handleDownload()}
             >
-              {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <SwapIcon on={downloaded} from={<Download className="w-4 h-4" />} to={<Check className="w-4 h-4" />} />}
               Download
             </button>
           </div>

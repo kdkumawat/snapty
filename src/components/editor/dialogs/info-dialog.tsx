@@ -9,14 +9,14 @@ import { cn } from '@/lib/utils';
 
 const LOCAL_FACTS: [string, string][] = [
   ['Images & annotations', 'Screenshots you open, paste, or capture are processed entirely on your device. Never uploaded, never stored on a server, never shared.'],
-  ['Editing & effects', 'Blur, pixelate, spotlight, OCR text extraction, and every annotation render locally. The OCR engine (Tesseract) runs in your browser.'],
-  ['Autosave & recovery', 'Drafts of your recent sessions are saved to your browser\u2019s IndexedDB so you can recover them after a refresh. They stay on your device.'],
+  ['Editing & effects', 'Blur, pixelate, spotlight, OCR text extraction, and every annotation render locally. The OCR engine (Tesseract) runs on your device.'],
+  ['Autosave & recovery', 'Drafts of your recent sessions are saved locally so you can recover them after a refresh. They stay on your device.'],
   ['Preferences', 'Tool settings and theme are remembered in localStorage so your choices survive a reload.'],
 ];
 
 const TELEMETRY_FACTS: [string, string][] = [
   ['Google Analytics 4', 'The site can load GA4 (gtag.js) to understand anonymous usage - which pages are visited and roughly which browsers are used. It never sees your images or annotations. IP addresses are anonymized.'],
-  ['Opt out', 'Open Settings \u2192 \u201cUsage analytics\u201d and switch it off. GA stops loading entirely; your choice is remembered in your browser.'],
+  ['Opt out', 'Open Settings \u2192 \u201cUsage analytics\u201d and switch it off. GA stops loading entirely; your choice is remembered on your device.'],
 ];
 
 const FEATURES: [string, string][] = [
@@ -58,7 +58,7 @@ export default function InfoDialog() {
               <p className="text-xs text-muted-foreground mt-0.5">
                 {tab === 'about'
                   ? 'A screenshot editor that never uploads anything'
-                  : 'Your screenshots never leave your browser'}
+                  : 'Your screenshots stay on your device'}
               </p>
             </div>
           </div>
@@ -86,7 +86,7 @@ export default function InfoDialog() {
               <div>
                 <p className="text-sm font-medium">What is Snapty?</p>
                 <p className="text-[13px] text-muted-foreground mt-1 leading-relaxed">
-                  A fast, keyboard-first screenshot editor that runs entirely in your browser.
+                  A fast, keyboard-first screenshot editor. Nothing is uploaded.
                   Capture or paste a screenshot, mark it up with a hand-drawn feel, wrap it in a
                   device frame, and export - all on your device, free, and installable as a PWA.
                 </p>
@@ -125,7 +125,7 @@ export default function InfoDialog() {
 
               <p className="text-[11px] text-muted-foreground leading-relaxed rounded-xl bg-accent/8 border border-accent/20 px-3 py-2.5">
                 <strong className="text-foreground">Privacy promise:</strong> images, annotations,
-                and drafts stay in your browser. There are no accounts and no cloud storage. The
+                and drafts stay on your device. There are no accounts and no cloud storage. The
                 only optional outbound request is anonymous page-view analytics, which you can turn
                 off in Settings.
               </p>

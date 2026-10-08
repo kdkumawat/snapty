@@ -33,6 +33,7 @@ import { snapEndpointForBinding } from '@/lib/editor/binding-preview';
 import {
   labelAnchorForElement,
   pathLabelClipRect,
+  placeLinearLabels,
   measureTextWidth,
   createAttachedLabel,
   clipPolylineAgainstRect,
@@ -963,8 +964,35 @@ const EditorCanvas: React.FC = () => {
 
       if (type === 'blur') {
         const radius = Math.round((intensity ?? s.blurRadius ?? 12) * scale);
-        ctx.filter = `blur(${radius}px)`;
-        ctx.drawImage(s.backgroundImage, ax, ay, aw, ah, 0, 0, aw, ah);
+        // Blur a source padded by 3x the radius, its edges clamped to the
+        // image border, then crop. Blurring just the region left its edges
+        // fading to transparent, so the text underneath showed through.
+        const p = radius * 3;
+        const pw = aw + p * 2;
+        const ph = ah + p * 2;
+        const src = document.createElement('canvas');
+        src.width = pw;
+        src.height = ph;
+        const sctx = src.getContext('2d')!;
+        const img = s.backgroundImage;
+        const x0 = Math.max(0, ax - p);
+        const y0 = Math.max(0, ay - p);
+        const x1 = Math.min(imgSize.width, ax + aw + p);
+        const y1 = Math.min(imgSize.height, ay + ah + p);
+        const ox = x0 - (ax - p);
+        const oy = y0 - (ay - p);
+        sctx.drawImage(img, x0, y0, x1 - x0, y1 - y0, ox, oy, x1 - x0, y1 - y0);
+        if (ox > 0) sctx.drawImage(img, 0, y0, 1, y1 - y0, 0, oy, ox, y1 - y0);
+        if (x1 - x0 + ox < pw) sctx.drawImage(img, imgSize.width - 1, y0, 1, y1 - y0, ox + x1 - x0, oy, pw - ox - (x1 - x0), y1 - y0);
+        if (oy > 0) sctx.drawImage(src, 0, oy, pw, 1, 0, 0, pw, oy);
+        if (y1 - y0 + oy < ph) sctx.drawImage(src, 0, oy + y1 - y0 - 1, pw, 1, 0, oy + y1 - y0, pw, ph - oy - (y1 - y0));
+        const blurred = document.createElement('canvas');
+        blurred.width = pw;
+        blurred.height = ph;
+        const bctx = blurred.getContext('2d')!;
+        bctx.filter = `blur(${radius}px)`;
+        bctx.drawImage(src, 0, 0);
+        ctx.drawImage(blurred, p, p, aw, ah, 0, 0, aw, ah);
       } else {
         const px = Math.max(2, Math.round((intensity ?? s.pixelSize ?? 10) * scale));
         const sw = Math.max(1, Math.ceil(aw / px));
@@ -2912,6 +2940,7 @@ const EditorCanvas: React.FC = () => {
       const dx = nx - el.x;
       const dy = ny - el.y;
       e.target.position({ x: nx, y: ny });
+      if (isBindableElement(el)) applyLiveBindingsForTarget(id, liveElementFromNode(el, e.target));
       glueAttachedLabelLive(attachedLabel, el.x, el.y, nx, ny);
       glueLinearHandles(id, el.x, el.y, nx, ny);
       // Multi-select: move other selected elements by same delta imperatively (Excalidraw group drag)
@@ -4333,17 +4362,21 @@ const EditorCanvas: React.FC = () => {
         // Undefined height: same idea vertically — auto-size until the user
         // drags a top/bottom handle or a corner.
         const rawBoxW = textEl.width;
-        const rawBoxH: number | undefined = isAttached
-          ? (textEl.height ??
-            (textEl.fontSize ?? 24) * TEXT_LINE_HEIGHT +
-              (textEl.padding ?? TEXT_PADDING) * 2)
-          : textEl.height;
         // The shape this label is attached to (same groupId, different id).
         const parentEl = isAttached
           ? elements.find((x) => x.id !== textEl.id && x.groupId === textEl.groupId)
           : undefined;
         const isPathLabel =
           !!parentEl && (parentEl.type === 'arrow' || parentEl.type === 'line' || parentEl.type === 'magnifier');
+        // Path labels size to their lines (a fixed one-line height cut every
+        // line after the first).
+        const rawBoxH: number | undefined = isPathLabel
+          ? undefined
+          : isAttached
+            ? (textEl.height ??
+              (textEl.fontSize ?? 24) * TEXT_LINE_HEIGHT +
+                (textEl.padding ?? TEXT_PADDING) * 2)
+            : textEl.height;
         // For path labels, use tight width so arrow remains grabbable outside the text
         const renderBoxW = isPathLabel
           ? Math.max(24, Math.min(rawBoxW ?? 0, measureTextWidth(textEl) + (textEl.padding ?? TEXT_PADDING) * 2))
@@ -4696,6 +4729,13 @@ const EditorCanvas: React.FC = () => {
     annotationLayerRef.current?.find('.edit-handle').forEach((n) => n.moveToTop());
     transformerRef.current?.moveToTop();
   });
+
+  // Arrow/line labels are placed from their arrow + text (beyond the headless
+  // end for arrows). Settles old projects and follows what is being typed.
+  useEffect(() => {
+    const next = placeLinearLabels(elements, imageSize, liveLabel);
+    if (next !== elements) useEditorStore.setState({ elements: next });
+  }, [elements, imageSize, liveLabel]);
 
   const annotationNodes = useMemo(
     () => elements.map((el) => renderElement(el, false, null)),

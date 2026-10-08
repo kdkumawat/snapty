@@ -10,13 +10,14 @@ import { modKey } from '@/hooks/use-keyboard-shortcuts';
 import { cn } from '@/lib/utils';
 import { useEditorStore } from '@/store/editor-store';
 import ImageLoadingSkeleton from '@/components/editor/image-loading-skeleton';
-import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
+import { toastError, toastInfo } from '@/lib/app-toast';
 
 export default function EmptyState() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [captureBusy, setCaptureBusy] = useState(false);
   const imageLoading = useEditorStore((s) => s.imageLoading);
+  const gridEnabled = useEditorStore((s) => s.canvasStyle.gridEnabled);
   const setImageLoading = useEditorStore((s) => s.setImageLoading);
 
   useEffect(() => {
@@ -58,7 +59,6 @@ export default function EmptyState() {
         return;
       }
       useEditorStore.getState().setBackgroundImage(result.image);
-      toastSuccess('Captured', 'Screenshot loaded. Use Crop to refine');
     } catch {
       toastError('Capture failed', 'Something went wrong. Try again');
     } finally {
@@ -72,7 +72,7 @@ export default function EmptyState() {
 
   return (
     <div
-      className="absolute inset-0 z-10 flex items-center justify-center p-4 bg-canvas overflow-y-auto"
+      className={cn('absolute inset-0 z-10 flex items-center justify-center p-4 bg-canvas overflow-y-auto', gridEnabled && 'canvas-dot-grid')}
       role="region"
       aria-label="Image drop area"
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -143,7 +143,7 @@ export default function EmptyState() {
         </div>
 
         <p className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
-          <Lock className="w-3 h-3" /> Images never leave your browser.
+          <Lock className="w-3 h-3" /> Nothing is uploaded. Your screenshots stay on your device.
         </p>
 
         <input

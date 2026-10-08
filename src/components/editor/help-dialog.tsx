@@ -4,7 +4,7 @@ import React from 'react';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { useEditorStore } from '@/store/editor-store';
 import { modKey } from '@/hooks/use-keyboard-shortcuts';
-import { TOOL_SHORTCUTS } from '@/lib/tool-shortcuts';
+import { TOOL_SHORTCUTS, toolDigit } from '@/lib/tool-shortcuts';
 import { ALL_TOOLS } from '@/components/editor/toolbar/floating-toolbar';
 import { Kbd } from '@/components/editor/ui/kbd';
 import { Search } from '@/components/editor/ui/icons';
@@ -35,6 +35,11 @@ const SECTIONS: Section[] = [
       { name: 'From center', hint: 'Draw outward from where you start', keys: ['Alt'] },
       { name: 'Skip binding', hint: 'Hold to keep an arrow from attaching to shapes', keys: ['Mod'] },
       { name: 'Arrow type', hint: 'With the Arrow tool: straight, curved, elbow', keys: ['A'] },
+      { name: 'Number style', hint: 'With the Number tool: number, letter, with finger, finger only', keys: ['N'] },
+      { name: 'Blur or pixelate', hint: 'With the Blur tool: switch the mode', keys: ['B'] },
+      { name: 'Edges', hint: 'With the Rectangle tool: sharp or round', keys: ['R'] },
+      { name: 'Font', hint: 'With the Text tool: hand-drawn, normal, code', keys: ['T'] },
+      { name: 'Highlighter colour', hint: 'With the Highlighter: next quick-pick colour', keys: ['K'] },
       { name: 'Restore erased', hint: 'With the Eraser: hold to un-mark shapes', keys: ['Alt'] },
       { name: 'Restart numbering', hint: 'The next Number is 1', keys: ['Mod Shift 0'] },
     ],
@@ -146,10 +151,14 @@ function Keys({ keys }: { keys: string[] }) {
 export default function HelpDialog() {
   const show = useEditorStore((s) => s.showHelpDialog);
   const setShow = useEditorStore((s) => s.setShowHelpDialog);
+  const mainTools = useEditorStore((s) => s.mainTools);
   const [query, setQuery] = React.useState('');
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   const sections = SECTIONS
+    .map((s) => (s.title === 'Tools'
+      ? { ...s, rows: s.rows.map((r, i) => { const d = toolDigit(mainTools, TOOL_SHORTCUTS[i].id); return { ...r, keys: d ? [TOOL_SHORTCUTS[i].letter, d] : [TOOL_SHORTCUTS[i].letter] }; }) }
+      : s))
     .map((s) => ({ ...s, rows: s.rows.filter((r) => matches(r, query)) }))
     .filter((s) => s.rows.length);
 

@@ -16,7 +16,7 @@ import { useEditorStore } from '@/store/editor-store';
 import { useFormFactor } from '@/hooks/use-form-factor';
 import type { ToolType } from '@/types/editor';
 import { cn } from '@/lib/utils';
-import { TOOL_SHORTCUTS, formatToolKeys } from '@/lib/tool-shortcuts';
+import { TOOL_SHORTCUTS, formatToolKeys, toolDigit } from '@/lib/tool-shortcuts';
 import { openOverlayImagePicker } from '@/lib/image-load';
 
 type ToolDef = {
@@ -38,8 +38,8 @@ const Ex = ({ children }: { children: React.ReactNode }) => (
 // weight keeps them in the same family.
 const LUCIDE = { className: ICON, strokeWidth: 1.5 };
 
-// The main bar: the annotation tools used most on screenshots.
-const tools: ToolDef[] = [
+// Every tool; the main bar and More menu split them by the saved order.
+const allDefs: ToolDef[] = [
   { id: 'select', label: 'Selection', icon: <Ex>{SelectionIcon}</Ex> },
   { id: 'arrow', label: 'Arrow', icon: <Ex>{ArrowIcon}</Ex> },
   { id: 'rectangle', label: 'Rectangle', icon: <Ex>{RectangleIcon}</Ex> },
@@ -49,10 +49,7 @@ const tools: ToolDef[] = [
   { id: 'highlighter', label: 'Highlighter', icon: <Highlighter {...LUCIDE} /> },
   { id: 'callout', label: 'Callout', icon: <MessageCircle {...LUCIDE} /> },
   { id: 'crop', label: 'Crop', icon: <Crop {...LUCIDE} /> },
-];
 
-// The More menu: the rest of the tools.
-const extraTools: ToolDef[] = [
   { id: 'line', label: 'Line', icon: <Ex>{LineIcon}</Ex> },
   { id: 'circle', label: 'Ellipse', icon: <Ex>{EllipseIcon}</Ex> },
   { id: 'pencil', label: 'Draw', icon: <Ex>{FreedrawIcon}</Ex> },
@@ -62,14 +59,34 @@ const extraTools: ToolDef[] = [
   { id: 'hand', label: 'Hand', icon: <Ex>{handIcon}</Ex> },
 ];
 
-/** Every tool with its icon, in toolbar order then More menu order (used by the shortcuts dialog). */
-export const ALL_TOOLS = [...tools, ...extraTools];
+/** Every tool with its icon (used by the shortcuts dialog). */
+export const ALL_TOOLS = allDefs;
+const defById = Object.fromEntries(allDefs.map((t) => [t.id, t]));
+const DRAG_TYPE = 'text/snapty-tool';
+
+/** Quiet corner hint with the tool's key, as in Excalidraw. */
+const KeyHint = ({ id }: { id: ToolType }) => (
+  <span aria-hidden className="pointer-events-none absolute bottom-[2px] right-[4px] text-[10px] leading-none font-medium text-muted-foreground opacity-60">
+    {shortcutById[id]?.letter}
+  </span>
+);
+
+/** Native drag and drop is for mouse and pen only; touch keeps plain taps. */
+function useCanDrag() {
+  const [can, setCan] = React.useState(false);
+  React.useEffect(() => { setCan(!window.matchMedia('(pointer: coarse)').matches); }, []);
+  return can;
+}
+const dragProps = (id: ToolType, on: boolean) => on ? {
+  draggable: true,
+  onDragStart: (e: React.DragEvent) => { e.dataTransfer.setData(DRAG_TYPE, id); e.dataTransfer.effectAllowed = 'move'; },
+} : {};
 
 /** Pixelate is a mode of Blur (toggled in the panel), so Blur lights for both. */
 const isToolActive = (id: ToolType, active: ToolType) =>
   id === active || (id === 'blur' && active === 'pixelate');
 
-function ExtraToolsMenu({ hasImage, items, dropUp, onInsertImage }: { hasImage: boolean; items: ToolDef[]; dropUp: boolean; onInsertImage: () => void }) {
+function ExtraToolsMenu({ hasImage, items, dropUp, onInsertImage, canDrag, onDropToMore }: { hasImage: boolean; items: ToolDef[]; dropUp: boolean; onInsertImage: () => void; canDrag: boolean; onDropToMore: (id: ToolType) => void }) {
   const activeTool = useEditorStore((s) => s.activeTool);
   const setActiveTool = useEditorStore((s) => s.setActiveTool);
   const imageLocked = useEditorStore((s) => s.imageLocked);
@@ -96,7 +113,12 @@ function ExtraToolsMenu({ hasImage, items, dropUp, onInsertImage }: { hasImage: 
   const item = 'flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-secondary';
 
   return (
-    <div ref={ref} className="relative shrink-0">
+    <div
+      ref={ref}
+      className="relative shrink-0"
+      onDragOver={canDrag ? (e) => { if (e.dataTransfer.types.includes(DRAG_TYPE)) { e.preventDefault(); e.stopPropagation(); } } : undefined}
+      onDrop={canDrag ? (e) => { const id = e.dataTransfer.getData(DRAG_TYPE) as ToolType; if (id) { e.preventDefault(); e.stopPropagation(); onDropToMore(id); } } : undefined}
+    >
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -110,6 +132,7 @@ function ExtraToolsMenu({ hasImage, items, dropUp, onInsertImage }: { hasImage: 
           >
             {/* Like Excalidraw, the trigger shows the active extra tool. */}
             {activeExtra ? activeExtra.icon : <Ex>{drawShapeToolIcon}</Ex>}
+            {activeExtra && <KeyHint id={activeExtra.id} />}
           </button>
         </TooltipTrigger>
         {!open && <TooltipContent side="bottom">More tools</TooltipContent>}
@@ -130,6 +153,7 @@ function ExtraToolsMenu({ hasImage, items, dropUp, onInsertImage }: { hasImage: 
               aria-checked={isToolActive(t.id, activeTool)}
               className={cn(item, isToolActive(t.id, activeTool) && 'bg-accent/15')}
               onClick={() => { setActiveTool(t.id); setOpen(false); }}
+              {...dragProps(t.id, canDrag)}
             >
               {t.icon}
               <span className="flex-1 text-left">{t.label}</span>
@@ -166,6 +190,34 @@ export default function FloatingToolbar({
   const hasImage = useEditorStore((s) => s.backgroundImage !== null);
   const formFactor = useFormFactor();
   const phone = formFactor === 'phone';
+  const mainTools = useEditorStore((s) => s.mainTools);
+  const setMainTools = useEditorStore((s) => s.setMainTools);
+  const canDrag = useCanDrag() && !phone;
+  const [drop, setDrop] = React.useState<{ idx: number; x: number } | null>(null);
+  const tools = mainTools.map((id) => defById[id]).filter(Boolean);
+  const extraTools = allDefs.filter((t) => !mainTools.includes(t.id));
+
+  const dropIndex = (e: React.DragEvent<HTMLElement>) => {
+    const btns = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[data-main-tool]'));
+    let idx = btns.findIndex((b) => { const r = b.getBoundingClientRect(); return e.clientX < r.left + r.width / 2; });
+    if (idx < 0) idx = btns.length;
+    const host = e.currentTarget.getBoundingClientRect();
+    const ref = btns[idx] ?? btns[idx - 1];
+    const rr = ref?.getBoundingClientRect();
+    const x = rr ? (btns[idx] ? rr.left - 2 : rr.right + 2) - host.left : 0;
+    return { idx, x };
+  };
+  const onBarDrop = (e: React.DragEvent<HTMLElement>) => {
+    const id = e.dataTransfer.getData(DRAG_TYPE) as ToolType;
+    setDrop(null);
+    if (!defById[id]) return;
+    e.preventDefault();
+    const { idx } = dropIndex(e);
+    const from = mainTools.indexOf(id);
+    const rest = mainTools.filter((t) => t !== id);
+    rest.splice(from >= 0 && from < idx ? idx - 1 : idx, 0, id);
+    setMainTools(rest);
+  };
 
   const renderTool = (tool: ToolDef) => {
     const drawingDisabled = !hasImage && !['select', 'hand'].includes(tool.id);
@@ -177,6 +229,8 @@ export default function FloatingToolbar({
         <TooltipTrigger asChild>
           <button
             type="button"
+            data-main-tool={tool.id}
+            {...dragProps(tool.id, canDrag)}
             className={cn('toolbar-btn shrink-0', active && 'toolbar-btn-active', FILLABLE.has(tool.id) && 'toolbar-btn-fillable')}
             aria-label={tool.label}
             aria-pressed={active}
@@ -184,13 +238,14 @@ export default function FloatingToolbar({
             onClick={() => setActiveTool(tool.id)}
           >
             {tool.icon}
+            <KeyHint id={tool.id} />
           </button>
         </TooltipTrigger>
         <TooltipContent side="bottom" className="flex items-center gap-2">
           <span>{tool.label}</span>
           {def && (
             <span className="flex gap-1">
-              {formatToolKeys(def).split(' / ').map((k) => (
+              {formatToolKeys(def, toolDigit(mainTools, tool.id)).split(' / ').map((k) => (
                 <Kbd key={k}>{k}</Kbd>
               ))}
             </span>
@@ -214,8 +269,18 @@ export default function FloatingToolbar({
     >
       <FloatingSurface
         data-snapty-toolbar
-        className="rounded-xl p-1 flex items-center gap-1 w-full max-w-full"
+        className="relative rounded-xl p-1 flex items-center gap-1 w-full max-w-full"
+        onDragOver={canDrag ? (e: React.DragEvent<HTMLElement>) => {
+          if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
+          e.preventDefault();
+          const d = dropIndex(e);
+          setDrop((p) => (p && p.idx === d.idx && p.x === d.x ? p : d));
+        } : undefined}
+        onDragLeave={canDrag ? (e: React.DragEvent<HTMLElement>) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrop(null); } : undefined}
+        onDrop={canDrag ? onBarDrop : undefined}
+        onDragEnd={() => setDrop(null)}
       >
+        {drop && <span aria-hidden className="pointer-events-none absolute top-1.5 bottom-1.5 w-0.5 rounded bg-accent" style={{ left: drop.x - 1 }} />}
         {phone ? (
           // Phones: the same tight row as the top bar, scrolling sideways when
           // it runs out of room. The "more tools" button stays outside the
@@ -230,6 +295,8 @@ export default function FloatingToolbar({
           items={extraTools}
           dropUp={phone}
           onInsertImage={() => openOverlayImagePicker()}
+          canDrag={canDrag}
+          onDropToMore={(id) => { if (mainTools.length > 1) setMainTools(mainTools.filter((t) => t !== id)); }}
         />
       </FloatingSurface>
     </motion.div>
@@ -241,18 +308,18 @@ export default function FloatingToolbar({
 const TOOL_TIPS: Record<string, React.ReactNode> = {
   select: <>To move canvas, hold <Kbd>Scroll wheel</Kbd> or <Kbd>Space</Kbd> while dragging, or use the hand tool</>,
   hand: null,
-  rectangle: null,
+  rectangle: <>Press <Kbd>R</Kbd> again for sharp or round edges</>,
   circle: null,
   arrow: <>Drag for single line. Press <Kbd>A</Kbd> again to change arrow type.</>,
   line: <>Drag for single line</>,
-  text: <><Kbd>Enter</Kbd> to finish, <Kbd>Ctrl</Kbd>+<Kbd>Enter</Kbd> or <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> for a new line. You can also add text by double-clicking with the selection tool</>,
+  text: <><Kbd>Enter</Kbd> to finish, <Kbd>Ctrl</Kbd>+<Kbd>Enter</Kbd> or <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> for a new line. Press <Kbd>T</Kbd> again to change font</>,
   pencil: <>Click and drag, release when you&apos;re finished</>,
-  highlighter: <>Click and drag, release when you&apos;re finished</>,
+  highlighter: <>Click and drag, release when you&apos;re finished. Press <Kbd>K</Kbd> again to change colour</>,
   eraser: <>Hold <Kbd>Alt</Kbd> to revert the elements marked for deletion</>,
-  blur: <>Drag a region to blur</>,
-  pixelate: <>Drag a region to pixelate</>,
+  blur: <>Drag a region to blur. Press <Kbd>B</Kbd> again for pixelate</>,
+  pixelate: <>Drag a region to pixelate. Press <Kbd>B</Kbd> again for blur</>,
   crop: <>Drag a region to crop the image</>,
-  step: <>Click to place a number, letter or stamp</>,
+  step: <>Click to place a number, letter or stamp. Press <Kbd>N</Kbd> again to change style</>,
   magnifier: <>Drag over a detail to magnify it</>,
   spotlight: <>Drag a region to keep lit; everything else is dimmed</>,
   callout: <>Press on what to point at, drag to place the bubble</>,

@@ -8,6 +8,7 @@ import type {
   TextElement,
 } from '@/types/editor';
 import { getElementBounds } from '@/lib/editor/selection';
+import { textBox } from '@/lib/editor/text-layout';
 import { elbowPointsLocal, headingFromFixedPoint } from './elbow';
 
 /**
@@ -81,10 +82,8 @@ function boundsOf(el: EditorElement, imageSize: { width: number; height: number 
     return { x: el.x - r, y: el.y - r, w: r * 2, h: r * 2 };
   }
   if (el.type === 'text') {
-    const t = el as TextElement;
-    const w = t.width || Math.max(40, (t.text?.length || 1) * (t.fontSize || 24) * 0.55);
-    const h = (t.fontSize || 24) * 1.4;
-    return { x: t.x, y: t.y, w, h };
+    const b = textBox(el as TextElement);
+    return { x: el.x, y: el.y, w: b.w, h: b.h };
   }
   if (el.type === 'magnifier') {
     const b = getElementBounds(el, imageSize);
