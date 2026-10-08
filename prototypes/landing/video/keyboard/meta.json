@@ -4,37 +4,60 @@
  "h": 1000,
  "beats": [
   {
-   "f": 0,
+   "f": 15,
    "label": "Command palette",
    "keys": [
     "Ctrl",
     "K"
    ],
-   "cam": null
+   "cam": {
+    "x": 540,
+    "y": 80,
+    "w": 520,
+    "h": 325
+   }
   },
   {
-   "f": 80,
+   "f": 89,
    "label": "All shortcuts",
    "keys": [
     "?"
    ],
-   "cam": null
+   "cam": {
+    "x": 370,
+    "y": 0,
+    "w": 860,
+    "h": 537.5
+   }
+  },
+  {
+   "f": 145,
+   "label": "All shortcuts",
+   "keys": [
+    "?"
+   ],
+   "cam": {
+    "x": 372,
+    "y": 0,
+    "w": 856,
+    "h": 535
+   }
   }
  ],
  "keys": [
   {
-   "f": 9,
+   "f": 15,
    "keys": [
     "Ctrl",
     "K"
    ]
   },
   {
-   "f": 80,
+   "f": 89,
    "keys": [
     "?"
    ]
   }
  ],
- "frames": 166
+ "frames": 196
 }

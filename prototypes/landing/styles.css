@@ -145,7 +145,7 @@ svg.fill { fill: currentColor; stroke: none; }
 .mark.is-in path:nth-child(2) { transition-delay: .55s; transition-duration: .2s; }
 .mark.is-in path:nth-child(3) { transition-delay: .7s; transition-duration: .2s; }
 .note-hero { position: absolute; right: 2%; bottom: -50px; white-space: nowrap; transform: rotate(-3deg); }
-.mark-hero { position: absolute; right: calc(2% + 268px); bottom: -64px; width: 80px; transform: rotate(108deg); }
+.mark-hero { position: absolute; right: calc(2% + 288px); bottom: -46px; width: 80px; height: 44px; }
 @media (max-width: 1023px) { .note-hero, .mark-hero { display: none; } }
 
 /* Sections */

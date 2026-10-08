@@ -761,6 +761,47 @@ const EditorCanvas: React.FC = () => {
     };
   }, []);
 
+  // Phone fit-to-screen: the floating top buttons and bottom bars sit over the
+  // canvas, so the store's fit (which only reserves a desktop top toolbar)
+  // hid the image's edges under them. Wrap resetView so every caller (load,
+  // Ctrl+0, resize) fits the whole image between the measured chrome.
+  // Desktop is untouched. ponytail: moving this into the store's
+  // getChromeReserve would be cleaner; the store is not this file's to edit.
+  useEffect(() => {
+    const orig = useEditorStore.getState().resetView;
+    const fit = () => {
+      orig();
+      const c = containerRef.current;
+      if (!c || !window.matchMedia('(max-width: 639px)').matches) return;
+      const s = useEditorStore.getState();
+      if (!s.imageSize.width || !s.imageSize.height) return;
+      const cr = c.getBoundingClientRect();
+      let top = 0;
+      let bottom = cr.height;
+      document.querySelectorAll('button, [data-snapty-toolbar]').forEach((el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        if (r.bottom - cr.top < cr.height / 3) top = Math.max(top, r.bottom - cr.top);
+        else if (r.top - cr.top > cr.height * 0.6) bottom = Math.min(bottom, r.top - cr.top);
+      });
+      const m = 8;
+      const ins = DEVICE_FRAME_INSETS[s.canvasStyle.deviceFrame];
+      const pad = s.canvasStyle.padding || 0;
+      const cw = s.imageSize.width + pad * 2 + ins.left + ins.right;
+      const ch = s.imageSize.height + pad * 2 + ins.top + ins.bottom;
+      const availW = cr.width - m * 2;
+      const availH = bottom - top - m * 2;
+      if (availW < 40 || availH < 40) return;
+      const z = Math.max(0.05, Math.min(availW / cw, availH / ch, 1));
+      useEditorStore.setState({
+        zoom: z,
+        stagePosition: { x: (cr.width - cw * z) / 2, y: top + m + (availH - ch * z) / 2 },
+      });
+    };
+    useEditorStore.setState({ resetView: fit });
+    return () => useEditorStore.setState({ resetView: orig });
+  }, []);
+
   // Reset view when background image changes
   useEffect(() => {
     if (backgroundImage) {
@@ -870,6 +911,8 @@ const EditorCanvas: React.FC = () => {
       } else if (ti.pendingNewId) {
         // Nothing typed: step back over the label's own attach step.
         st.undo();
+        // An abandoned fresh callout goes entirely: its own creation step too.
+        if (calloutLabelRef.current) useEditorStore.getState().undo();
       } else {
         st.removeElements([ti.editId]);
       }
@@ -1031,7 +1074,7 @@ const EditorCanvas: React.FC = () => {
     const signatureOf = (el: ShapeElement) =>
       [
         Math.round(el.x), Math.round(el.y),
-        Math.round(Math.abs(el.width)), Math.round(Math.abs(el.height)),
+        Math.round(Math.abs(el.width)), Math.round(Math.abs(el.height)), el.type,
         el.type === 'blur' ? el.blurRadius : el.pixelSize,
       ].join(':');
 

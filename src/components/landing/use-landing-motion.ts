@@ -47,15 +47,15 @@ export function useLandingMotion(rootRef: RefObject<HTMLDivElement | null>) {
       exit: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4"/></svg>',
     };
     const saveData = !!(navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData; // poster only, the visitor presses play
-    type Clip = { fig: HTMLElement; v: HTMLVideoElement; visible: boolean; active: boolean; userPaused: boolean; near(): void; load(): void; wants(): boolean; sync(): void };
+    type Clip = { fig: HTMLElement; v: HTMLVideoElement; visible: boolean; ratio: number; active: boolean; userPaused: boolean; near(): void; load(): void; wants(): boolean; claims(): boolean; sync(): void };
     const RATES = [0.5, 0.75, 1, 1.5]; // one speed for every film, kept for the visit
     let rate = 1;
     try { rate = RATES.find((r) => r === +(sessionStorage.getItem('snapty-rate') || 0)) || 1; } catch { /* storage blocked */ }
     let sound = false; // one shared music bed; the file is not requested until sound is turned on
-    let bgm: HTMLAudioElement | null = null, fade = 0;
+    let bgm: HTMLAudioElement | null = null, fade = 0, target = 0;
     const soundBtns: HTMLButtonElement[] = [], rateBtns: HTMLButtonElement[] = [];
     const fadeTo = (to: number, done?: () => void) => {
-      cancelAnimationFrame(fade);
+      cancelAnimationFrame(fade); target = to;
       const a = bgm!, from = a.volume, t0 = performance.now(), dur = reduce.matches ? 1 : 700;
       const tick = (t: number) => { const k = Math.max(0, Math.min(1, (t - t0) / dur)); a.volume = from + (to - from) * k; if (k < 1) fade = requestAnimationFrame(tick); else done?.(); };
       fade = requestAnimationFrame(tick);
@@ -74,6 +74,7 @@ export function useLandingMotion(rootRef: RefObject<HTMLDivElement | null>) {
       const a = bgm; if (!a) return;
       const want = sound && filmPlaying();
       if (want && a.paused) { a.volume = 0; a.play().then(() => { follow(true); fadeTo(0.35); }).catch(() => {}); }
+      else if (want && target !== 0.35) fadeTo(0.35); // a fade-out that a following film interrupted
       else if (!want && !a.paused) fadeTo(0, () => { if (!(sound && filmPlaying())) a.pause(); });
     };
     const paintSound = () => soundBtns.forEach((b) => { b.innerHTML = sound ? ICON.speaker : ICON.mute; b.setAttribute('aria-pressed', String(sound)); b.setAttribute('aria-label', sound ? 'Sound on' : 'Sound off'); b.title = sound ? 'Sound on' : 'Sound off'; });
@@ -90,7 +91,7 @@ export function useLandingMotion(rootRef: RefObject<HTMLDivElement | null>) {
       ctl.className = 'clip-ctl'; fig.appendChild(ctl);
       const film = v.dataset.film;
       const c: Clip = {
-        fig, v, visible: false, active: !fig.closest('[data-step]'), userPaused: reduce.matches || saveData,
+        fig, v, visible: false, ratio: 0, active: !fig.closest('[data-step]'), userPaused: reduce.matches || saveData,
         near() { if (film && !v.poster) v.poster = `/landing/${film}.webp`; },
         load() {
           c.near();
@@ -101,6 +102,7 @@ export function useLandingMotion(rootRef: RefObject<HTMLDivElement | null>) {
           v.load();
         },
         wants() { return c.visible && c.active && !c.userPaused && !document.hidden; },
+        claims() { return c.active && !c.userPaused && !document.hidden && c.ratio > 0; }, // the film the visitor asked for
         sync() { syncAll(); },
       };
       btn.type = 'button'; btn.className = 'clip-btn';
@@ -155,14 +157,18 @@ export function useLandingMotion(rootRef: RefObject<HTMLDivElement | null>) {
     });
     setRate(rate); paintSound();
     const syncAll = () => {
-      const win = lead && clips.includes(lead) && lead.wants() ? lead : clips.find((c) => c.wants());
+      // exactly one film plays: the one the visitor asked for; else the one already playing; else the most visible
+      const wanting = clips.filter((c) => c.wants());
+      const win = lead && lead.claims() ? lead : wanting.find((c) => !c.v.paused) || wanting.sort((a, b) => b.ratio - a.ratio)[0];
       clips.forEach((c) => { if (c === win) { c.load(); c.v.play().catch(() => {}); } else c.v.pause(); });
       musicSync();
     };
     document.addEventListener('visibilitychange', syncAll, on);
     const byFig = new Map(clips.map((c) => [c.fig as Element, c]));
     inView(clips.map((c) => c.fig), (fig, vis) => { const c = byFig.get(fig)!; if (vis && c.active) c.near(); }, { rootMargin: '700px 0px' });
-    inView(clips.map((c) => c.fig), (fig, vis) => { byFig.get(fig)!.visible = vis; syncAll(); }, { threshold: 0.35 });
+    const ratioIO = new IntersectionObserver((es) => { es.forEach((e) => { const c = byFig.get(e.target)!; c.ratio = e.intersectionRatio; c.visible = e.intersectionRatio >= 0.35; }); syncAll(); }, { threshold: [0, 0.1, 0.2, 0.35, 0.5, 0.75, 1] });
+    clips.forEach((c) => ratioIO.observe(c.fig));
+    observers.push(ratioIO);
 
     // 3. tour: a playlist. Choosing a step plays its film; when a film ends the next step takes over
     const steps = $$('[data-step]');
@@ -182,7 +188,7 @@ export function useLandingMotion(rootRef: RefObject<HTMLDivElement | null>) {
       const c = byFig.get($('[data-clip]', s)!)!;
       c.v.loop = false;
       $('.step-head', s)?.addEventListener('click', () => setStep(s, true), on);
-      c.v.addEventListener('ended', () => { if (current === s) setStep(steps[(i + 1) % steps.length]); }, on);
+      c.v.addEventListener('ended', () => { if (current === s) { const n = steps[(i + 1) % steps.length]; setStep(n); lead = byFig.get($('[data-clip]', n)!) || null; syncAll(); } }, on);
     });
     if (current) setStep(current);
 

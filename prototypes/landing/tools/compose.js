@@ -33,7 +33,7 @@ const CUES = [
 ];
 CUES.forEach((c) => { c.t = +(c.beat * BEAT).toFixed(4); c.lt = c.land.map((l) => +(l * BEAT).toFixed(4)); });
 const OUTRO_LEN = TOTAL_BEATS * BEAT - CUES.at(-1).t;
-const FULL_ONLY = new Set(['badges', 'pixelate', 'export', 'keyboard']);   // options panel / dialogs must stay in frame
+const FULL_ONLY = new Set(['pixelate', 'export']);   // options panel / dialogs must stay in frame
 const LEGACY_SHOT = { x: 270, y: 130, w: 1180, h: 737.5 };                   // footage recorded before rect cams
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
 const kbd = (keys) => keys.map((k) => `<kbd>${esc(k)}</kbd>`).join('');

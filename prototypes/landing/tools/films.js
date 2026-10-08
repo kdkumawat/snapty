@@ -48,39 +48,50 @@ const F = {
 
   async arrow() {
     const R = await open('dash');
-    R.start('arrow'); await R.hold(500); await R.beat('Arrow, with a label', ['A'], 'shot'); await R.hold(400);
-    // label sits past the arrow's tail; each arrowhead lands on its subject
+    const b1 = await R.box(380, 220, 540), b2 = await R.box(1010, 620, 420);
+    R.start('arrow'); await R.hold(500); await R.beat('Arrow, with a label', ['A'], b1); await R.hold(400);
+    // the label sits at the arrow's tail; each arrowhead lands on its subject
     await R.drag([560, 296], [814, 350], { ms: 700 });                       // the Sunday spike
     await R.toS(687, 323, { ms: 300 }); await R.hold(150); await R.dbl(200); await R.type('spike?', 150); await R.key('Enter', 300);
-    await R.toS(1000, 800, { ms: 500 }); await R.hold(300);
+    await R.hold(1000);
+    R.zoom(b2); await R.jumpS(1180, 800); await R.hold(250);
     await R.drag([1250, 826], [1352, 714], { ms: 700 });                      // the total
     await R.toS(1301, 770, { ms: 300 }); await R.hold(150); await R.dbl(200); await R.type('only 9', 150); await R.key('Enter', 300);
-    await R.toS(980, 820, { ms: 450 }); await R.hold(1500);
+    await R.toS(1180, 840, { ms: 450 }); await R.hold(1300);
     await R.done();
   },
 
   async shapes() {
     const R = await open('dash');
-    R.start('shapes'); await R.beat('Ellipse', ['O'], [700, 130, 1.6]); await R.tool('o');
-    await R.drag([556, 108], [640, 164], { ms: 650, after: 450 });
-    await R.beat('Freehand', ['P'], [800, 400, 1.6]); await R.tool('p');
-    await R.path([[832, 322], [866, 338], [872, 372], [842, 394], [806, 382], [796, 346], [822, 322], [848, 326]], 150);
-    await R.beat('Line', ['L'], [1150, 660, 1.6]); await R.tool('l');
-    await R.drag([1318, 708], [1388, 708], { ms: 450, after: 300 });
-    await R.toS(1180, 760, { ms: 450 }); await R.hold(1300);
+    const bx = await R.box(900, 560, 540);
+    R.start('shapes'); await R.hold(500); await R.beat('Rectangle, with text inside', ['R'], bx); await R.jumpS(1150, 760); await R.tool('r'); await R.hold(300);
+    await R.drag([1010, 800], [1340, 868], { ms: 700, after: 300 });          // a note box in the empty space under the table
+    await R.toS(1175, 834, { ms: 300 }); await R.hold(150); await R.dbl(250);
+    await R.type('Check this amount', 200); await R.key('Enter', 700);
+    await R.beat('Arrow, from the box', ['A'], bx); await R.tool('a'); await R.hold(300);
+    await R.drag([1290, 779], [1345, 714], { ms: 600, after: 300 });          // tail just above the box, head on the total
+    await R.toS(1130, 650, { ms: 450 }); await R.hold(1700);
     await R.done();
   },
 
   async badges() {
     const R = await open('settings'); const p = R.p;
-    R.start('badges'); await R.hold(500); await R.beat('Number badges', ['N'], null); await R.tool('n'); await R.hold(300);
-    await R.tap([1096, 228]); await R.tap([816, 335]);                                   // Connect Slack, the channel select
-    await R.beat('Press N again: letters', ['N'], null); await R.toS(1200, 700, { ms: 400 }); await R.key('n', 700);   // chip at the cursor
-    await R.tap([1290, 429]); await R.tap([1290, 493]); await R.tap([1290, 557]);       // the three toggles
-    await R.beat('Pointing finger', ['N'], null);
-    await R.clickEl(p.getByLabel(/right finger/), { ms: 600 }); await R.hold(300);
-    await R.tap([1160, 652], 400);                                                       // fingertip touches Save changes
-    await R.toS(900, 780, { ms: 450 }); await R.hold(1400);
+    const PANEL = { x: 0, y: 140, w: 320, h: 200 };                       // the options panel, close up
+    const boxA = await R.box(1000, 120, 380), boxB = await R.box(390, 240, 620), boxT = await R.box(940, 345, 380), boxS = await R.box(1000, 560, 400);
+    await R.jumpS(1040, 300);
+    R.start('badges'); await R.hold(500); await R.beat('Number badges', ['N'], boxA); await R.tool('n'); await R.hold(250);
+    await R.tap([1096, 228], 700);                                       // Connect Slack
+    R.zoom(boxB); await R.jumpS(900, 420); await R.tap([816, 335], 500); // the channel select
+    await R.beat('Press N again: letters', ['N'], boxB); await R.key('n', 900);   // chip at the cursor
+    R.zoom(PANEL); await R.hold(900);                                    // the style switch, close up
+    R.zoom(boxT); await R.jumpS(1180, 380); await R.tap([1290, 430], 350); await R.tap([1290, 494], 700);
+    await R.beat('Pointing finger', ['N'], PANEL); await R.jump(150, 300); await R.hold(250);
+    await R.clickEl(p.getByLabel(/up finger/), { ms: 350 }); await R.hold(500);
+    R.zoom(boxS); await R.jumpS(1100, 780); await R.tap([1233, 678], 900);   // fingertip touches Save changes from below
+    await R.beat('Stamps', ['N'], PANEL); await R.jump(150, 300); await R.hold(250);
+    await R.clickEl(p.getByLabel('Stamp ❌'), { ms: 350 }); await R.hold(500);
+    R.zoom(boxT); await R.jumpS(1180, 620); await R.tap([1290, 557], 1200);   // the switch that is off
+    await R.hold(300);
     await R.done();
   },
 
@@ -112,9 +123,11 @@ const F = {
 
   async magnifier() {
     const R = await open('dash');
-    R.start('magnifier'); await R.hold(500); await R.beat('Magnifier', ['M'], 'shot'); await R.tool('m'); await R.hold(300);
-    await R.drag([1150, 120], [1310, 166], { ms: 750, after: 700 });   // subject on the right; the lens appears once, lower left, and stays
-    await R.toS(900, 760, { ms: 500 }); await R.hold(1700);
+    // subject: the small "3 vs yesterday" line under Orders. The ring is the drag's box, so it is centred on the stat; the bubble lands lower left on the empty chart area.
+    const box = await R.box(240, 70, 560);
+    R.start('magnifier'); await R.hold(500); await R.beat('Magnifier', ['M'], box); await R.tool('m'); await R.hold(300);
+    await R.drag([564, 146], [690, 192], { ms: 700, after: 1800 });
+    await R.toS(560, 600, { ms: 450 }); await R.hold(700);
     await R.done();
   },
 
@@ -141,10 +154,15 @@ const F = {
 
   async keyboard() {
     const R = await open('settings'); const p = R.p;
-    R.start('keyboard'); R.camPx('Command palette', ['Ctrl', 'K'], null); await R.hold(300);
-    R.flash(['Ctrl', 'K']); await R.key('Control+k', 700); await R.type('call', 500); await R.key('Enter', 900);
-    R.camPx('All shortcuts', ['?'], null); R.flash(['?']); await R.key('?', 900);
-    await R.type('undo', 1700);
+    // 16:10 camera rect around a dialog (window px), padded
+    const around = async (pad = 70, minW = 0) => { const bb = await p.locator('[role="dialog"]').first().boundingBox(); const w = Math.max(minW, bb.width + 2 * pad, (bb.height + 2 * pad) * 1.6), cx = bb.x + bb.width / 2, top = Math.max(0, bb.y - pad);
+      return { x: Math.max(0, Math.min(1600 - w, cx - w / 2)), y: top, w, h: w / 1.6 }; };
+    const top = async (w) => { const bb = await p.locator('[role="dialog"]').first().boundingBox(); return { x: Math.max(0, bb.x + bb.width / 2 - w / 2), y: Math.max(0, bb.y - 40), w, h: w / 1.6 }; };   // the dialog's upper part
+    R.start('keyboard'); await R.hold(500);
+    await p.keyboard.press('Control+k'); await p.waitForTimeout(500); await R.beat('Command palette', ['Ctrl', 'K'], await top(520)); R.flash(['Ctrl', 'K']); await R.hold(600);
+    await R.type('call', 900); await R.key('Enter', 700);
+    await p.keyboard.press('?'); await p.waitForTimeout(500); await R.beat('All shortcuts', ['?'], await top(860)); R.flash(['?']); await R.hold(1200);
+    await R.type('undo', 400); R.zoom(await around(60, 620)); await R.hold(1700);
     await R.done();
   },
 

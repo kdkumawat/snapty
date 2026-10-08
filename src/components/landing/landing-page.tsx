@@ -65,7 +65,7 @@ export default function LandingPage() {
                 aria-label="Film: the Snapty logo, then a screenshot of a failing webhook page is pasted into the editor and marked up with an arrow, a rectangle, numbered badges, a pixelated secret, a highlighter stroke and a callout, then copied."></video>
             </figure>
             <p className="note note-hero" aria-hidden="true">the real editor, recorded</p>
-            <Mark name="heroArrow" className="mark mark-hero" viewBox="0 0 160 104" />
+            <Mark name="heroArrow" className="mark mark-hero" viewBox="0 0 80 44" />
           </div>
         </div>
       </section>
@@ -299,7 +299,7 @@ export default function LandingPage() {
               <div><dt>To another server</dt><dd>0</dd></div>
               <div className="net-zero"><dt>Image bytes uploaded</dt><dd>0<Mark name="circle" className="mark mark-zero" viewBox="0 0 240 88" stretch /></dd></div>
             </dl>
-            <p className="net-foot">Measured in headless Chromium against the development build: every request after the paste, with its body size. Reproduce it with <code>prototypes/landing/tools/netcheck.js</code>, or open DevTools and watch the Network tab yourself.</p>
+            <p className="net-foot">Measured in a real browser: every request made after pasting an image, with its size. Check it yourself: open DevTools, watch the Network tab, and paste a screenshot.</p>
           </figure>
         </div>
       </section>
