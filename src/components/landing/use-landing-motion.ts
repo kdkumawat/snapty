@@ -41,15 +41,53 @@ export function useLandingMotion(rootRef: RefObject<HTMLDivElement | null>) {
     const ICON = {
       pause: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>',
       play: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2l10 6-10 6z"/></svg>',
+      speaker: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2zM11.5 5.5a3.5 3.5 0 0 1 0 5M13 3.5a6 6 0 0 1 0 9"/></svg>',
+      mute: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2zM11.5 6l3 4M14.5 6l-3 4"/></svg>',
       enter: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>',
       exit: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4"/></svg>',
     };
     const saveData = !!(navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData; // poster only, the visitor presses play
     type Clip = { fig: HTMLElement; v: HTMLVideoElement; visible: boolean; active: boolean; userPaused: boolean; near(): void; load(): void; wants(): boolean; sync(): void };
+    const RATES = [0.5, 0.75, 1, 1.5]; // one speed for every film, kept for the visit
+    let rate = 1;
+    try { rate = RATES.find((r) => r === +(sessionStorage.getItem('snapty-rate') || 0)) || 1; } catch { /* storage blocked */ }
+    let sound = false; // one shared music bed; the file is not requested until sound is turned on
+    let bgm: HTMLAudioElement | null = null, fade = 0;
+    const soundBtns: HTMLButtonElement[] = [], rateBtns: HTMLButtonElement[] = [];
+    const fadeTo = (to: number, done?: () => void) => {
+      cancelAnimationFrame(fade);
+      const a = bgm!, from = a.volume, t0 = performance.now(), dur = reduce.matches ? 1 : 700;
+      const tick = (t: number) => { const k = Math.max(0, Math.min(1, (t - t0) / dur)); a.volume = from + (to - from) * k; if (k < 1) fade = requestAnimationFrame(tick); else done?.(); };
+      fade = requestAnimationFrame(tick);
+    };
+    const filmPlaying = () => clips.some((c) => !c.v.paused);
+    // the hero film is cut to the music: while it plays, the audio follows its clock (seek, loop, speed); other films just run alongside
+    const follow = (force?: boolean) => {
+      const a = bgm, h = clips.find((c) => c.v.dataset.film === 'hero')?.v;
+      if (!a) return;
+      a.playbackRate = rate;
+      if (!h || h.paused || !a.duration) return;
+      const want = h.currentTime % a.duration, d = Math.abs(a.currentTime - want);
+      if (force || Math.min(d, a.duration - d) > 0.08) a.currentTime = want;
+    };
+    const musicSync = () => { // music plays only while a film plays (visible, tab shown)
+      const a = bgm; if (!a) return;
+      const want = sound && filmPlaying();
+      if (want && a.paused) { a.volume = 0; a.play().then(() => { follow(true); fadeTo(0.35); }).catch(() => {}); }
+      else if (!want && !a.paused) fadeTo(0, () => { if (!(sound && filmPlaying())) a.pause(); });
+    };
+    const paintSound = () => soundBtns.forEach((b) => { b.innerHTML = sound ? ICON.speaker : ICON.mute; b.setAttribute('aria-pressed', String(sound)); b.setAttribute('aria-label', sound ? 'Sound on' : 'Sound off'); b.title = sound ? 'Sound on' : 'Sound off'; });
+    const setRate = (r: number) => {
+      rate = r; try { sessionStorage.setItem('snapty-rate', String(r)); } catch { /* storage blocked */ }
+      clips.forEach((c) => { c.v.defaultPlaybackRate = r; c.v.playbackRate = r; });
+      follow(true);
+      rateBtns.forEach((b) => { b.textContent = r + 'x'; b.setAttribute('aria-label', `Playback speed ${r}x`); });
+    };
     let lead: Clip | null = null; // the film the visitor last asked for wins over the others
     const clips: Clip[] = $$('[data-clip]').map((fig) => {
       const v = $<HTMLVideoElement>('video', fig)!;
-      const btn = document.createElement('button');
+      const btn = document.createElement('button'), ctl = document.createElement('div');
+      ctl.className = 'clip-ctl'; fig.appendChild(ctl);
       const film = v.dataset.film;
       const c: Clip = {
         fig, v, visible: false, active: !fig.closest('[data-step]'), userPaused: reduce.matches || saveData,
@@ -65,22 +103,61 @@ export function useLandingMotion(rootRef: RefObject<HTMLDivElement | null>) {
         wants() { return c.visible && c.active && !c.userPaused && !document.hidden; },
         sync() { syncAll(); },
       };
-      btn.type = 'button'; btn.className = 'clip-btn'; fig.appendChild(btn);
+      btn.type = 'button'; btn.className = 'clip-btn';
       const paint = () => { const playing = !v.paused; btn.innerHTML = playing ? ICON.pause : ICON.play; btn.setAttribute('aria-label', playing ? 'Pause clip' : 'Play clip'); };
       v.addEventListener('play', paint, on); v.addEventListener('pause', paint, on); paint();
+      v.defaultPlaybackRate = rate; v.playbackRate = rate;
+      v.addEventListener('play', musicSync, on); v.addEventListener('pause', musicSync, on);
+      if (v.dataset.film === 'hero') {
+        for (const ev of ['play', 'seeked', 'ratechange']) v.addEventListener(ev, () => follow(true), on);
+        v.addEventListener('timeupdate', () => follow(false), on);
+      }
+      { // speed: a button showing the speed, a menu with arrow keys
+        const sp = document.createElement('button'), menu = document.createElement('div');
+        sp.type = 'button'; sp.className = 'clip-btn clip-speed'; sp.setAttribute('aria-haspopup', 'menu'); sp.setAttribute('aria-expanded', 'false'); rateBtns.push(sp);
+        menu.className = 'clip-menu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Playback speed'); menu.hidden = true;
+        const close = (back?: boolean) => { menu.hidden = true; sp.setAttribute('aria-expanded', 'false'); if (back) sp.focus(); };
+        const items = RATES.map((r) => {
+          const it = document.createElement('button'); it.type = 'button'; it.setAttribute('role', 'menuitemradio'); it.textContent = r + 'x'; it.tabIndex = -1; menu.appendChild(it);
+          it.addEventListener('click', () => { setRate(r); close(true); }, on); return it;
+        });
+        const open = () => { items.forEach((it, i) => it.setAttribute('aria-checked', String(RATES[i] === rate))); menu.hidden = false; sp.setAttribute('aria-expanded', 'true'); items[RATES.indexOf(rate)].focus(); };
+        sp.addEventListener('click', () => (menu.hidden ? open() : close(true)), on);
+        menu.addEventListener('keydown', (e) => {
+          const i = items.indexOf(document.activeElement as HTMLButtonElement), d = ({ ArrowDown: 1, ArrowUp: -1 } as Record<string, number>)[e.key];
+          if (d) { e.preventDefault(); items[(i + d + items.length) % items.length].focus(); }
+          else if (e.key === 'Home') { e.preventDefault(); items[0].focus(); }
+          else if (e.key === 'End') { e.preventDefault(); items[items.length - 1].focus(); }
+          else if (e.key === 'Escape') { e.preventDefault(); close(true); }
+          else if (e.key === 'Tab') close();
+        }, on);
+        document.addEventListener('pointerdown', (e) => { if (!menu.hidden && !menu.contains(e.target as Node) && e.target !== sp) close(); }, on);
+        ctl.append(menu, sp);
+      }
+      { // sound: one shared toggle; the audio element and the file only exist after the first press
+        const sb = document.createElement('button'); sb.type = 'button'; sb.className = 'clip-btn clip-st'; soundBtns.push(sb); ctl.appendChild(sb);
+        sb.addEventListener('click', () => {
+          sound = !sound;
+          if (sound && !bgm) { bgm = new Audio(); bgm.preload = 'none'; bgm.loop = true; bgm.volume = 0; bgm.src = '/landing/bgm.mp3'; bgm.playbackRate = rate; }
+          paintSound(); musicSync();
+        }, on);
+      }
       btn.addEventListener('click', () => { c.userPaused = !v.paused; if (!c.userPaused) lead = c; c.load(); syncAll(); }, on);
       if (document.fullscreenEnabled) { // fullscreen toggle: the film's container, standard Fullscreen API
         const fs = document.createElement('button');
-        fs.type = 'button'; fs.className = 'clip-btn clip-fs'; fig.appendChild(fs);
+        fs.type = 'button'; fs.className = 'clip-btn clip-st'; ctl.appendChild(fs);
         const paintFs = () => { const isOn = document.fullscreenElement === fig; fs.innerHTML = isOn ? ICON.exit : ICON.enter; fs.setAttribute('aria-label', isOn ? 'Exit full screen' : 'Full screen'); fs.title = fs.getAttribute('aria-label') || ''; };
         fs.addEventListener('click', () => { if (document.fullscreenElement === fig) void document.exitFullscreen(); else fig.requestFullscreen().catch(() => {}); }, on);
         document.addEventListener('fullscreenchange', paintFs, on); paintFs();
       }
+      ctl.appendChild(btn);
       return c;
     });
+    setRate(rate); paintSound();
     const syncAll = () => {
       const win = lead && clips.includes(lead) && lead.wants() ? lead : clips.find((c) => c.wants());
       clips.forEach((c) => { if (c === win) { c.load(); c.v.play().catch(() => {}); } else c.v.pause(); });
+      musicSync();
     };
     document.addEventListener('visibilitychange', syncAll, on);
     const byFig = new Map(clips.map((c) => [c.fig as Element, c]));
@@ -168,6 +245,6 @@ export function useLandingMotion(rootRef: RefObject<HTMLDivElement | null>) {
       void loadImageFileIntoEditor(file, { mode: 'background', clearAnnotations: true }).catch(() => {}).then(() => router.push('/editor'));
     }, on);
 
-    return () => { ac.abort(); observers.forEach((io) => io.disconnect()); clips.forEach((c) => c.v.pause()); };
+    return () => { cancelAnimationFrame(fade); bgm?.pause(); ac.abort(); observers.forEach((io) => io.disconnect()); clips.forEach((c) => c.v.pause()); };
   }, [rootRef, router]);
 }

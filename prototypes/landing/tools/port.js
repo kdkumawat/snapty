@@ -21,7 +21,7 @@ const sel = (s) => s.split(/,(?![^(]*\))/).map((x) => x.trim()).map((x) => {
   return '.lp ' + x;
 }).filter(Boolean).join(', ');
 const conv = (src) => blocks(src).map(([head, body]) => {
-  if (head.startsWith('@font-face')) return `${head} {${body}}\n`;
+  if (head.startsWith('@font-face') || head.startsWith('@keyframes')) return `${head} {${body}}\n`;
   if (head.startsWith('@media')) return `${head} {\n${conv(body)}}\n`;
   const s = sel(head); if (!s) return '';
   if (head === 'html') body = ' scroll-behavior: smooth; scroll-padding-top: 76px; ';
@@ -81,6 +81,6 @@ ${h.split('\n').map((l) => '      ' + l).join('\n')}
 // media/ is gitignored. On a fresh clone copy public/landing to media/ first; without it the shipped films are left alone.
 const pub = path.join(APP, 'public/landing'); const hasMedia = fs.existsSync(path.join(P, 'media'));
 if (hasMedia) { fs.rmSync(pub, { recursive: true, force: true }); fs.mkdirSync(pub, { recursive: true }); }
-let total = 0; if (hasMedia) for (const f of fs.readdirSync(path.join(P, 'media'))) { if (!/^(hero|arrow|shapes|highlighter|badges|callout|pixelate|spotlight|magnifier|export|flow|keyboard|phone|ex-)/.test(f)) continue; fs.copyFileSync(path.join(P, 'media', f), path.join(pub, f)); total += fs.statSync(path.join(pub, f)).size; }
+let total = 0; if (hasMedia) for (const f of fs.readdirSync(path.join(P, 'media'))) { if (!/^(hero|arrow|shapes|highlighter|badges|callout|pixelate|spotlight|magnifier|export|flow|keyboard|phone|ex-|bgm\.mp3)/.test(f)) continue; fs.copyFileSync(path.join(P, 'media', f), path.join(pub, f)); total += fs.statSync(path.join(pub, f)).size; }
 fs.copyFileSync(path.join(P, 'assets/BricolageGrotesque-Variable.woff2'), path.join(APP, 'public/fonts/BricolageGrotesque-Variable.woff2'));
 console.log('ported. public/landing total', (total / 1048576).toFixed(1) + ' MB');

@@ -49,7 +49,7 @@ exports.open = async ({ w = 960, h = 600, dsf = 2, scene = 'dash', dark = false,
   // eased, slightly arced path; captures a frame per step
   R.to = async (x, y, { ms, arc = 0.12 } = {}) => {
     const x0 = R.x, y0 = R.y, dx = x - x0, dy = y - y0, dist = Math.hypot(dx, dy);
-    if (ms == null) ms = Math.min(850, 240 + dist * 1.0);
+    if (ms == null) ms = Math.min(600, 200 + dist * 0.7);
     const n = Math.max(2, Math.round(ms / 1000 * FPS));
     const mx = (x0 + x) / 2 - dy * arc, my = (y0 + y) / 2 + dx * arc;
     for (let i = 1; i <= n; i++) { const t = ease(i / n); const u = 1 - t; const px = u * u * x0 + 2 * u * t * mx + t * t * x; const py = u * u * y0 + 2 * u * t * my + t * t * y; await p.mouse.move(px, py); await p.evaluate(([a, b2]) => window.__cur(a, b2), [px, py]); R.x = px; R.y = py; await R.frame(); }
@@ -59,7 +59,7 @@ exports.open = async ({ w = 960, h = 600, dsf = 2, scene = 'dash', dark = false,
   R.up = async () => { await p.mouse.up(); await p.waitForTimeout(120); await R.frame(2); };
   R.click = async (after = 250) => { await p.mouse.down(); await R.frame(2); await p.mouse.up(); await p.waitForTimeout(150); await R.hold(after); };
   R.dbl = async (after = 300) => { await p.mouse.dblclick(R.x, R.y); await p.waitForTimeout(200); await R.hold(after); };
-  R.drag = async (a, b2, o = {}) => { await R.toS(...a); await R.hold(120); await R.down(); await R.toS(...b2, { arc: 0.03, ms: 700, ...o }); await R.hold(100); await R.up(); await R.hold(o.after ?? 300); };
+  R.drag = async (a, b2, o = {}) => { await R.toS(...a); await R.hold(120); await R.down(); await R.toS(...b2, { arc: 0.03, ms: 700, ...o }); await R.hold(100); await R.up(); if (o.land && R.land) R.land(); await R.hold(o.after ?? 300); };
   R.path = async (pts, msPer = 220) => { await R.toS(...pts[0]); await R.down(); for (const q of pts.slice(1)) await R.toS(...q, { ms: msPer, arc: 0.18 }); await R.up(); await R.hold(250); };
   R.key = async (k, after = 300) => { await p.keyboard.press(k); await p.waitForTimeout(150); await R.hold(after); };
   R.type = async (s, after = 300) => { for (const ch of s) { await p.keyboard.type(ch); await R.frame(ch === ' ' ? 1 : 2); } await R.hold(after); };

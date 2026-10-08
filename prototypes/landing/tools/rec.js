@@ -28,6 +28,7 @@ exports.open = async (scene, { empty = false, dsf = 2 } = {}) => {
   R.rect = async (cam) => { if (!cam) return null; await R.readT(); if (cam === 'shot') { const [x, y] = R.S(0, 0), [x1] = R.S(1440, 0); const w = x1 - x, h = w / 1.6; return { x: x - 32, y: y - 20, w: w + 64, h: h + 40 }; } const [x, y] = R.S(cam[0], cam[1]), [x1, y1] = R.S(cam[2], cam[3]); return { x, y, w: x1 - x, h: y1 - y }; };
   R.beat = async (label, keys = [], cam = null) => { R.meta.beats.push({ f: R.n, label, keys, cam: await R.rect(cam) }); };
   R.cam = async (cam) => { const last = R.meta.beats.at(-1); R.meta.beats.push({ f: R.n, label: last.label, keys: last.keys, cam: await R.rect(cam) }); };
+  R.land = () => { const b = R.meta.beats.at(-1); (b.lands = b.lands || []).push(R.n); }; // the frame where the beat's action completes (arrowhead arrives, shape closes, badge pops, check appears); compose.js snaps it to a cue
   R.camPx = (label, keys) => R.meta.beats.push({ f: R.n, label, keys, cam: null });
   R.flash = (keys) => R.meta.keys.push({ f: R.n, keys });
   R.tool = async (k) => { const cur = await p.evaluate(() => document.querySelector('.toolbar-btn-active')?.getAttribute('aria-label')); if (k === 'a' && cur === 'Arrow') return; await R.key(k, 300); };

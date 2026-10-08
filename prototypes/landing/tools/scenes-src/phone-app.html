@@ -1,0 +1,38 @@
+<!doctype html><meta charset=utf-8>
+<!-- Phone scene: a fake "Bento" food-delivery checkout screen, 390x844 CSS px (a phone screenshot). -->
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,"Segoe UI",system-ui,sans-serif;color:#1c1917;background:#faf7f2;width:390px;height:844px;overflow:hidden;-webkit-font-smoothing:antialiased;position:relative}
+.st{height:44px;display:flex;justify-content:space-between;align-items:center;padding:6px 26px 0;font-size:15px;font-weight:600}
+.nav{display:flex;align-items:center;gap:12px;padding:10px 20px 14px;font-size:20px;font-weight:700}
+.nav i{width:34px;height:34px;border-radius:50%;background:#fff;border:1px solid #e7e2d9;display:grid;place-items:center;font-style:normal;font-size:16px;font-weight:600}
+.eta{margin:0 16px;background:#fff;border:1px solid #ece6db;border-radius:18px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center}
+.eta b{font-size:17px}.eta small{display:block;color:#78716c;font-size:13px;margin-top:3px}
+.eta .t{font-size:22px;font-weight:800;color:#c2410c}
+h4{margin:20px 20px 8px;font-size:13px;color:#78716c;font-weight:600;letter-spacing:.02em}
+.list{margin:0 16px;background:#fff;border:1px solid #ece6db;border-radius:18px}
+.it{display:flex;align-items:center;gap:12px;padding:13px 16px;border-top:1px solid #f1ece3}.it:first-child{border-top:0}
+.it .ph{width:46px;height:46px;border-radius:12px;flex:none}
+.it .n{flex:1;font-size:15px;font-weight:600}.it .n small{display:block;font-weight:400;color:#78716c;font-size:12.5px;margin-top:2px}
+.it .p{font-size:15px;font-weight:600}
+.sum{margin:14px 16px 0;background:#fff;border:1px solid #ece6db;border-radius:18px;padding:6px 16px}
+.row{display:flex;justify-content:space-between;height:40px;align-items:center;font-size:15px;color:#57534e}
+.row.tot{border-top:1px solid #f1ece3;color:#1c1917;font-weight:800;font-size:18px;height:50px}
+.cta{position:absolute;left:16px;right:16px;bottom:34px;height:56px;border-radius:16px;background:#c2410c;color:#fff;display:flex;justify-content:center;align-items:center;font-weight:700;font-size:17px}
+.bar{position:absolute;bottom:9px;left:130px;width:130px;height:5px;border-radius:3px;background:#1c1917}
+</style>
+<div class=st><span>9:41</span><span>5G ▮▮▮</span></div>
+<div class=nav><i>‹</i>Checkout</div>
+<div class=eta id=eta><div><b>Arriving at your door</b><small>Bento Kitchen · Rosa M.</small></div><div class=t id=etat>12 min</div></div>
+<h4>YOUR ORDER</h4>
+<div class=list>
+ <div class=it id=i1><div class=ph style="background:linear-gradient(135deg,#fdba74,#f97316)"></div><div class=n>Spicy tuna bowl<small>No sesame</small></div><div class=p>$14.50</div></div>
+ <div class=it id=i2><div class=ph style="background:linear-gradient(135deg,#bef264,#65a30d)"></div><div class=n>Miso soup<small>Large</small></div><div class=p>$4.00</div></div>
+ <div class=it id=i3><div class=ph style="background:linear-gradient(135deg,#fda4af,#e11d48)"></div><div class=n>Mochi, 3 pieces<small>Strawberry</small></div><div class=p>$6.20</div></div>
+</div>
+<div class=sum>
+ <div class=row><span>Subtotal</span><span>$24.70</span></div>
+ <div class=row><span>Delivery</span><span>$2.99</span></div>
+ <div class="row tot"><span>Total</span><span id=tot>$41.69</span></div>
+</div>
+<div class=cta>Place order</div><div class=bar></div>
