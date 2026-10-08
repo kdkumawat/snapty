@@ -8,48 +8,54 @@ const F = {
     const Q1 = [40, 50, 720, 475], Q2 = [720, 50, 1400, 475], Q3 = [40, 475, 720, 900], Q4 = [720, 475, 1400, 900];
     const R = await open('webhooks', { empty: true, dsf: 3 }); const p = R.p;
     R.x = 800; R.y = 640; await p.evaluate(() => window.__cur(800, 640));
-    R.start('hero'); R.camPx('', []); await R.hold(600);
-    R.camPx('Paste a screenshot', ['Ctrl', 'V']); await R.hold(900);
-    await R.paste(); await R.tidy(); await R.hold(1000);
-    // 1 arrow + label: the 500 in the deliveries table
-    await R.beat('Arrow', ['A'], Q3); await R.hold(700);
-    await R.drag([130, 846], [338, 718], { ms: 750 });
-    await R.toS(234, 782, { ms: 320 }); await R.hold(150); await R.dbl(200); await R.type('failing'); await R.key('Enter', 300);
-    await R.toS(420, 800, { ms: 350 }); await R.hold(500);
+    R.start('hero'); R.camPx('', []); await R.hold(400);
+    R.camPx('Paste a screenshot', ['Ctrl', 'V']); await R.hold(500);
+    await R.paste(); await R.tidy(); R.land(); await R.hold(500);
+    // 1 arrow, label past its tail: the 500 in the deliveries table
+    await R.beat('Arrow, with a label', ['A'], Q3); await R.hold(150);
+    await R.drag([262, 826], [336, 713], { ms: 550, after: 150 }); R.land();
+    await R.toS(299, 770, { ms: 250 }); await R.hold(80); await R.dbl(120); await R.type('failing', 150); await R.key('Enter', 200);
+    await R.toS(430, 810, { ms: 300 }); await R.hold(500);
     // 2 rectangle: the response
-    await R.beat('Rectangle', ['R'], Q4); await R.tool('r'); await R.hold(500);
-    await R.drag([752, 541], [1368, 759], { ms: 850, after: 800 });
+    await R.beat('Rectangle', ['R'], Q4); await R.tool('r'); await R.hold(200);
+    await R.drag([752, 541], [1368, 759], { ms: 650, after: 600 , land: true });
     // 3 number badges: the three setup steps
-    await R.beat('Number badges', ['N'], Q2); await R.tool('n'); await R.hold(500);
-    for (const y of [159, 223, 287]) await R.tap([798, y], 220);
-    await R.toS(1000, 380, { ms: 350 }); await R.hold(600);
-    // 4 pixelate: the signing secret (mode is picked in the options panel, so the whole window is shown)
-    await R.beat('Pixelate', ['B'], null); await R.tool('b'); await R.hold(500);
-    await R.btn('Pixelate', { ms: 650 }); await R.hold(350);
-    await R.cam(Q1); await R.toS(224, 184, { ms: 800 }); await R.hold(250);
-    await R.drag([224, 184], [532, 216], { ms: 750, after: 900 });
+    await R.beat('Number badges', ['N'], Q2); await R.tool('n'); await R.hold(200);
+    for (const y of [159, 223, 287]) { await R.toS(798, y, { ms: 260 }); await R.hold(80); R.land(); await R.click(100); }
+    await R.toS(1000, 380, { ms: 250 }); await R.hold(500);
+    // 4 blur: the signing secret (default strength)
+    await R.beat('Blur', ['B'], null); await R.tool('b'); await R.hold(300);
+    await R.cam(Q1); await R.toS(224, 184, { ms: 600 }); await R.hold(100);
+    await R.drag([224, 184], [532, 216], { ms: 600, after: 600 , land: true });
     // 5 highlighter: the retry policy, same cell
     await R.beat('Highlighter', ['K'], Q1); await R.tool('k');
-    await R.drag([224, 307], [413, 307], { ms: 750, after: 800 });
-    // 6 callout: press the Retry button, drag to where the note should sit
-    await R.beat('Callout', ['U'], Q3); await R.tool('u'); await R.hold(600);
-    await R.drag([643, 715], [520, 808], { ms: 800 }); await R.type('Retry does nothing'); await R.key('Enter', 300);
-    await R.toS(600, 860, { ms: 350 }); await R.hold(700);
+    await R.drag([224, 307], [413, 307], { ms: 600, after: 600 , land: true });
+    // 6 callout: press the Retry button
+    await R.beat('Callout', ['U'], Q3); await R.tool('u'); await R.hold(200);
+    await R.drag([643, 708], [540, 810], { ms: 600 }); await R.type('Does nothing', 100); await R.key('Enter', 200); R.land();
+    await R.toS(640, 860, { ms: 250 }); await R.hold(600);
     // copy
-    R.camPx('Copy to clipboard', ['Ctrl', 'C']); await R.hold(900);
-    await R.clickEl(p.locator('[aria-label="Copy image"]'), { ms: 800 }); await p.waitForTimeout(1200); await R.hold(1600);
+    R.camPx('Copy to clipboard', ['Ctrl', 'C']); await R.hold(300);
+    const cp = p.locator('[aria-label="Copy image"]'); const bb = await cp.boundingBox(); 
+    await R.to(bb.x + bb.width / 2, bb.y + bb.height / 2, { ms: 600 }); await R.hold(120);
+    await p.mouse.down(); await R.frame(2); await p.mouse.up();
+    await cp.locator('span.col-start-1:first-child.opacity-0').first().waitFor({ timeout: 6000 }); await p.waitForTimeout(230);   // copy finished: wait for the cross-fade to settle
+    await p.mouse.move(R.x - 110, R.y + 130); R.x -= 110; R.y += 130; await p.evaluate(([a, b]) => window.__cur(a, b), [R.x, R.y]);
+    R.land(); await R.frame(45);                                    // the check lasts 1.2 s of real time, so freeze its frame for 1.5 s of film
+    await R.hold(300);
     await R.done({ exportPng: true });
   },
 
   async arrow() {
     const R = await open('dash');
-    R.start('arrow'); await R.beat('Arrow, with a label', ['A'], [740, 400, 1.5]); await R.hold(300);
-    await R.drag([560, 300], [818, 352], { ms: 700 });
-    await R.toS(689, 326, { ms: 300 }); await R.hold(150); await R.dbl(200); await R.type('spike?'); await R.key('Enter', 300); await R.toS(700, 440, { ms: 350 }); await R.hold(300);
-    await R.beat('Rectangle, with text inside', ['R'], [740, 480, 1.5]); await R.tool('r');
-    await R.drag([520, 584], [884, 636], { ms: 650 });
-    await R.toS(702, 610, { ms: 280 }); await R.hold(150); await R.dbl(200); await R.type('Sunday looks wrong'); await R.key('Enter', 400);
-    await R.toS(980, 600, { ms: 450 }); await R.hold(1300);
+    R.start('arrow'); await R.hold(500); await R.beat('Arrow, with a label', ['A'], 'shot'); await R.hold(400);
+    // label sits past the arrow's tail; each arrowhead lands on its subject
+    await R.drag([560, 296], [814, 350], { ms: 700 });                       // the Sunday spike
+    await R.toS(687, 323, { ms: 300 }); await R.hold(150); await R.dbl(200); await R.type('spike?', 150); await R.key('Enter', 300);
+    await R.toS(1000, 800, { ms: 500 }); await R.hold(300);
+    await R.drag([1250, 826], [1352, 714], { ms: 700 });                      // the total
+    await R.toS(1301, 770, { ms: 300 }); await R.hold(150); await R.dbl(200); await R.type('only 9', 150); await R.key('Enter', 300);
+    await R.toS(980, 820, { ms: 450 }); await R.hold(1500);
     await R.done();
   },
 
@@ -66,19 +72,15 @@ const F = {
   },
 
   async badges() {
-    const R = await open('settings');
-    R.start('badges'); await R.beat('Number badges', ['N'], null); await R.tool('n');
-    await R.tap([1096, 228]); await R.tap([816, 335]); await R.tap([1232, 696]);
-    await R.beat('Switch to letters', ['N'], null);
-    await R.btn('Letters', { ms: 600 }); await R.hold(350);
-    await R.tap([1316, 429]); await R.tap([1316, 493]); await R.tap([1316, 557]);
-    await R.beat('Pointing badge', ['N'], null);
-    await R.btn('Numbers with 👉', { ms: 600 }); await R.hold(300);
-    await R.tap([382, 114]);
-    await R.beat('Stamp', ['N'], null);
-    await R.btn('Stamp ✅', { ms: 600 }); await R.hold(300);
-    await R.tap([1318, 651]);
-    await R.toS(900, 760, { ms: 450 }); await R.hold(1400);
+    const R = await open('settings'); const p = R.p;
+    R.start('badges'); await R.hold(500); await R.beat('Number badges', ['N'], null); await R.tool('n'); await R.hold(300);
+    await R.tap([1096, 228]); await R.tap([816, 335]);                                   // Connect Slack, the channel select
+    await R.beat('Press N again: letters', ['N'], null); await R.toS(1200, 700, { ms: 400 }); await R.key('n', 700);   // chip at the cursor
+    await R.tap([1290, 429]); await R.tap([1290, 493]); await R.tap([1290, 557]);       // the three toggles
+    await R.beat('Pointing finger', ['N'], null);
+    await R.clickEl(p.getByLabel(/right finger/), { ms: 600 }); await R.hold(300);
+    await R.tap([1160, 652], 400);                                                       // fingertip touches Save changes
+    await R.toS(900, 780, { ms: 450 }); await R.hold(1400);
     await R.done();
   },
 
@@ -110,9 +112,9 @@ const F = {
 
   async magnifier() {
     const R = await open('dash');
-    R.start('magnifier'); await R.beat('Magnifier', ['M'], [520, 300, 1.45]); await R.tool('m');
-    await R.drag([280, 152], [418, 182], { ms: 750, after: 500 });
-    await R.toS(900, 700, { ms: 500 }); await R.hold(1700);
+    R.start('magnifier'); await R.hold(500); await R.beat('Magnifier', ['M'], 'shot'); await R.tool('m'); await R.hold(300);
+    await R.drag([1150, 120], [1310, 166], { ms: 750, after: 700 });   // subject on the right; the lens appears once, lower left, and stays
+    await R.toS(900, 760, { ms: 500 }); await R.hold(1700);
     await R.done();
   },
 

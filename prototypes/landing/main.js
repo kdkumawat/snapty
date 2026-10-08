@@ -31,19 +31,66 @@
 
   // 3. Clips: poster when near, sources only when the clip should play; one plays at a time; none while the tab is hidden ---
   const ICON = { pause: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h3.500v12H3zM9.500 2H13v12H9.500z"/></svg>', play: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2l10 6-10 6z"/></svg>',
+    speaker: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2zM11.500 5.500a3.500 3.500 0 0 1 0 5M13 3.500a6 6 0 0 1 0 9"/></svg>', mute: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2zM11.500 6l3 4M14.500 6l-3 4"/></svg>',
     enter: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>', exit: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4"/></svg>' };
   const saveData = !!navigator.connection?.saveData;   // Save-Data and reduced motion: poster only, the visitor presses play
+  const RATES = [0.5, 0.75, 1, 1.5];                   // one speed for every film, kept for the visit
+  let rate = 1; try { rate = RATES.find((r) => r === +sessionStorage.getItem('snapty-rate')) || 1; } catch {}
+  let sound = false;                                   // one shared music bed; the file is not requested until sound is turned on
+  let bgm = null, fade = 0;
+  const soundBtns = [], rateBtns = [];
+  const fadeTo = (to, done) => { cancelAnimationFrame(fade); const from = bgm.volume, t0 = performance.now(), dur = reduce.matches ? 1 : 700;
+    const tick = (t) => { const k = Math.max(0, Math.min(1, (t - t0) / dur)); bgm.volume = from + (to - from) * k; if (k < 1) fade = requestAnimationFrame(tick); else done?.(); }; fade = requestAnimationFrame(tick); };
+  const filmPlaying = () => clips.some((c) => !c.v.paused);
+  // the hero film is cut to the music: while it plays, the audio follows its clock (seek, loop, speed); other films just run alongside
+  const follow = (force) => { const h = clips.find((c) => c.v.dataset.film === 'hero')?.v;
+    if (!bgm) return; bgm.playbackRate = rate;
+    if (!h || h.paused || !bgm.duration) return;
+    const want = h.currentTime % bgm.duration, d = Math.abs(bgm.currentTime - want);
+    if (force || Math.min(d, bgm.duration - d) > 0.08) bgm.currentTime = want; };
+  const musicSync = () => {                            // music plays only while a film plays (visible, tab shown)
+    if (!bgm) return; const on = sound && filmPlaying();
+    if (on && bgm.paused) { bgm.volume = 0; bgm.play().then(() => { follow(true); fadeTo(0.35); }).catch(() => {}); }
+    else if (!on && !bgm.paused) fadeTo(0, () => { if (!(sound && filmPlaying())) bgm.pause(); });
+  };
+  const paintSound = () => soundBtns.forEach((b) => { b.innerHTML = sound ? ICON.speaker : ICON.mute; b.setAttribute('aria-pressed', sound); b.setAttribute('aria-label', sound ? 'Sound on' : 'Sound off'); b.title = sound ? 'Sound on' : 'Sound off'; });
+  const setRate = (r) => { rate = r; try { sessionStorage.setItem('snapty-rate', r); } catch {} clips.forEach((c) => { c.v.defaultPlaybackRate = r; c.v.playbackRate = r; }); follow(true); rateBtns.forEach((b) => { b.textContent = r + 'x'; b.setAttribute('aria-label', `Playback speed ${r}x`); }); };
   let lead = null;                                     // the clip the visitor last asked for wins over the others
   const clips = $$('[data-clip]').map((fig) => {
-    const v = $('video', fig), btn = document.createElement('button');
+    const v = $('video', fig), btn = document.createElement('button'), ctl = document.createElement('div');
+    ctl.className = 'clip-ctl'; fig.appendChild(ctl);
     const c = { fig, v, visible: false, active: !fig.closest('[data-step]'), userPaused: reduce.matches || saveData };
-    btn.type = 'button'; btn.className = 'clip-btn'; fig.appendChild(btn);
+    btn.type = 'button'; btn.className = 'clip-btn';
     const paint = () => { const playing = !v.paused; btn.innerHTML = playing ? ICON.pause : ICON.play; btn.setAttribute('aria-label', playing ? 'Pause clip' : 'Play clip'); };
     v.addEventListener('play', paint); v.addEventListener('pause', paint); paint();
+    v.defaultPlaybackRate = rate; v.playbackRate = rate;
+    v.addEventListener('play', musicSync); v.addEventListener('pause', musicSync);
+    if (v.dataset.film === 'hero') for (const ev of ['play', 'seeked', 'ratechange']) v.addEventListener(ev, () => follow(true));
+    if (v.dataset.film === 'hero') v.addEventListener('timeupdate', () => follow(false));
+    {  // speed: a button showing the speed, a menu with arrow keys
+      const sp = document.createElement('button'), menu = document.createElement('div');
+      sp.type = 'button'; sp.className = 'clip-btn clip-speed'; sp.setAttribute('aria-haspopup', 'menu'); sp.setAttribute('aria-expanded', 'false'); rateBtns.push(sp);
+      menu.className = 'clip-menu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Playback speed'); menu.hidden = true;
+      const close = (back) => { menu.hidden = true; sp.setAttribute('aria-expanded', 'false'); if (back) sp.focus(); };
+      const items = RATES.map((r) => { const it = document.createElement('button'); it.type = 'button'; it.setAttribute('role', 'menuitemradio'); it.textContent = r + 'x'; it.tabIndex = -1; menu.appendChild(it);
+        it.addEventListener('click', () => { setRate(r); close(true); }); return it; });
+      const open = () => { items.forEach((it, i) => it.setAttribute('aria-checked', RATES[i] === rate)); menu.hidden = false; sp.setAttribute('aria-expanded', 'true'); items[RATES.indexOf(rate)].focus(); };
+      sp.addEventListener('click', () => (menu.hidden ? open() : close(true)));
+      menu.addEventListener('keydown', (e) => { const i = items.indexOf(document.activeElement), d = { ArrowDown: 1, ArrowUp: -1 }[e.key];
+        if (d) { e.preventDefault(); items[(i + d + items.length) % items.length].focus(); } else if (e.key === 'Home') { e.preventDefault(); items[0].focus(); } else if (e.key === 'End') { e.preventDefault(); items.at(-1).focus(); } else if (e.key === 'Escape') { e.preventDefault(); close(true); } else if (e.key === 'Tab') close(); });
+      document.addEventListener('pointerdown', (e) => { if (!menu.hidden && !menu.contains(e.target) && e.target !== sp) close(); });
+      ctl.append(menu, sp);
+    }
+    {  // sound: one shared toggle; the audio element and the file only exist after the first press
+      const sb = document.createElement('button'); sb.type = 'button'; sb.className = 'clip-btn clip-st'; soundBtns.push(sb); ctl.appendChild(sb);
+      sb.addEventListener('click', () => { sound = !sound;
+        if (sound && !bgm) { bgm = new Audio(); bgm.preload = 'none'; bgm.loop = true; bgm.volume = 0; bgm.src = 'media/bgm.mp3'; bgm.playbackRate = rate; }
+        paintSound(); musicSync(); });
+    }
     btn.addEventListener('click', () => { c.userPaused = !v.paused; if (!c.userPaused) lead = c; c.load(); syncAll(); });
     if (document.fullscreenEnabled) {                  // fullscreen toggle: the film's container, standard Fullscreen API
       const fs = document.createElement('button');
-      fs.type = 'button'; fs.className = 'clip-btn clip-fs'; fig.appendChild(fs);
+      fs.type = 'button'; fs.className = 'clip-btn clip-st'; ctl.appendChild(fs);
       const paintFs = () => { const on = document.fullscreenElement === fig; fs.innerHTML = on ? ICON.exit : ICON.enter; fs.setAttribute('aria-label', on ? 'Exit full screen' : 'Full screen'); fs.title = fs.getAttribute('aria-label'); };
       fs.addEventListener('click', () => { if (document.fullscreenElement === fig) document.exitFullscreen(); else fig.requestFullscreen().catch(() => {}); });
       document.addEventListener('fullscreenchange', paintFs); paintFs();
@@ -55,11 +102,14 @@
       for (const [ext, type] of v.hasAttribute('data-mp4only') ? [['mp4', 'video/mp4']] : [['webm', 'video/webm'], ['mp4', 'video/mp4']]) { const s = document.createElement('source'); s.src = `media/${film}.${ext}`; s.type = type; v.appendChild(s); }
       v.load(); };
     c.wants = () => c.visible && c.active && !c.userPaused && !document.hidden;
+    ctl.appendChild(btn);
     return c;
   });
+  setRate(rate); paintSound();
   const syncAll = () => {
     const win = clips.includes(lead) && lead.wants() ? lead : clips.find((c) => c.wants());
     clips.forEach((c) => { if (c === win) { c.load(); c.v.play().catch(() => {}); } else c.v.pause(); });
+    musicSync();
   };
   clips.forEach((c) => { c.sync = syncAll; });
   document.addEventListener('visibilitychange', syncAll);

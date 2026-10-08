@@ -63,3 +63,4 @@ skills-lock.json
 # landing prototype: generated review shots, and films (the shipped copy is public/landing)
 /prototypes/landing/review/
 /prototypes/landing/media/
+/prototypes/landing/tools/frames/

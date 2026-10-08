@@ -45,3 +45,7 @@ Scenes are fake apps (`tools/scenes-src/webhooks.html` for the hero; the other f
 - **Blur mode does not hide text.** On both 1x and 2x screenshots a blurred email stays readable at the default amount, and a region drawn at amount 40 showed no visible blur. The films and examples therefore use Pixelate, which works. Until blur is fixed it should not be offered as redaction.
 - **Arrow labels wrap to the arrow's length and only the first line shows** ("only 9 orders" rendered as "only 9"). The films use one-word labels.
 - Pressing `A` while the Arrow tool is already active cycles the arrow type (documented, but easy to trigger by accident right after a paste, when Arrow is the default tool).
+
+## Background music
+
+`media/bgm.mp3` is "Minimal Technology" by NastelBom (Pixabay Content License), cut to a 12-bar loop from 11.64 s of the original. It is only requested when a visitor turns sound on; port.js ships it to `public/landing/bgm.mp3`. While the hero film plays, the audio follows the film's clock and speed.
