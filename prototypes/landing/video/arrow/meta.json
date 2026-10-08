@@ -1,0 +1,33 @@
+{
+ "fps": 30,
+ "w": 1600,
+ "h": 1000,
+ "beats": [
+  {
+   "f": 0,
+   "label": "Arrow, with a label",
+   "keys": [
+    "A"
+   ],
+   "cam": [
+    876,
+    460,
+    1.5
+   ]
+  },
+  {
+   "f": 139,
+   "label": "Rectangle, with text inside",
+   "keys": [
+    "R"
+   ],
+   "cam": [
+    876,
+    522,
+    1.5
+   ]
+  }
+ ],
+ "keys": [],
+ "frames": 327
+}

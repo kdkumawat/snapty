@@ -43,10 +43,22 @@ function horiz(h: Heading): boolean {
   return h === 'e' || h === 'w';
 }
 
+/** How far an elbow runs straight out of a bound shape before turning (Excalidraw pads bound shapes by 40). */
+const STUB = 40;
+
+function step(p: Pt, h: Heading, d: number): Pt {
+  if (h === 'n') return { x: p.x, y: p.y - d };
+  if (h === 's') return { x: p.x, y: p.y + d };
+  if (h === 'e') return { x: p.x + d, y: p.y };
+  if (h === 'w') return { x: p.x - d, y: p.y };
+  return p;
+}
+
 /**
  * Orthogonal route between two absolute points. Returns the interior
- * vertices (excluding start/end). The route never leaves the bounding box of
- * the two endpoints, so bound elbows stay tight.
+ * vertices (excluding start/end). A bound end leaves its shape square to the
+ * side it sits on (its heading) for STUB px before turning, so the arrow
+ * meets the shape head-on as in Excalidraw; free ends turn straight away.
  */
 export function routeElbow(
   start: Pt,
@@ -60,24 +72,47 @@ export function routeElbow(
   // Degenerate: identical points → no interior vertex.
   if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) return [];
 
-  // Route axis preference. Exit headings get first say (an arrow leaving
-  // horizontally keeps going horizontally), then the longer axis wins, then
-  // a fixed default (horizontal) keeps behavior deterministic.
-  let horizontalFirst: boolean;
-  if (horiz(startHeading) !== horiz(endHeading)) {
-    horizontalFirst = horiz(startHeading);
-  } else if (startHeading && endHeading) {
-    horizontalFirst = horiz(startHeading) && horiz(endHeading);
+  const a = step(start, startHeading, STUB);
+  const b = step(end, endHeading, STUB);
+  // A free end takes the axis of the other end's stub, or the longer axis.
+  const fallback = Math.abs(dx) >= Math.abs(dy);
+  const aH = startHeading ? horiz(startHeading) : endHeading ? !horiz(endHeading) : fallback;
+  const bH = endHeading ? horiz(endHeading) : aH ? false : true;
+
+  const mid: Pt[] = [];
+  if (aH && bH) {
+    // Both stubs horizontal: join them with one vertical run. Stubs that
+    // point the same way share the far side so the route never doubles back.
+    const x = startHeading && startHeading === endHeading
+      ? (startHeading === 'e' ? Math.max(a.x, b.x) : Math.min(a.x, b.x))
+      : (a.x + b.x) / 2;
+    mid.push({ x, y: a.y }, { x, y: b.y });
+  } else if (!aH && !bH) {
+    const y = startHeading && startHeading === endHeading
+      ? (startHeading === 's' ? Math.max(a.y, b.y) : Math.min(a.y, b.y))
+      : (a.y + b.y) / 2;
+    mid.push({ x: a.x, y }, { x: b.x, y });
+  } else if (aH) {
+    mid.push({ x: b.x, y: a.y });
   } else {
-    horizontalFirst = Math.abs(dx) >= Math.abs(dy);
+    mid.push({ x: a.x, y: b.y });
   }
 
-  if (horizontalFirst) {
-    // start → (end.x, start.y) → end : horizontal leg first, then vertical.
-    return [{ x: end.x, y: start.y }];
+  // Drop repeated and collinear points (the stubs often line up with a run).
+  const all = [start, ...(startHeading ? [a] : []), ...mid, ...(endHeading ? [b] : []), end];
+  const out: Pt[] = [all[0]];
+  for (let i = 1; i < all.length; i++) {
+    const p = all[i];
+    const q = out[out.length - 1];
+    if (Math.abs(p.x - q.x) < 1e-6 && Math.abs(p.y - q.y) < 1e-6) continue;
+    const r = out[out.length - 2];
+    if (r && ((Math.abs(r.x - q.x) < 1e-6 && Math.abs(q.x - p.x) < 1e-6) || (Math.abs(r.y - q.y) < 1e-6 && Math.abs(q.y - p.y) < 1e-6))) {
+      out[out.length - 1] = p;
+    } else {
+      out.push(p);
+    }
   }
-  // start → (start.x, end.y) → end : vertical leg first, then horizontal.
-  return [{ x: start.x, y: end.y }];
+  return out.slice(1, -1);
 }
 
 /**

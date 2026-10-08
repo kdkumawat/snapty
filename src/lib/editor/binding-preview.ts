@@ -39,6 +39,10 @@ export interface BindingPreview {
   /** Absolute image position the endpoint will land on. */
   anchor: { x: number; y: number };
   mode: 'inside' | 'orbit';
+  /** Outline to trace, so the highlight follows the shape itself. */
+  shape: 'rect' | 'ellipse' | 'diamond';
+  cornerRadius: number;
+  rotation: number;
 }
 
 export interface EndpointSnapResult {
@@ -162,6 +166,9 @@ export function snapEndpointForBinding(
       bounds: box,
       anchor: snap ?? anchor,
       mode,
+      shape: target.type === 'circle' ? 'ellipse' : target.type === 'diamond' ? 'diamond' : 'rect',
+      cornerRadius: Math.min((target as { cornerRadius?: number }).cornerRadius ?? 0, Math.min(box.w, box.h) * 0.25),
+      rotation: (target as { rotation?: number }).rotation ?? 0,
     },
   };
 }

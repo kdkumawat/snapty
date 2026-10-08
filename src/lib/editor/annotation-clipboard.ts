@@ -1,6 +1,7 @@
 import { useEditorStore, generateId } from '@/store/editor-store';
 import type { EditorElement } from '@/types/editor';
 import { expandLabelPairs } from '@/lib/editor/text-labels';
+import { getElementBounds } from '@/lib/editor/selection';
 
 /**
  * In-app annotation clipboard (separate from the OS clipboard).
@@ -10,6 +11,12 @@ import { expandLabelPairs } from '@/lib/editor/text-labels';
  * clipboard is a plain deep clone so later edits never leak into it.
  */
 let annotationClipboard: EditorElement[] | null = null;
+
+/** Last pointer position over the canvas, in image coordinates. */
+let pastePoint: { x: number; y: number } | null = null;
+export function setPastePoint(p: { x: number; y: number } | null | undefined) {
+  if (p) pastePoint = p;
+}
 
 /** Some browsers (Safari) fire the paste event even after keydown was prevented. */
 let suppressImagePasteUntil = 0;
@@ -64,15 +71,36 @@ export function pasteAnnotationsFromClipboard(): number {
       if (!groupMap.has(c.groupId)) groupMap.set(c.groupId, generateId());
       c.groupId = groupMap.get(c.groupId);
     }
-    c.x += 16;
-    c.y += 16;
     return c;
   });
+  // Excalidraw pastes centred on the pointer; with no pointer on the canvas
+  // yet, fall back to a small cascade offset.
+  let dx = 16;
+  let dy = 16;
+  if (pastePoint) {
+    let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+    for (const c of clones) {
+      const b = getElementBounds(c, s.imageSize);
+      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h);
+    }
+    dx = pastePoint.x - (minX + maxX) / 2;
+    dy = pastePoint.y - (minY + maxY) / 2;
+  }
+  for (const c of clones) {
+    // Freehand strokes keep absolute points with the element pinned at 0,0.
+    if (c.type === 'pencil' || c.type === 'highlighter') {
+      c.points = c.points.map((v, i) => v + (i % 2 === 0 ? dx : dy));
+    } else {
+      c.x += dx;
+      c.y += dy;
+    }
+  }
   const ids = clones.map((c) => c.id);
   s.addElements(clones);
   s.setSelectedElementIds(ids);
   // Advance the clipboard by the same offset so repeated pastes cascade (each
   // new paste lands next to the last one instead of stacking on the first).
-  annotationClipboard = annotationClipboard.map((el) => ({ ...el, x: el.x + 16, y: el.y + 16 }));
+  if (!pastePoint) annotationClipboard = annotationClipboard.map((el) => ({ ...el, x: el.x + 16, y: el.y + 16 }));
   return clones.length;
 }

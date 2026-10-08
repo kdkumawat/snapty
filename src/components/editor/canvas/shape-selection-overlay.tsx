@@ -2,12 +2,12 @@
 
 import { useEffect, useRef } from 'react';
 import { useEditorStore } from '@/store/editor-store';
-import { Circle, Group, Line, Rect } from 'react-konva';
+import { Circle, Group, Rect } from 'react-konva';
 import type Konva from 'konva';
 import type { EditorElement, ShapeElement, StepElement, CalloutElement, CalloutPointerDirection } from '@/types/editor';
-import { getSelectionTheme, handleHoverEvents, selectionHandleProps } from '@/lib/selection-theme';
+import { getSelectionTheme, handleHoverEvents } from '@/lib/selection-theme';
 import type { Bounds } from '@/lib/editor/snap-guides';
-import { calloutPointerTip as getCalloutPointerTip } from '@/lib/editor/callout-pointer';
+import { calloutPointerTip as getCalloutPointerTip, calloutTipOf } from '@/lib/editor/callout-pointer';
 
 /**
  * Custom shape selection/transform overlay (Excalidraw-style).
@@ -33,7 +33,12 @@ export type OverlayAnchor =
 
 const MIN_SIZE = 5;
 /** Rotate-handle standoff above the box, screen px (image px = /zoom). */
-const ROTATE_GAP = 26;
+// Excalidraw's selection chrome, in screen px: the frame sits 4px outside the
+// element, corner handles are 8px rounded squares, and the rotation handle
+// floats 16px above the frame.
+const ROTATE_GAP = 16;
+const SELECTION_PAD = 4;
+const HANDLE_SIZE = 8;
 
 interface AnchorDef {
   /** Fixed reference point in BASE-local coords (stays glued to the world). */
@@ -70,6 +75,12 @@ function anchorPos(k: OverlayAnchor, w: number, h: number): [number, number] {
   }
 }
 
+/** Handle position on the padded selection frame. */
+function framePos(k: OverlayAnchor, w: number, h: number, pad: number): [number, number] {
+  const [x, y] = anchorPos(k, w + pad * 2, h + pad * 2);
+  return [x - pad, y - pad];
+}
+
 const CORNER_ANCHORS: OverlayAnchor[] = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 const ALL_ANCHORS: OverlayAnchor[] = [
   ...CORNER_ANCHORS,
@@ -77,7 +88,7 @@ const ALL_ANCHORS: OverlayAnchor[] = [
 ];
 
 /** Box-shaped types the overlay owns (text keeps the Transformer re-wrap UX). */
-const OVERLAY_TYPES = new Set(['rectangle', 'rounded-rect', 'circle', 'diamond', 'step', 'callout']);
+const OVERLAY_TYPES = new Set(['rectangle', 'rounded-rect', 'circle', 'diamond', 'step', 'callout', 'spotlight']);
 
 export function isShapeOverlayType(type: string): boolean {
   return OVERLAY_TYPES.has(type);
@@ -109,6 +120,8 @@ export function elementSelectionBox(el: EditorElement): Bounds {
 
 interface DragState {
   kind: 'resize' | 'rotate' | 'callout-pointer';
+  /** Absolute tip of a callout being resized, held fixed through the drag. */
+  calloutAbsTip?: { x: number; y: number };
   /** Callout pointer drag: current element state snapshot. */
   calloutBase?: { width: number; height: number; pointerOffset: number; pointerLength: number; pointerWidth: number; pointerDirection: CalloutPointerDirection };
   /** Visual box (already includes any residual element scale). */
@@ -142,10 +155,11 @@ export default function ShapeSelectionOverlay({
   const theme = getSelectionTheme();
   const groupRef = useRef<Konva.Group | null>(null);
   const outlineRef = useRef<Konva.Rect | null>(null);
-  const lineRef = useRef<Konva.Line | null>(null);
   const rotateRef = useRef<Konva.Circle | null>(null);
-  const handleRefs = useRef<Partial<Record<OverlayAnchor, Konva.Circle | null>>>({});
+  const handleRefs = useRef<Partial<Record<OverlayAnchor, Konva.Shape | null>>>({});
   const dragRef = useRef<DragState | null>(null);
+  const isCallout = el.type === 'callout';
+  const calloutNodeRef = useRef<Konva.Circle>(null);
   const calloutPendingRef = useRef<Partial<CalloutElement> | null>(null);
   const calloutRafRef = useRef<number | null>(null);
 
@@ -158,23 +172,22 @@ export default function ShapeSelectionOverlay({
   const uniform = isUniformScale(el);
   const anchors = anchorDefs(baseBox.w, baseBox.h);
   const handleKeys = uniform ? CORNER_ANCHORS : ALL_ANCHORS;
-  const rotateGap = ROTATE_GAP / zoom;
+  const pad = SELECTION_PAD / zoom;
+  const rotateGap = pad + ROTATE_GAP / zoom;
   const hover = handleHoverEvents();
 
   /** Reposition every overlay node to the current box (image coords). */
   const updateOverlay = (ox: number, oy: number, nw: number, nh: number, r: number) => {
     groupRef.current?.setAttrs({ x: ox, y: oy, rotation: r });
-    outlineRef.current?.setAttrs({ width: nw, height: nh });
-    const gap = ROTATE_GAP / zoom;
+    outlineRef.current?.setAttrs({ width: nw + pad * 2, height: nh + pad * 2 });
     for (const k of ALL_ANCHORS) {
       const n = handleRefs.current[k];
       if (n) {
-        const [px, py] = anchorPos(k, nw, nh);
+        const [px, py] = framePos(k, nw, nh, pad);
         n.position({ x: px, y: py });
       }
     }
-    rotateRef.current?.position({ x: nw / 2, y: -gap });
-    lineRef.current?.points([nw / 2, 0, nw / 2, -gap]);
+    rotateRef.current?.position({ x: nw / 2, y: -rotateGap });
   };
 
   /** Follow the element while its BODY is dragged (Konva moves the node; the
@@ -195,7 +208,15 @@ export default function ShapeSelectionOverlay({
         y: node.y() + offset.y,
         rotation: node.rotation() ?? 0,
       });
+      // A callout's tip stays on its target while the bubble is dragged, so
+      // its handle follows the node's live tip, not the bubble.
+      const liveTip = node.getAttr('tip') as { x: number; y: number } | undefined;
+      if (liveTip && calloutNodeRef.current) {
+        calloutNodeRef.current.position({ x: baseBox.w / 2 + liveTip.x, y: baseBox.h / 2 + liveTip.y });
+      }
       node.getLayer()?.batchDraw();
+      // The overlay can live on another layer than the node.
+      if (g.getLayer() !== node.getLayer()) g.getLayer()?.batchDraw();
     };
     node.on('dragmove', sync);
     return () => {
@@ -205,14 +226,12 @@ export default function ShapeSelectionOverlay({
     // node→overlay offset must be re-derived from the fresh element.
   }, [el.id, raw.x, raw.y, baseBox.w, baseBox.h]);
 
-  const setHandleActive = (node: Konva.Circle) => {
+  const setHandleActive = (node: Konva.Shape) => {
     node.fill(theme.accent);
-    node.stroke(theme.accent);
     node.getLayer()?.batchDraw();
   };
-  const setHandleIdle = (node: Konva.Circle) => {
-    node.fill('rgba(255, 255, 255, 0.92)');
-    node.stroke('rgba(110, 110, 110, 0.55)');
+  const setHandleIdle = (node: Konva.Shape) => {
+    node.fill('#ffffff');
     node.getLayer()?.batchDraw();
   };
 
@@ -228,8 +247,14 @@ export default function ShapeSelectionOverlay({
       anchor: k,
       uniform,
       centered: !!node && (node.getClassName?.() === 'Ellipse' || node.getClassName?.() === 'Group'),
+      calloutAbsTip: isCallout
+        ? (() => {
+            const t = calloutTipOf({ ...(el as CalloutElement), width: baseBox.w, height: baseBox.h });
+            return { x: baseBox.x + baseBox.w / 2 + t.x, y: baseBox.y + baseBox.h / 2 + t.y };
+          })()
+        : undefined,
     };
-    setHandleActive(e.target as Konva.Circle);
+    setHandleActive(e.target as Konva.Shape);
   };
 
   const moveResize = (e: Konva.KonvaEventObject<DragEvent>) => {
@@ -294,6 +319,17 @@ export default function ShapeSelectionOverlay({
     const ny = oy + offX * scX * sin + offY * scY * cos;
 
     node.setAttrs({ x: nx, y: ny, scaleX: scX, scaleY: scY });
+    // A callout's tip stays on its target while the body is resized: the
+    // shape draws in raw (pre-scale) units from its body centre, so solve
+    // for the raw tip that lands on the fixed absolute point.
+    if (isCallout && d.calloutAbsTip && !d.rotDeg) {
+      const tipRaw = {
+        x: (d.calloutAbsTip.x - nx) / scX - d.base.w / 2,
+        y: (d.calloutAbsTip.y - ny) / scY - d.base.h / 2,
+      };
+      node.setAttr('tip', tipRaw);
+      calloutNodeRef.current?.position({ x: d.calloutAbsTip.x - ox, y: d.calloutAbsTip.y - oy });
+    }
     updateOverlay(ox, oy, nw, nh, d.rotDeg);
     onLiveTransform(el, node);
     node.getLayer()?.batchDraw();
@@ -302,7 +338,7 @@ export default function ShapeSelectionOverlay({
   const endResize = (e: Konva.KonvaEventObject<DragEvent>) => {
     moveResize(e); // apply the final pointer position
     dragRef.current = null;
-    setHandleIdle(e.target as Konva.Circle);
+    setHandleIdle(e.target as Konva.Shape);
     const node = getNode(el.id);
     if (node) onCommit(el.id, node);
   };
@@ -326,7 +362,7 @@ export default function ShapeSelectionOverlay({
       cy,
       startAng: Math.atan2(P.y - cy, P.x - cx),
     };
-    setHandleActive(e.target as Konva.Circle);
+    setHandleActive(e.target as Konva.Shape);
   };
 
   const moveRotate = (e: Konva.KonvaEventObject<DragEvent>) => {
@@ -357,15 +393,13 @@ export default function ShapeSelectionOverlay({
   const endRotate = (e: Konva.KonvaEventObject<DragEvent>) => {
     moveRotate(e);
     dragRef.current = null;
-    setHandleIdle(e.target as Konva.Circle);
+    setHandleIdle(e.target as Konva.Shape);
     const node = getNode(el.id);
     if (node) onCommit(el.id, node);
   };
 
   // --- Callout pointer handle ---
 
-  const isCallout = el.type === 'callout';
-  const calloutNodeRef = useRef<Konva.Circle>(null);
 
   /** Compute the pointer tip position in overlay-local (unrotated) coords. */
   const calloutPointerTipPos = (): { x: number; y: number } | null => {
@@ -377,36 +411,7 @@ export default function ShapeSelectionOverlay({
     const offset = co.pointerOffset ?? 0.5;
     const pLen = co.pointerLength ?? 24;
     const pWid = co.pointerWidth ?? 20;
-    return getCalloutPointerTip(cw, ch, dir, offset, pLen, pWid);
-  };
-
-  /** Snap a pointer position to the nearest callout direction + offset. */
-  const snapCalloutPointer = (
-    px: number, py: number, cw: number, ch: number,
-  ): { direction: CalloutPointerDirection; offset: number } => {
-    // Determine primary direction from the angle relative to box center
-    const cx = cw / 2;
-    const cy = ch / 2;
-    const angle = Math.atan2(py - cy, px - cx);
-    const deg = ((angle * 180) / Math.PI + 360) % 360;
-    // Map angle to one of 8 directions
-    let direction: CalloutPointerDirection;
-    if (deg >= 337.5 || deg < 22.5) direction = 'right';
-    else if (deg < 67.5) direction = 'bottom-right';
-    else if (deg < 112.5) direction = 'bottom';
-    else if (deg < 157.5) direction = 'bottom-left';
-    else if (deg < 202.5) direction = 'left';
-    else if (deg < 247.5) direction = 'top-left';
-    else if (deg < 292.5) direction = 'top';
-    else direction = 'top-right';
-    // Compute offset along the edge (0..1)
-    let offset = 0.5;
-    if (direction === 'bottom' || direction === 'top') {
-      offset = cw > 0 ? Math.max(0, Math.min(1, px / cw)) : 0.5;
-    } else if (direction === 'left' || direction === 'right') {
-      offset = ch > 0 ? Math.max(0, Math.min(1, py / ch)) : 0.5;
-    }
-    return { direction, offset };
+    return getCalloutPointerTip(cw, ch, dir, offset, pLen, pWid, calloutTipOf({ ...co, width: cw, height: ch }));
   };
 
   const startCalloutPointer = (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -427,7 +432,7 @@ export default function ShapeSelectionOverlay({
         pointerDirection: (co.pointerDirection ?? 'bottom-left') as CalloutPointerDirection,
       },
     };
-    setHandleActive(e.target as Konva.Circle);
+    setHandleActive(e.target as Konva.Shape);
   };
 
   const moveCalloutPointer = (_e: Konva.KonvaEventObject<DragEvent>) => {
@@ -446,20 +451,9 @@ export default function ShapeSelectionOverlay({
     const ly = -dx * sin + dy * cos;
     const cw = d.calloutBase.width;
     const ch = d.calloutBase.height;
-    const { direction, offset } = snapCalloutPointer(lx, ly, cw, ch);
-    let distFromEdge = 0;
-    switch (direction) {
-      case 'top': distFromEdge = -ly; break;
-      case 'bottom': distFromEdge = ly - ch; break;
-      case 'left': distFromEdge = -lx; break;
-      case 'right': distFromEdge = lx - cw; break;
-      case 'top-left': distFromEdge = Math.hypot(lx, ly); break;
-      case 'top-right': distFromEdge = Math.hypot(lx - cw, ly); break;
-      case 'bottom-left': distFromEdge = Math.hypot(lx, ly - ch); break;
-      case 'bottom-right': distFromEdge = Math.hypot(lx - cw, ly - ch); break;
-    }
-    const newLength = Math.max(8, Math.min(100, Math.round(distFromEdge)));
-    calloutPendingRef.current = { pointerDirection: direction, pointerOffset: offset, pointerLength: newLength };
+    // The tip follows the pointer freely (relative to the body centre), so
+    // the callout can be aimed at any spot at any distance.
+    calloutPendingRef.current = { pointerTip: { x: lx - cw / 2, y: ly - ch / 2 } };
     if (calloutRafRef.current !== null) return;
     calloutRafRef.current = requestAnimationFrame(() => {
       calloutRafRef.current = null;
@@ -480,7 +474,7 @@ export default function ShapeSelectionOverlay({
     const pending = calloutPendingRef.current;
     calloutPendingRef.current = null;
     dragRef.current = null;
-    setHandleIdle(e.target as Konva.Circle);
+    setHandleIdle(e.target as Konva.Shape);
     if (pending) {
       useEditorStore.getState().commitElementUpdate(el.id, pending as Partial<CalloutElement>);
     } else {
@@ -498,16 +492,15 @@ export default function ShapeSelectionOverlay({
       y={baseBox.y}
       rotation={rotDeg}
     >
-      {/* Thin dashed outline hugging the element — the only selection chrome. */}
+      {/* Excalidraw's selection frame: a thin solid line just outside the element. */}
       <Rect
         ref={outlineRef}
-        x={0}
-        y={0}
-        width={baseBox.w}
-        height={baseBox.h}
-        stroke={theme.accentDim}
-        strokeWidth={1.2 / zoom}
-        dash={[5 / zoom, 3 / zoom]}
+        x={-pad}
+        y={-pad}
+        width={baseBox.w + pad * 2}
+        height={baseBox.h + pad * 2}
+        stroke={theme.accent}
+        strokeWidth={1 / zoom}
         listening={false}
         perfectDrawEnabled={false}
       />
@@ -515,55 +508,63 @@ export default function ShapeSelectionOverlay({
         <>
           {handleKeys.map((k) => {
             const def = anchors[k];
-            const [px, py] = anchorPos(k, baseBox.w, baseBox.h);
-            const hp = selectionHandleProps('endpoint');
-            return (
+            const [px, py] = framePos(k, baseBox.w, baseBox.h, pad);
+            const corner = CORNER_ANCHORS.includes(k);
+            const common = {
+              x: px,
+              y: py,
+              name: 'edit-handle',
+              cursor: def.cursor,
+              draggable: true,
+              onMouseDown: (e: Konva.KonvaEventObject<MouseEvent>) => { e.cancelBubble = true; },
+              onDragStart: startResize(k),
+              onDragMove: moveResize,
+              onDragEnd: endResize,
+            };
+            // Corners are visible squares. Sides have no handle, as in
+            // Excalidraw on desktop: the frame edge itself is the grab zone.
+            return corner ? (
+              <Rect
+                key={k}
+                ref={(n) => { handleRefs.current[k] = n; }}
+                {...common}
+                width={HANDLE_SIZE}
+                height={HANDLE_SIZE}
+                offsetX={HANDLE_SIZE / 2}
+                offsetY={HANDLE_SIZE / 2}
+                cornerRadius={2}
+                fill="#ffffff"
+                stroke={theme.accent}
+                strokeWidth={1}
+                hitStrokeWidth={12}
+              />
+            ) : (
               <Circle
                 key={k}
                 ref={(n) => { handleRefs.current[k] = n; }}
-                x={px}
-                y={py}
-                {...hp}
-                cursor={def.cursor}
-                draggable
-                onMouseDown={(e) => { e.cancelBubble = true; }}
-                onDragStart={startResize(k)}
-                onDragMove={moveResize}
-                onDragEnd={endResize}
-                {...hover}
+                {...common}
+                radius={4}
+                opacity={0}
+                hitStrokeWidth={16}
               />
             );
           })}
-          {/* Rotate handle with a short connector to the box top-center. */}
-          <Line
-            ref={lineRef}
-            points={[baseBox.w / 2, 0, baseBox.w / 2, -rotateGap]}
-            stroke={theme.accentDim}
-            strokeWidth={1 / zoom}
-            listening={false}
-            perfectDrawEnabled={false}
-          />
           <Circle
             ref={rotateRef}
             name="edit-handle"
             x={baseBox.w / 2}
             y={-rotateGap}
-            radius={5.5}
-            fill="rgba(255, 255, 255, 0.94)"
-            stroke={theme.accentDim}
-            strokeWidth={1.4}
-            shadowColor={theme.shadow}
-            shadowBlur={3}
-            shadowOpacity={0.16}
-            shadowOffset={{ x: 0, y: 0.5 }}
-            hitStrokeWidth={18}
+            radius={HANDLE_SIZE / 2}
+            fill="#ffffff"
+            stroke={theme.accent}
+            strokeWidth={1}
+            hitStrokeWidth={14}
             cursor="grab"
             draggable
             onMouseDown={(e) => { e.cancelBubble = true; }}
             onDragStart={startRotate}
             onDragMove={moveRotate}
             onDragEnd={endRotate}
-            {...hover}
           />
           {/* Callout pointer drag handle — sits at the pointer tip. */}
           {isCallout && (() => {
@@ -575,10 +576,11 @@ export default function ShapeSelectionOverlay({
                 name="edit-handle"
                 x={tip.x}
                 y={tip.y}
-                radius={5}
-                fill={theme.accent}
-                stroke="rgba(255, 255, 255, 0.94)"
-                strokeWidth={1.5}
+                // Same white dot with an accent ring as every other point handle.
+                radius={4.5}
+                fill="#ffffff"
+                stroke={theme.accent}
+                strokeWidth={1}
                 shadowColor={theme.shadow}
                 shadowBlur={3}
                 shadowOpacity={0.16}

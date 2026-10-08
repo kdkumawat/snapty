@@ -13,13 +13,16 @@
  * Supports hand-drawn rings via Rough when enabled.
  */
 import React, { useCallback, useEffect, useLayoutEffect, useReducer, useRef } from 'react';
-import { Group, Ellipse, Line, Circle, Rect, Image as KonvaImage } from 'react-konva';
+import { Group, Ellipse, Circle, Rect, Shape, Image as KonvaImage } from 'react-konva';
+import { generateLinearDrawables, paintDrawable } from '@/lib/rough-renderer';
 import type Konva from 'konva';
 import type { MagnifierElement } from '@/types/editor';
 import {
   magnifierMetrics,
   resolvePreviewOffset,
   leaderGeometry,
+  MIN_MAGNIFICATION,
+  MAX_MAGNIFICATION,
 } from '@/lib/editor/magnifier-geometry';
 import { bendFromHandle } from '@/lib/editor/curve';
 import { selectionHandleProps, getSelectionTheme, handleHoverEvents } from '@/lib/selection-theme';
@@ -41,8 +44,15 @@ type Props = {
   onTap?: (e: Konva.KonvaEventObject<Event>) => void;
   onDragEnd?: (e: Konva.KonvaEventObject<DragEvent>) => void;
   onDragMove?: (e: Konva.KonvaEventObject<DragEvent>) => void;
+  /** The bubble was pressed: select the magnifier, so the first drag already moves the bubble. */
+  onBubblePress?: () => void;
   /** Live update while repositioning the magnified bubble (offset from source center). */
   onPreviewOffsetMove?: (offset: { x: number; y: number }) => void;
+  /** Live / committed zoom while a bubble corner is dragged. */
+  onMagnificationMove?: (magnification: number) => void;
+  onMagnificationCommit?: (magnification: number) => void;
+  /** Rect (element-local) cut out of the connecting arrow behind its label. */
+  labelGap?: { x: number; y: number; w: number; h: number } | null;
   /** Commit the bubble placement as a single undo step. */
   onPreviewOffsetCommit?: (offset: { x: number; y: number }) => void;
   /** Live update while resizing the source bbox (radii + new top-left). */
@@ -304,8 +314,12 @@ export default function MagnifierKonva({
   onTap,
   onDragEnd,
   onDragMove,
+  onBubblePress,
   onPreviewOffsetMove,
   onPreviewOffsetCommit,
+  onMagnificationMove,
+  onMagnificationCommit,
+  labelGap,
   onRadiiMove,
   onRadiiCommit,
   onLeaderBendMove,
@@ -394,18 +408,19 @@ export default function MagnifierKonva({
   // both ellipses instead of crossing them at a diagonal.
   const leader = leaderGeometry(el, imageSize);
 
-  // Crosshair alignment lines spanning the source box through its center.
-  const crosshairOpacity = handDrawn ? 0.45 : 0.7;
-  const crosshair = [
-    [0, srcCy, w, srcCy],
-    [srcCx, 0, srcCx, h],
-  ];
-
   const canEdit = !!selected && !draft && !!draggable;
   const canReposition = canEdit && typeof onPreviewOffsetMove === 'function';
+  // The bubble is its own grab handle even before the magnifier is selected:
+  // otherwise the first drag on it moved the whole group (the source ring).
+  const canDragBubble = !draft && !!draggable && typeof onPreviewOffsetMove === 'function';
   const canResize = canEdit && typeof onRadiiMove === 'function';
   const theme = getSelectionTheme();
-  const handle = selectionHandleProps('endpoint');
+  // The same 8px rounded-square corner handle every box shape uses.
+  const squareHandle = {
+    name: 'edit-handle',
+    width: 8, height: 8, offsetX: 4, offsetY: 4, cornerRadius: 2,
+    fill: '#ffffff', stroke: theme.accent, strokeWidth: 1, hitStrokeWidth: 12,
+  };
   const lengthHandle = selectionHandleProps('bend');
   const hoverEvents = handleHoverEvents();
 
@@ -435,6 +450,18 @@ export default function MagnifierKonva({
    * Leader bend: drag the mid handle sideways to curve the connector. The
    * handle renders at the live control point, so it follows the pointer.
    */
+  const zoomAt = useCallback((local: { x: number; y: number }) => {
+    const k = Math.max(
+      (Math.abs(local.x - previewCx) - SELECT_PAD) / rx,
+      (Math.abs(local.y - previewCy) - SELECT_PAD) / ry,
+    );
+    return Math.max(MIN_MAGNIFICATION, Math.min(MAX_MAGNIFICATION, k));
+  }, [previewCx, previewCy, rx, ry]);
+  const onBubbleResize = useHandleDrag(
+    groupRef,
+    useCallback((local) => onMagnificationMove?.(zoomAt(local)), [onMagnificationMove, zoomAt]),
+    useCallback((local) => onMagnificationCommit?.(zoomAt(local)), [onMagnificationCommit, zoomAt]),
+  );
   const onLeaderBendDrag = useHandleDrag(
     groupRef,
     useCallback(
@@ -457,39 +484,59 @@ export default function MagnifierKonva({
   // center stays put even as the store pushes new w/h through every rAF tick.
   const draggingCornerRef = useRef<{ fx: 0 | 1; fy: 0 | 1 } | null>(null);
   const dragHandleLocalRef = useRef<{ x: number; y: number } | null>(null);
-  const handleNodesRef = useRef<(Konva.Circle | null)[]>([null, null, null, null]);
-  const dragOriginRef = useRef<{ w: number; h: number } | null>(null);
+  const handleNodesRef = useRef<(Konva.Rect | null)[]>([null, null, null, null]);
+  // Source box at pointerdown, in image coordinates: the corner opposite the
+  // dragged one stays fixed there for the whole gesture.
+  const dragOriginRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const [, forceRender] = useReducer((x: number) => x + 1, 0);
 
+  /**
+   * New source box for a corner drag, in image coordinates. The pointer
+   * arrives in the group's local space, and the group itself moves as the
+   * box updates, so it is first lifted to image space; the opposite corner
+   * comes from the box captured at pointerdown and never moves.
+   */
+  const radiiAbs = useCallback(
+    (local: { x: number; y: number }, corner: { fx: 0 | 1; fy: 0 | 1 }) => {
+      const origin = dragOriginRef.current;
+      const group = groupRef.current;
+      if (!origin || !group) return null;
+      const r = radiiFromCorner(
+        { x: local.x + group.x() - origin.x, y: local.y + group.y() - origin.y },
+        corner.fx, corner.fy, origin.w, origin.h,
+      );
+      return { ...r, topLeftX: origin.x + r.topLeftX, topLeftY: origin.y + r.topLeftY };
+    },
+    [],
+  );
   const onCornerMoveSmooth = useCallback(
     (local: { x: number; y: number }) => {
       dragHandleLocalRef.current = local;
       const corner = draggingCornerRef.current;
       if (!corner) return;
-      const origin = dragOriginRef.current ?? { w, h };
-      onRadiiMove?.(radiiFromCorner(local, corner.fx, corner.fy, origin.w, origin.h));
+      const r = radiiAbs(local, corner);
+      if (r) onRadiiMove?.(r);
     },
-    [onRadiiMove, w, h],
+    [onRadiiMove, radiiAbs],
   );
   const onCornerCommitSmooth = useCallback(
     (local: { x: number; y: number }) => {
       const corner = draggingCornerRef.current;
+      const r = corner ? radiiAbs(local, corner) : null;
       draggingCornerRef.current = null;
       dragHandleLocalRef.current = null;
       dragOriginRef.current = null;
       // Re-render so the handle snaps back to its prop-driven initial position.
       forceRender();
-      if (!corner) return;
-      const origin = { w, h };
-      onRadiiCommit?.(radiiFromCorner(local, corner.fx, corner.fy, origin.w, origin.h));
+      if (r) onRadiiCommit?.(r);
     },
-    [onRadiiCommit, w, h],
+    [onRadiiCommit, radiiAbs],
   );
   const baseCornerDrag = useHandleDrag(groupRef, onCornerMoveSmooth, onCornerCommitSmooth);
   const cornerDragProps = useCallback(
     (fx: 0 | 1, fy: 0 | 1) => ({
       onPointerDown: (e: Konva.KonvaEventObject<PointerEvent>) => {
-        dragOriginRef.current = { w, h };
+        dragOriginRef.current = { x: gx, y: gy, w, h };
         draggingCornerRef.current = { fx, fy };
         dragHandleLocalRef.current = {
           x: fx ? w + SELECT_PAD : -SELECT_PAD,
@@ -500,7 +547,7 @@ export default function MagnifierKonva({
       onMouseDown: baseCornerDrag.onMouseDown,
       onTouchStart: baseCornerDrag.onTouchStart,
     }),
-    [baseCornerDrag, w, h],
+    [baseCornerDrag, w, h, gx, gy],
   );
 
   // Apply the live handle position synchronously after every render, before
@@ -574,55 +621,56 @@ export default function MagnifierKonva({
           radiusY={ry}
           stroke={stroke}
           strokeWidth={strokeWidth}
-          dash={selected ? (styleDash ?? [5, 4]) : styleDash}
+          dash={styleDash}
           fill="rgba(255,255,255,0.03)"
           listening={false}
           perfectDrawEnabled={false}
         />
       )}
 
-      {/* Crosshair alignment lines through the source center. Shown only while
-          placing or editing: as a finished annotation the plain ring reads
-          cleaner, and the alignment grid is a tool, not part of the export. */}
-      {(draft || selected) && (
-        <>
-          {crosshair.map((pts, i) => (
-            <Line
-              key={`${el.id}-x${i}`}
-              points={pts}
-              stroke={stroke}
-              strokeWidth={Math.max(1, strokeWidth * 0.5)}
-              opacity={crosshairOpacity}
-              dash={[4, 3]}
-              listening={false}
-              perfectDrawEnabled={false}
-            />
-          ))}
-          <Circle
-            x={srcCx}
-            y={srcCy}
-            radius={Math.max(2, strokeWidth * 0.9)}
-            fill={stroke}
-            listening={false}
-            perfectDrawEnabled={false}
-          />
-        </>
-      )}
-
       {hasPreview && (
         <>
-          <Line
-            points={leaderControl
-              ? [lSx, lSy, leaderControl.x, leaderControl.y, lEx, lEy]
-              : [lSx, lSy, lEx, lEy]}
-            tension={leaderControl ? 0.5 : 0}
-            stroke={stroke}
-            strokeWidth={Math.max(1.25, strokeWidth * 0.65)}
-            lineCap="round"
-            opacity={0.55}
+          {/* The connector is a real arrow in the shared hand-drawn style,
+              from the source ring to the bubble, like an arrow bound to two
+              shapes: it re-anchors on both rims as either end moves. */}
+          <Shape
             listening={false}
             perfectDrawEnabled={false}
+            sceneFunc={(ctx) => {
+              // While the source ring is dragged the canvas shifts the bubble
+              // back imperatively (attr `liveShift`); the arrow re-anchors to
+              // match without waiting for a React render.
+              const shift = groupRef.current?.getAttr('liveShift') as { dx: number; dy: number } | undefined;
+              const g = shift
+                ? leaderGeometry({ ...el, previewOffset: { x: off.ox - shift.dx, y: off.oy - shift.dy } }, imageSize)
+                : leader;
+              const drawables = generateLinearDrawables({
+                seed: el.id,
+                stroke,
+                strokeWidth,
+                strokeStyle: el.strokeStyle,
+                roughness,
+                arrowType: g.bent ? 'round' : 'sharp',
+                points: g.bent ? [g.sx, g.sy, g.cx, g.cy, g.ex, g.ey] : [g.sx, g.sy, g.ex, g.ey],
+                startArrowhead: 'none',
+                endArrowhead: 'arrow',
+              });
+              const c = ctx as unknown as CanvasRenderingContext2D;
+              c.save();
+              if (labelGap) {
+                // Everything except the label box (even-odd), as on an arrow.
+                // The box is centred on the arrow's own midpoint, where the
+                // label is seated, so the two can never drift apart.
+                c.beginPath();
+                c.rect(-1e5, -1e5, 2e5, 2e5);
+                c.rect(g.cx - labelGap.w / 2, g.cy - labelGap.h / 2, labelGap.w, labelGap.h);
+                c.clip('evenodd');
+              }
+              for (const d of drawables) paintDrawable(c, d, 1);
+              c.restore();
+            }}
           />
+          <Group name="mag-bubble">
           <Group
             clipFunc={(ctx) => {
               ctx.beginPath();
@@ -667,7 +715,7 @@ export default function MagnifierKonva({
                 radiusY={previewRy}
                 stroke={stroke}
                 strokeWidth={strokeWidth + 0.5}
-                dash={styleDash ?? (canReposition ? [5, 4] : undefined)}
+                dash={styleDash}
                 fill="transparent"
                 shadowColor="rgba(0,0,0,0.3)"
                 shadowBlur={14}
@@ -701,9 +749,41 @@ export default function MagnifierKonva({
             radiusY={previewRy}
             fill="rgba(0,0,0,0)"
             listening={listening}
-            {...(canReposition ? onBubbleDrag : {})}
+            {...(canDragBubble ? onBubbleDrag : {})}
+            {...(canDragBubble ? {
+              onPointerDown: (e: Konva.KonvaEventObject<PointerEvent>) => { onBubblePress?.(); onBubbleDrag.onPointerDown(e); },
+            } : {})}
             perfectDrawEnabled={false}
           />
+
+          {/* Bubble frame and corner handles, like any shape: dragging a corner
+              resizes the bubble, which is the zoom. */}
+          {canReposition && (
+            <>
+              <Rect
+                x={previewCx - previewRx - SELECT_PAD}
+                y={previewCy - previewRy - SELECT_PAD}
+                width={(previewRx + SELECT_PAD) * 2}
+                height={(previewRy + SELECT_PAD) * 2}
+                stroke={theme.accent}
+                strokeWidth={1}
+                listening={false}
+                perfectDrawEnabled={false}
+              />
+              {CORNERS.map(([fx, fy]) => (
+                <Rect
+                  key={`${el.id}-bz${fx}${fy}`}
+                  x={previewCx + (fx ? 1 : -1) * (previewRx + SELECT_PAD)}
+                  y={previewCy + (fy ? 1 : -1) * (previewRy + SELECT_PAD)}
+                  {...squareHandle}
+                  cursor={fx === fy ? 'nwse-resize' : 'nesw-resize'}
+                  {...onBubbleResize}
+                />
+              ))}
+            </>
+          )}
+
+          </Group>
 
           {/* Leader bend: drag sideways to curve the connector (the bubble is
               itself freely draggable, so a separate length handle was redundant). */}
@@ -732,22 +812,21 @@ export default function MagnifierKonva({
             width={w + SELECT_PAD * 2}
             height={h + SELECT_PAD * 2}
             stroke={theme.accent}
-            strokeWidth={1.5}
-            dash={[6, 4]}
+            strokeWidth={1}
             listening={false}
             perfectDrawEnabled={false}
           />
           {canResize && CORNERS.map(([fx, fy]) => {
             const idx = fy * 2 + fx;
             return (
-              <Circle
+              <Rect
                 key={`${el.id}-rs${fx}${fy}`}
                 ref={(node) => { handleNodesRef.current[idx] = node; }}
                 x={fx ? w + SELECT_PAD : -SELECT_PAD}
                 y={fy ? h + SELECT_PAD : -SELECT_PAD}
-                {...handle}
+                {...squareHandle}
+                cursor={fx === fy ? 'nwse-resize' : 'nesw-resize'}
                 {...cornerDragProps(fx, fy)}
-                {...hoverEvents}
               />
             );
           })}

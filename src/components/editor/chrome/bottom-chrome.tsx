@@ -1,19 +1,19 @@
 'use client';
 
-import { ZoomIn, ZoomOut, Undo2, Redo2, ImagePlus } from 'lucide-react';
-import { FloatingSurface } from '@/components/editor/ui/floating-surface';
-import { IconButton } from '@/components/editor/ui/icon-button';
+import { ZoomInIcon, ZoomOutIcon, UndoIcon, RedoIcon } from '@/components/editor/ui/excalidraw-icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useEditorStore } from '@/store/editor-store';
+import { useFormFactor } from '@/hooks/use-form-factor';
+import FloatingToolbar from '@/components/editor/toolbar/floating-toolbar';
 import { modKey } from '@/hooks/use-keyboard-shortcuts';
-import { openOverlayImagePicker } from '@/lib/image-load';
-import { useIsMobile } from '@/hooks/use-mobile';
 
 /**
- * Bottom-left chrome: zoom, undo/redo, and the add-image overlay picker that
- * used to live in the (now deleted) utility cluster on the bottom right. On
- * phones the pills merge into one row so the two bottom bands become one.
+ * Bottom-left chrome, as in Excalidraw: zoom and undo/redo as flat grey
+ * button groups, with no floating shadow.
  */
+const GROUP = 'h-9 flex items-center rounded-lg bg-secondary text-foreground overflow-hidden';
+const BTN = 'h-9 w-9 inline-flex items-center justify-center hover:bg-[var(--accent-container)] disabled:opacity-40 disabled:pointer-events-none [&>svg]:w-4 [&>svg]:h-4';
+
 export default function BottomChrome() {
   const zoom = useEditorStore((s) => s.zoom);
   const setZoom = useEditorStore((s) => s.setZoom);
@@ -24,19 +24,18 @@ export default function BottomChrome() {
   const canUndo = useEditorStore((s) => s._historyIndex > 0);
   const canRedo = useEditorStore((s) => s._historyIndex < s._history.length - 1);
   const hasImage = useEditorStore((s) => s.backgroundImage !== null);
-  const imageLocked = useEditorStore((s) => s.imageLocked);
-  const annotationsLocked = useEditorStore((s) => s.annotationsLocked);
-  const isMobile = useIsMobile();
+
+  const phone = useFormFactor() === 'phone';
 
   if (!hasImage) return null;
 
   const zoomPill = (
-    <FloatingSurface pill className="h-10 px-1 flex items-center gap-0.5">
+    <div className={GROUP}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <IconButton size="sm" aria-label="Zoom out" onClick={() => setZoom(zoom / 1.2)}>
-            <ZoomOut className="w-4 h-4" />
-          </IconButton>
+          <button type="button" className={BTN} aria-label="Zoom out" onClick={() => setZoom(zoom / 1.2)}>
+            {ZoomOutIcon}
+          </button>
         </TooltipTrigger>
         <TooltipContent side="top">Zoom out</TooltipContent>
       </Tooltip>
@@ -44,7 +43,7 @@ export default function BottomChrome() {
         <TooltipTrigger asChild>
           <button
             type="button"
-            className="h-7 min-w-[2.75rem] px-1.5 rounded-lg text-[11px] font-mono text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            className="h-9 w-[3.75rem] text-[0.875rem] hover:bg-[var(--accent-container)]"
             onClick={() => (Math.abs(zoom - 1) < 0.02 ? resetView() : zoomToActual())}
             aria-label={`${Math.round(zoom * 100)} percent`}
           >
@@ -55,69 +54,53 @@ export default function BottomChrome() {
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
-          <IconButton size="sm" aria-label="Zoom in" onClick={() => setZoom(zoom * 1.2)}>
-            <ZoomIn className="w-4 h-4" />
-          </IconButton>
+          <button type="button" className={BTN} aria-label="Zoom in" onClick={() => setZoom(zoom * 1.2)}>
+            {ZoomInIcon}
+          </button>
         </TooltipTrigger>
         <TooltipContent side="top">Zoom in</TooltipContent>
       </Tooltip>
-    </FloatingSurface>
+    </div>
   );
 
   const historyPill = (
-    <FloatingSurface pill className="h-10 px-1 flex items-center gap-0.5">
+    <div className={GROUP}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <IconButton size="sm" aria-label="Undo" disabled={!canUndo} onClick={undo}>
-            <Undo2 className="w-4 h-4" />
-          </IconButton>
+          <button type="button" className={BTN} aria-label="Undo" disabled={!canUndo} onClick={undo}>
+            {UndoIcon}
+          </button>
         </TooltipTrigger>
         <TooltipContent side="top">Undo ({modKey}+Z)</TooltipContent>
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
-          <IconButton size="sm" aria-label="Redo" disabled={!canRedo} onClick={redo}>
-            <Redo2 className="w-4 h-4" />
-          </IconButton>
+          <button type="button" className={BTN} aria-label="Redo" disabled={!canRedo} onClick={redo}>
+            {RedoIcon}
+          </button>
         </TooltipTrigger>
         <TooltipContent side="top">Redo ({modKey}+Shift+Z)</TooltipContent>
       </Tooltip>
-    </FloatingSurface>
+    </div>
   );
 
-  const addPill = (
-    <FloatingSurface pill className="h-10 px-1 flex items-center gap-0.5">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <IconButton
-            size="sm"
-            aria-label="Add image"
-            disabled={imageLocked || annotationsLocked}
-            onClick={() => openOverlayImagePicker()}
-          >
-            <ImagePlus className="w-4 h-4" />
-          </IconButton>
-        </TooltipTrigger>
-        <TooltipContent side="top">Add image on canvas</TooltipContent>
-      </Tooltip>
-    </FloatingSurface>
-  );
+  // Excalidraw's phone layout: the toolbar is a bottom bar, with undo/redo
+  // on the row above it and no zoom buttons (pinch zooms).
+  if (phone) {
+    return (
+      <div className="absolute inset-x-4 z-[70] flex flex-col gap-2 pointer-events-none bottom-[max(1rem,env(safe-area-inset-bottom,0px))]">
+        <div className="flex justify-end pointer-events-auto">{historyPill}</div>
+        <div className="pointer-events-auto"><FloatingToolbar embedded /></div>
+      </div>
+    );
+  }
 
   return (
-    <div className="absolute left-3 z-[70] flex items-center gap-2 bottom-[max(0.75rem,env(safe-area-inset-bottom,0px))]">
-      {isMobile ? (
-        <FloatingSurface pill className="h-12 px-1 flex items-center gap-0.5">
-          {zoomPill}
-          {historyPill}
-          {addPill}
-        </FloatingSurface>
-      ) : (
-        <>
-          {zoomPill}
-          {historyPill}
-          {addPill}
-        </>
-      )}
+    <>
+    <div className="absolute left-4 z-[70] flex items-center gap-2.5 bottom-[max(1rem,env(safe-area-inset-bottom,0px))]">
+      {zoomPill}
+      {historyPill}
     </div>
+    </>
   );
 }

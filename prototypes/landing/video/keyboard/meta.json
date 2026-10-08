@@ -1,0 +1,40 @@
+{
+ "fps": 30,
+ "w": 1600,
+ "h": 1000,
+ "beats": [
+  {
+   "f": 0,
+   "label": "Command palette",
+   "keys": [
+    "Ctrl",
+    "K"
+   ],
+   "cam": null
+  },
+  {
+   "f": 80,
+   "label": "All shortcuts",
+   "keys": [
+    "?"
+   ],
+   "cam": null
+  }
+ ],
+ "keys": [
+  {
+   "f": 9,
+   "keys": [
+    "Ctrl",
+    "K"
+   ]
+  },
+  {
+   "f": 80,
+   "keys": [
+    "?"
+   ]
+  }
+ ],
+ "frames": 166
+}

@@ -1,5 +1,6 @@
 'use client';
 
+import { leaderGeometry } from '@/lib/editor/magnifier-geometry';
 import type {
   EditorElement,
   ArrowElement,
@@ -8,7 +9,7 @@ import type {
   TextElement,
 } from '@/types/editor';
 import { getElementBounds } from '@/lib/editor/selection';
-import { TEXT_PADDING, TEXT_LINE_HEIGHT, HANDWRITTEN_FONT, type CalloutElement } from '@/types/editor';
+import { TEXT_PADDING, TEXT_LINE_HEIGHT, HANDWRITTEN_FONT, fontFamilyForCanvas, type CalloutElement } from '@/types/editor';
 import { controlPoint } from '@/lib/editor/curve';
 
 /**
@@ -202,14 +203,17 @@ export function innerBoxOf(
     return { x: cx + pad, y: cy + pad, w, h };
   }
   const bounds = getElementBounds(el, imageSize);
-  const w = Math.max(20, bounds.w - pad * 2);
-  const h = Math.max(20, bounds.h - pad * 2);
-  return {
-    x: bounds.x + (bounds.w - w) / 2,
-    y: bounds.y + (bounds.h - h) / 2,
-    w,
-    h,
-  };
+  // Excalidraw: the text area is the inscribed rectangle (ellipse: side * sqrt(1/2), diamond: side / 2).
+  const k = el.type === 'circle' ? Math.SQRT1_2 : el.type === 'diamond' ? 0.5 : 1;
+  const w = Math.max(20, bounds.w * k - pad * 2);
+  const h = Math.max(20, bounds.h * k - pad * 2);
+  // A shape rotates about its top-left origin, so its visual centre moves
+  // with the angle; the label box (which spins about its own centre) is
+  // seated on that true centre.
+  const rot = (((el as { rotation?: number }).rotation ?? 0) * Math.PI) / 180;
+  const cx = bounds.x + (Math.cos(rot) * bounds.w - Math.sin(rot) * bounds.h) / 2;
+  const cy = bounds.y + (Math.sin(rot) * bounds.w + Math.cos(rot) * bounds.h) / 2;
+  return { x: cx - w / 2, y: cy - h / 2, w, h };
 }
 
 /**
@@ -230,8 +234,21 @@ export function labelAnchorForElement(
   const pad = TEXT_PADDING * scale;
 
   if (isClosedShape(el)) {
-    const box = innerBoxOf(el, imageSize, pad);
+    // The text node pads itself by TEXT_PADDING; one more px per side gives
+    // Excalidraw's 5px bound-text padding without padding twice.
+    const box = innerBoxOf(el, imageSize, pad / TEXT_PADDING);
     return { x: box.x, y: box.y, width: box.w, height: box.h };
+  }
+
+  // Magnifier: the label rides the middle of its connecting arrow.
+  if (el.type === 'magnifier') {
+    const g = leaderGeometry(el, imageSize);
+    const width = 220;
+    return {
+      x: el.x + g.cx - width / 2,
+      y: el.y + g.cy - (fontSize * TEXT_LINE_HEIGHT + TEXT_PADDING * 2) / 2,
+      width,
+    };
   }
 
   const isLineLike =
@@ -240,10 +257,11 @@ export function labelAnchorForElement(
   if (isLineLike && (el.type === 'arrow' || el.type === 'line')) {
     const t = clamp01(label?.labelOffset ?? 0.5);
     const pt = pointAlongPath(el, t);
-    // Box width is capped so a long label cannot exceed the arrow's bbox.
-    const width = Math.max(48, Math.min(bounds.w, label?.width ?? 220));
+    // Fixed wrap width, independent of the arrow's bbox (a vertical arrow must
+    // not squeeze its label into a column).
+    const width = 220;
     let x = pt.x + el.x - width / 2;
-    let y = pt.y + el.y - (fontSize * TEXT_LINE_HEIGHT) / 2;
+    let y = pt.y + el.y - (fontSize * TEXT_LINE_HEIGHT + TEXT_PADDING * 2) / 2;
     // Perpendicular offset (image px): the label sits beside the stroke on the
     // side picked by the drag. The offset is applied along the path normal so
     // bends keep the label at the same visual distance from the line.
@@ -261,6 +279,46 @@ export function labelAnchorForElement(
   const cy = bounds.y + bounds.h / 2;
   const width = Math.max(48, Math.min(bounds.w, 220));
   return { x: cx - width / 2, y: cy - (fontSize * TEXT_LINE_HEIGHT) / 2, width };
+}
+
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+
+/** Real rendered width of the widest line of a text element (no padding). */
+export function measureTextWidth(t: TextElement, text = t.text): number {
+  const fs = t.fontSize ?? 24;
+  const lines = text.split('\n');
+  if (measureCtx === undefined) {
+    measureCtx = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d');
+  }
+  if (!measureCtx) return Math.max(...lines.map((l) => l.length)) * fs * 0.58;
+  measureCtx.font = `${t.fontStyle?.includes('italic') ? 'italic ' : ''}${t.fontStyle?.includes('bold') ? 'bold ' : ''}${fs}px ${fontFamilyForCanvas(t.fontFamily)}`;
+  return Math.max(...lines.map((l) => measureCtx!.measureText(l).width));
+}
+
+/**
+ * Gap rect (parent-local) cut out of an arrow/line behind its label. `text`
+ * overrides the stored text so the gap tracks what is being typed.
+ */
+export function pathLabelClipRect(
+  t: TextElement,
+  parent: { x: number; y: number },
+  imageSize: { width: number; height: number },
+  text = t.text,
+): { x: number; y: number; w: number; h: number } | null {
+  if (!text.trim()) return null;
+  const tb = getElementBounds(t, imageSize);
+  const fs = t.fontSize ?? 24;
+  const pad = t.padding ?? TEXT_PADDING;
+  const lines = text.split('\n');
+  const longest = Math.max(...lines.map((l) => l.length));
+  const w = Math.max(24, Math.min(tb.w, longest * fs * 0.58 + pad * 2 + 12));
+  let x = tb.x - parent.x;
+  if (t.align === 'center') x += (tb.w - w) / 2;
+  else if (t.align === 'right') x += tb.w - w;
+  const h = lines.length * fs * (t.lineHeight ?? TEXT_LINE_HEIGHT) + pad * 2;
+  // Keep the box centred on the stroke point as lines are added.
+  const y = tb.y - parent.y - (h - tb.h) / 2;
+  return { x, y, w, h };
 }
 
 /** Clamp a value to [0, 1]. */
@@ -289,9 +347,10 @@ export function pointAlongPath(el: ArrowElement | LineElement, t: number): { x: 
       const { a, b } = segs[i];
       if (target <= b) {
         const k = total > 0 && b - a > 0 ? (target - a) / (b - a) : 0;
+        const p = i * 2;
         return {
-          x: pts[i] + (pts[i + 2] - pts[i]) * k,
-          y: pts[i + 1] + (pts[i + 3] - pts[i + 1]) * k,
+          x: pts[p] + (pts[p + 2] - pts[p]) * k,
+          y: pts[p + 1] + (pts[p + 3] - pts[p + 1]) * k,
         };
       }
     }

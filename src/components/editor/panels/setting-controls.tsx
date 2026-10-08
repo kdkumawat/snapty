@@ -1,33 +1,49 @@
 'use client';
 
 import React from 'react';
-import { Minus, RotateCcw } from 'lucide-react';
-import { ColorSwatch } from '@/components/editor/ui/color-swatch';
+import { createPortal } from 'react-dom';
+import { RotateCcw } from '@/components/editor/ui/icons';
 import { Slider } from '@/components/ui/slider';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useEditorStore } from '@/store/editor-store';
 import {
-  DEFAULT_COLORS, ROUGHNESS_PRESETS, HANDWRITTEN_FONT, STANDARD_FONT,
+  COLOR_PALETTE, PALETTE_ORDER, STROKE_PICKS, BACKGROUND_PICKS, STROKE_SHADE, BACKGROUND_SHADE,
+  ROUGHNESS_PRESETS, STROKE_WIDTHS, FONT_SIZE_PRESETS, ROUND_CORNER_RADIUS,
+  FONT_HAND_DRAWN, FONT_NORMAL, FONT_CODE, STANDARD_FONT, STEP_STAMPS, STEP_FINGERS,
 } from '@/types/editor';
-import type { FillStyle, StrokeStyle, RoughnessPreset } from '@/types/editor';
-import { SETTING_SPECS, type SettingKey, type SettingSpec } from '@/lib/editor/tool-settings';
+import type { Arrowhead, FillStyle, StrokeStyle, RoughnessPreset } from '@/types/editor';
+import type { SettingSpec } from '@/lib/editor/tool-settings';
+import {
+  StrokeWidthBaseIcon, StrokeWidthBoldIcon, StrokeWidthExtraBoldIcon,
+  StrokeStyleSolidIcon, StrokeStyleDashedIcon, StrokeStyleDottedIcon,
+  FillHachureIcon, FillCrossHatchIcon, FillSolidIcon,
+  SloppinessArchitectIcon, SloppinessArtistIcon, SloppinessCartoonistIcon,
+  EdgeSharpIcon, EdgeRoundIcon,
+  ArrowheadNoneIcon, ArrowheadArrowIcon, ArrowheadTriangleIcon, ArrowheadBarIcon, ArrowheadCircleIcon,
+  FontSizeSmallIcon, FontSizeMediumIcon, FontSizeLargeIcon, FontSizeExtraLargeIcon,
+  FreedrawIcon, FontFamilyNormalIcon, FontFamilyCodeIcon,
+  TextAlignLeftIcon, TextAlignCenterIcon, TextAlignRightIcon,
+  TextAlignTopIcon, TextAlignMiddleIcon, TextAlignBottomIcon,
+  sharpArrowIcon, roundArrowIcon, elbowArrowIcon,
+} from '@/components/editor/ui/excalidraw-icons';
 import { cn } from '@/lib/utils';
 
 /**
- * One renderer for every tool setting, shared by the desktop panel and the
- * mobile chip strip. Both read the same registry, so a setting can never appear
- * in one surface and not the other.
+ * Controls for the properties panel, laid out like Excalidraw's: a label and a
+ * row of 32px icon buttons per setting, color rows with a picker popover, and
+ * sliders only where a value is continuous.
  */
 
-export function IconToggle({
-  active, onClick, label, children, tooltipSide = 'top',
+/** Excalidraw's panel button: 32px, 8px radius, grey chip, tinted when active. */
+export function PanelButton({
+  active, onClick, label, children, className, ...rest
 }: {
   active?: boolean;
-  onClick: () => void;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   label: string;
   children: React.ReactNode;
-  tooltipSide?: 'top' | 'right' | 'bottom' | 'left';
-}) {
+  className?: string;
+} & Pick<React.ButtonHTMLAttributes<HTMLButtonElement>, 'aria-expanded' | 'aria-haspopup' | 'disabled'>) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -37,582 +53,563 @@ export function IconToggle({
           aria-pressed={active}
           onClick={onClick}
           className={cn(
-            'w-9 h-9 rounded-lg inline-flex items-center justify-center transition-colors shrink-0',
+            'w-8 h-8 rounded-lg inline-flex items-center justify-center shrink-0 transition-colors',
+            '[&>svg]:w-4 [&>svg]:h-4 disabled:opacity-40 disabled:pointer-events-none',
             active
-              ? 'bg-accent/15 text-accent ring-1 ring-accent/30'
-              : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+              ? 'bg-[var(--accent-container)] text-[var(--on-accent-container)]'
+              : 'bg-[var(--button-bg)] text-foreground hover:bg-secondary',
+            className,
           )}
+          {...rest}
         >
           {children}
         </button>
       </TooltipTrigger>
-      <TooltipContent side={tooltipSide}>{label}</TooltipContent>
+      <TooltipContent side="bottom">{label}</TooltipContent>
     </Tooltip>
   );
 }
 
-/** Compact visual for the vertical settings rail - shows the active value at a glance. */
-export function SettingRailPreview({ settingKey }: { settingKey: SettingKey }) {
-  const s = useEditorStore();
-  const label = settingValueLabel(settingKey, s);
+export function ButtonRow({ children }: { children: React.ReactNode }) {
+  return <div className="flex flex-wrap gap-2">{children}</div>;
+}
 
-  if (settingKey === 'strokeColor') {
-    return (
-      <span
-        aria-hidden
-        className="w-5 h-5 rounded-full border border-border/80 shrink-0"
-        style={{
-          background: s.strokeColor === 'transparent'
-            ? 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 50% / 5px 5px'
-            : s.strokeColor,
-        }}
-      />
-    );
-  }
-  if (settingKey === 'fillColor') {
-    return (
-      <span
-        aria-hidden
-        className="w-5 h-5 rounded-md border border-border/80 shrink-0"
-        style={{
-          background: s.fillColor === 'transparent'
-            ? 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 50% / 5px 5px'
-            : s.fillColor,
-        }}
-      />
-    );
-  }
-  if (settingKey === 'strokeStyle') {
-    const dash = s.strokeStyle === 'dashed' ? '4 2' : s.strokeStyle === 'dotted' ? '1.5 2' : undefined;
-    return (
-      <svg width="20" height="8" viewBox="0 0 20 8" aria-hidden className="shrink-0">
-        <line x1="1" y1="4" x2="19" y2="4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray={dash} />
-      </svg>
-    );
-  }
-  if (settingKey === 'strokeWidth') {
-    const w = s.strokeWidth <= 2 ? 1.5 : s.strokeWidth <= 4 ? 2.5 : 3.5;
-    return (
-      <svg width="20" height="8" viewBox="0 0 20 8" aria-hidden className="shrink-0">
-        <line x1="1" y1="4" x2="19" y2="4" stroke="currentColor" strokeWidth={w} strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (settingKey === 'roughness') {
-    const d = s.roughness < 0.9 ? 'M1 4 L19 4' : s.roughness < 2 ? 'M1 5 Q7 1 13 4 T19 3' : 'M1 6 Q5 1 9 5 T17 3';
-    return (
-      <svg width="20" height="8" viewBox="0 0 20 8" aria-hidden className="shrink-0">
-        <path d={d} stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (settingKey === 'arrowheads') {
-    const sym = s.startArrowhead !== 'none' && s.endArrowhead !== 'none'
-      ? '↔' : s.endArrowhead !== 'none' ? '→' : '-';
-    return <span className="text-xs font-medium leading-none">{sym}</span>;
-  }
-  if (settingKey === 'arrowPath') {
-    return (
-      <svg width="20" height="10" viewBox="0 0 20 10" aria-hidden className="shrink-0">
-        {s.arrowPath === 'elbow' ? (
-          <path d="M2 2 H12 V8 H18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-        ) : (
-          <line x1="2" y1="2" x2="18" y2="8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        )}
-      </svg>
-    );
-  }
-  if (settingKey === 'fontFamily') {
-    const family = isHandwritten(s.fontFamily) ? HANDWRITTEN_FONT : STANDARD_FONT;
-    return (
-      <span
-        aria-hidden
-        className="text-base leading-none shrink-0"
-        style={{ fontFamily: family }}
-      >
-        Aa
-      </span>
-    );
-  }
-  if (settingKey === 'fontSize') {
-    return (
-      <span className="text-[11px] font-semibold tabular-nums leading-none">
-        {Math.round(s.fontSize)}
-      </span>
-    );
-  }
+/** Popover anchored beside a panel button; closes on outside press or Escape. */
+function AnchoredPopover({
+  anchor, onClose, label, children,
+}: {
+  anchor: HTMLElement;
+  onClose: () => void;
+  label: string;
+  children: React.ReactNode;
+}) {
+  const ref = React.useRef<HTMLDivElement>(null);
 
-  return (
-    <span className="text-[9px] font-medium uppercase tracking-wide leading-none text-center max-w-[2.75rem] truncate">
-      {label || '···'}
-    </span>
+  React.useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (!ref.current?.contains(t) && !anchor.contains(t)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [anchor, onClose]);
+
+  const rect = anchor.getBoundingClientRect();
+  const panel = anchor.closest('[data-snapty-panel]')?.getBoundingClientRect();
+  const left = (panel?.right ?? rect.right) + 8;
+  const fitsRight = left + 220 < window.innerWidth;
+  const style: React.CSSProperties = fitsRight
+    ? { left, top: Math.max(8, Math.min(rect.top - 8, window.innerHeight - 340)) }
+    // Narrow screens: sit above the bottom sheet instead of beside it.
+    : { left: 8, right: 8, bottom: window.innerHeight - rect.top + 8 };
+
+  return createPortal(
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label={label}
+      style={{ position: 'fixed', zIndex: 300, ...style }}
+      className="rounded-xl border border-border bg-surface p-3 shadow-[var(--floating-shadow)]"
+    >
+      {children}
+    </div>,
+    document.body,
   );
 }
 
-/** Human-readable current value for a setting, shown on the mobile chips. */
-export function settingValueLabel(
-  key: SettingKey,
-  s: ReturnType<typeof useEditorStore.getState>,
-): string {
-  const spec = SETTING_SPECS[key];
-  switch (key) {
-    case 'strokeColor':
-    case 'fillColor':
-      return '';
-    case 'strokeWidth':
-      return s.strokeWidth <= 2 ? 'Thin' : s.strokeWidth <= 4 ? 'Bold' : 'Extra';
-    case 'strokeStyle':
-      return s.strokeStyle;
-    case 'fillStyle':
-      return s.fillStyle;
-    case 'roughness':
-      return s.roughness < 0.9 ? 'Architect' : s.roughness < 2 ? 'Artist' : 'Cartoonist';
-    case 'cornerRadius':
-      return s.cornerRadius > 0 ? 'Round' : 'Sharp';
-    case 'arrowheads':
-      if (s.startArrowhead !== 'none' && s.endArrowhead !== 'none') return 'Both';
-      if (s.endArrowhead !== 'none') return 'End';
-      return 'None';
-    case 'arrowPath':
-      return s.arrowPath === 'elbow' ? 'Elbow' : 'Straight';
-    case 'fontFamily':
-      return isHandwritten(s.fontFamily) ? 'Handwritten' : 'Standard';
-    case 'fontStyle':
-      return s.fontStyle.includes('bold')
-        ? s.fontStyle.includes('italic') ? 'Bold italic' : 'Bold'
-        : s.fontStyle.includes('italic') ? 'Italic' : 'Normal';
-    case 'textAlign':
-      return s.textAlign[0].toUpperCase() + s.textAlign.slice(1);
-    case 'textVerticalAlign':
-      return s.textVerticalAlign[0].toUpperCase() + s.textVerticalAlign.slice(1);
-    case 'stepNumbering':
-      return String(s.stepCounter);
-    default: {
-      const v = (s as unknown as Record<string, number>)[key];
-      if (typeof v !== 'number') return '';
-      return spec.kind === 'slider' && spec.format ? spec.format(v) : String(Math.round(v));
-    }
+const CHECKER = 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 50% / 8px 8px';
+
+function Swatch({
+  color, active, onClick, size = 'sm',
+}: {
+  color: string;
+  active?: boolean;
+  onClick: () => void;
+  size?: 'sm' | 'md';
+}) {
+  const transparent = color === 'transparent';
+  return (
+    <button
+      type="button"
+      aria-label={transparent ? 'Transparent' : color}
+      aria-pressed={active}
+      title={transparent ? 'Transparent' : color}
+      onClick={onClick}
+      className={cn(
+        'rounded-md border border-border/80 shrink-0 transition-shadow',
+        size === 'sm' ? 'w-5 h-5' : 'w-7 h-7',
+        active && 'ring-2 ring-accent ring-offset-1 ring-offset-surface',
+      )}
+      style={{ background: transparent ? CHECKER : color }}
+    />
+  );
+}
+
+const HEX_RE = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+/** Which hue a color belongs to, so the Shades row can show its siblings. */
+function hueOf(color: string): readonly string[] | null {
+  for (const key of PALETTE_ORDER) {
+    const v = COLOR_PALETTE[key];
+    if (typeof v !== 'string' && (v as readonly string[]).includes(color)) return v;
   }
+  return null;
 }
 
-export function isHandwritten(family?: string): boolean {
-  // Compare against the constants rather than sniffing for "cursive": the old
-  // substring check misreported any custom stack that happened to contain it.
-  return (family ?? HANDWRITTEN_FONT) !== STANDARD_FONT;
+function ColorPicker({
+  value, onChange, kind,
+}: {
+  value: string;
+  onChange: (c: string) => void;
+  kind: 'stroke' | 'background';
+}) {
+  const shade = kind === 'stroke' ? STROKE_SHADE : BACKGROUND_SHADE;
+  const shades = hueOf(value);
+  const [hex, setHex] = React.useState(value === 'transparent' ? '' : value.replace('#', ''));
+  React.useEffect(() => {
+    setHex(value === 'transparent' ? '' : value.replace('#', ''));
+  }, [value]);
+  const heading = 'text-[0.75rem] text-muted-foreground mb-1.5';
+
+  return (
+    <div className="w-[11.5rem]">
+      <p className={heading}>Colors</p>
+      <div className="grid grid-cols-5 gap-1.5">
+        {PALETTE_ORDER.map((key) => {
+          const v = COLOR_PALETTE[key];
+          const color = typeof v === 'string' ? v : v[shade];
+          const active = typeof v === 'string' ? value === v : (v as readonly string[]).includes(value);
+          return <Swatch key={key} size="md" color={color} active={active} onClick={() => onChange(color)} />;
+        })}
+      </div>
+      <p className={cn(heading, 'mt-3')}>Shades</p>
+      {shades ? (
+        <div className="grid grid-cols-5 gap-1.5">
+          {shades.map((c) => (
+            <Swatch key={c} size="md" color={c} active={value === c} onClick={() => onChange(c)} />
+          ))}
+        </div>
+      ) : (
+        <p className="text-[0.75rem] text-muted-foreground/70 h-7 flex items-center">
+          No shades available for this color
+        </p>
+      )}
+      <p className={cn(heading, 'mt-3')}>Hex code</p>
+      <div className="flex items-center h-8 rounded-lg border border-border px-2 gap-1 focus-within:ring-1 focus-within:ring-accent">
+        <span className="text-xs text-muted-foreground">#</span>
+        <input
+          value={hex}
+          spellCheck={false}
+          aria-label="Hex code"
+          onChange={(e) => {
+            const next = e.target.value.trim();
+            setHex(next);
+            if (HEX_RE.test(next)) onChange(`#${next.replace('#', '').toLowerCase()}`);
+          }}
+          className="w-full bg-transparent text-xs outline-none"
+        />
+      </div>
+    </div>
+  );
 }
 
-const STROKE_STYLES: [StrokeStyle, string][] = [
-  ['solid', 'Solid'],
-  ['dashed', 'Dashed'],
-  ['dotted', 'Dotted'],
+/** Five quick picks, a divider, then the active color opening the full picker. */
+function ColorSetting({
+  value, onChange, kind, label,
+}: {
+  value: string;
+  onChange: (c: string) => void;
+  kind: 'stroke' | 'background';
+  label: string;
+}) {
+  const [anchor, setAnchor] = React.useState<HTMLElement | null>(null);
+  const picks = kind === 'stroke' ? STROKE_PICKS : BACKGROUND_PICKS;
+  return (
+    <div className="flex items-center gap-1">
+      {picks.map((c) => (
+        <Swatch key={c} color={c} active={value === c} onClick={() => onChange(c)} />
+      ))}
+      <div className="h-5 w-px bg-border" aria-hidden />
+      <button
+        type="button"
+        aria-label={`${label} color: ${value}`}
+        aria-haspopup="dialog"
+        aria-expanded={!!anchor}
+        onClick={(e) => setAnchor(anchor ? null : e.currentTarget)}
+        className="w-[1.625rem] h-[1.625rem] rounded-md border border-border/80 shrink-0"
+        style={{ background: value === 'transparent' ? CHECKER : value }}
+      />
+      {anchor && (
+        <AnchoredPopover anchor={anchor} label={`${label} color`} onClose={() => setAnchor(null)}>
+          <ColorPicker value={value} onChange={onChange} kind={kind} />
+        </AnchoredPopover>
+      )}
+    </div>
+  );
+}
+
+const ARROWHEADS: [Arrowhead, string, React.ComponentType<{ flip?: boolean }>][] = [
+  ['none', 'None', ArrowheadNoneIcon],
+  ['arrow', 'Arrow', ArrowheadArrowIcon],
+  ['triangle', 'Triangle', ArrowheadTriangleIcon],
+  ['bar', 'Bar', ArrowheadBarIcon],
+  ['dot', 'Circle', ArrowheadCircleIcon],
 ];
 
-const FILL_STYLES: [FillStyle, string][] = [
-  ['hachure', 'Hachure'],
-  ['cross-hatch', 'Cross'],
-  ['solid', 'Solid'],
-  ['none', 'None'],
-];
+/** One end of the arrow: a button showing the current head, opening the choices. */
+function ArrowheadPicker({
+  value, onChange, label, flip,
+}: {
+  value: Arrowhead;
+  onChange: (v: Arrowhead) => void;
+  label: string;
+  flip: boolean;
+}) {
+  const [anchor, setAnchor] = React.useState<HTMLElement | null>(null);
+  const Current = (ARROWHEADS.find(([v]) => v === value) ?? ARROWHEADS[0])[2];
+  return (
+    <>
+      <PanelButton
+        label={label}
+        aria-haspopup="dialog"
+        aria-expanded={!!anchor}
+        active={!!anchor}
+        className="[&>svg]:w-5 [&>svg]:h-5"
+        onClick={(e) => setAnchor(anchor ? null : e.currentTarget)}
+      >
+        <Current flip={flip} />
+      </PanelButton>
+      {anchor && (
+        <AnchoredPopover anchor={anchor} label={label} onClose={() => setAnchor(null)}>
+          <div className="flex gap-2">
+            {ARROWHEADS.map(([v, name, Icon]) => (
+              <PanelButton
+                key={v}
+                label={name}
+                active={value === v}
+                className="[&>svg]:w-5 [&>svg]:h-5"
+                onClick={() => { onChange(v); setAnchor(null); }}
+              >
+                <Icon flip={flip} />
+              </PanelButton>
+            ))}
+          </div>
+        </AnchoredPopover>
+      )}
+    </>
+  );
+}
 
-const ROUGH_PRESETS: [RoughnessPreset, string][] = [
-  ['architect', 'Architect'],
-  ['artist', 'Artist'],
-  ['cartoonist', 'Cartoonist'],
-];
+/** Snap a stored value to the nearest preset so legacy values still light one. */
+function nearest<K extends string>(presets: Record<K, number>, value: number): K {
+  const keys = Object.keys(presets) as K[];
+  return keys.reduce((best, k) => (
+    Math.abs(presets[k] - value) < Math.abs(presets[best] - value) ? k : best
+  ), keys[0]);
+}
 
-/**
- * The control body for one setting. Callers supply the surrounding label /
- * layout, since the panel stacks sections while the strip renders popovers.
- */
+function fontKind(family?: string): 'hand' | 'normal' | 'code' {
+  if (family === FONT_CODE) return 'code';
+  if (family === FONT_NORMAL || family === STANDARD_FONT) return 'normal';
+  return 'hand';
+}
+
+/** The control body for one setting; the panel supplies the label above it. */
 export function SettingControl({ spec }: { spec: SettingSpec }) {
   const s = useEditorStore();
 
   switch (spec.key) {
     case 'strokeColor':
-      return (
-        <div className="flex flex-wrap gap-1">
-          {DEFAULT_COLORS.map((c) => (
-            <ColorSwatch key={c} color={c} active={s.strokeColor === c} onClick={() => s.setStrokeColor(c)} />
-          ))}
-        </div>
-      );
+      return <ColorSetting kind="stroke" label="Stroke" value={s.strokeColor} onChange={s.setStrokeColor} />;
 
-    case 'fillColor':
-      return (
-        <div className="flex flex-wrap gap-1">
-          <ColorSwatch
-            color="transparent"
-            active={s.fillColor === 'transparent'}
-            onClick={() => s.setFillColor('transparent')}
-            label="Transparent"
-          />
-          {DEFAULT_COLORS.map((c) => (
-            <ColorSwatch key={c} color={c} active={s.fillColor === c} onClick={() => s.setFillColor(c)} />
-          ))}
-        </div>
-      );
+    case 'highlighterColor':
+      return <ColorSetting kind="stroke" label="Stroke" value={s.highlighterColor} onChange={s.setHighlighterColor} />;
 
-    case 'strokeWidth': {
-      const preset = s.strokeWidth <= 2 ? 1 : s.strokeWidth <= 4 ? 2 : 3;
-      const set = (p: 1 | 2 | 3) => s.setStrokeWidth(p === 1 ? 2 : p === 2 ? 3 : 6);
+    case 'stepStyle': {
+      const options: [string, string, React.ReactNode][] = [
+        ['number', 'Numbers', '1 2'],
+        ['letter', 'Letters', 'A B'],
+        ...STEP_FINGERS.flatMap((f): [string, string, React.ReactNode][] => [
+          [`${f}number`, `Numbers with ${f}`, `1${f}`],
+          [`${f}letter`, `Letters with ${f}`, `A${f}`],
+        ]),
+        ...STEP_STAMPS.map((e): [string, string, React.ReactNode] => [e, `Stamp ${e}`, <span key={e} className="text-base leading-none">{e}</span>]),
+      ];
       return (
-        <div className="flex gap-0.5">
-          <IconToggle active={preset === 1} label="Thin" onClick={() => set(1)}>
-            <Minus className="w-3.5 h-3.5" strokeWidth={1.5} />
-          </IconToggle>
-          <IconToggle active={preset === 2} label="Bold" onClick={() => set(2)}>
-            <Minus className="w-4 h-4" strokeWidth={2.5} />
-          </IconToggle>
-          <IconToggle active={preset === 3} label="Extra bold" onClick={() => set(3)}>
-            <Minus className="w-5 h-5" strokeWidth={3.5} />
-          </IconToggle>
-        </div>
+        <ButtonRow>
+          {options.map(([v, label, content]) => (
+            <PanelButton key={v} label={label} active={s.stepStyle === v} className="text-[0.7rem] font-semibold" onClick={() => s.setStepStyle(v)}>
+              {content}
+            </PanelButton>
+          ))}
+        </ButtonRow>
       );
     }
 
-    case 'strokeStyle':
-      return (
-        <div className="flex gap-0.5">
-          {STROKE_STYLES.map(([v, label]) => (
-            <IconToggle key={v} active={s.strokeStyle === v} label={label} onClick={() => s.setStrokeStyle(v)}>
-              <svg width="18" height="10" viewBox="0 0 18 10" className="overflow-visible">
-                <line
-                  x1="1" y1="5" x2="17" y2="5"
-                  stroke="currentColor" strokeWidth="2" strokeLinecap="round"
-                  strokeDasharray={v === 'dashed' ? '4 3' : v === 'dotted' ? '1.5 3' : undefined}
-                />
-              </svg>
-            </IconToggle>
-          ))}
-        </div>
-      );
+    case 'fillColor':
+      return <ColorSetting kind="background" label="Background" value={s.fillColor} onChange={s.setFillColor} />;
 
-    case 'fillStyle':
+    case 'fillStyle': {
+      const options: [FillStyle, string, React.ReactNode][] = [
+        ['hachure', 'Hachure', FillHachureIcon],
+        ['cross-hatch', 'Cross-hatch', FillCrossHatchIcon],
+        ['solid', 'Solid', FillSolidIcon],
+      ];
       return (
-        <div className="flex gap-0.5">
-          {FILL_STYLES.map(([v, label]) => (
-            <IconToggle key={v} active={s.fillStyle === v} label={label} onClick={() => s.setFillStyle(v)}>
-              <span className="text-[10px] font-medium">{label.slice(0, 1)}</span>
-            </IconToggle>
+        <ButtonRow>
+          {options.map(([v, label, icon]) => (
+            <PanelButton key={v} label={label} active={s.fillStyle === v} onClick={() => s.setFillStyle(v)}>
+              {icon}
+            </PanelButton>
           ))}
-        </div>
+        </ButtonRow>
       );
+    }
+
+    case 'strokeWidth': {
+      const current = nearest(STROKE_WIDTHS, s.strokeWidth);
+      const options: [keyof typeof STROKE_WIDTHS, string, React.ReactNode][] = [
+        ['thin', 'Thin', StrokeWidthBaseIcon],
+        ['bold', 'Bold', StrokeWidthBoldIcon],
+        ['extraBold', 'Extra bold', StrokeWidthExtraBoldIcon],
+      ];
+      return (
+        <ButtonRow>
+          {options.map(([k, label, icon]) => (
+            <PanelButton key={k} label={label} active={current === k} onClick={() => s.setStrokeWidth(STROKE_WIDTHS[k])}>
+              {icon}
+            </PanelButton>
+          ))}
+        </ButtonRow>
+      );
+    }
+
+    case 'strokeStyle': {
+      const options: [StrokeStyle, string, React.ReactNode][] = [
+        ['solid', 'Solid', <StrokeStyleSolidIcon key="i" theme="light" />],
+        ['dashed', 'Dashed', StrokeStyleDashedIcon],
+        ['dotted', 'Dotted', StrokeStyleDottedIcon],
+      ];
+      return (
+        <ButtonRow>
+          {options.map(([v, label, icon]) => (
+            <PanelButton key={v} label={label} active={s.strokeStyle === v} onClick={() => s.setStrokeStyle(v)}>
+              {icon}
+            </PanelButton>
+          ))}
+        </ButtonRow>
+      );
+    }
 
     case 'roughness': {
-      const preset: RoughnessPreset =
-        s.roughness < 0.9 ? 'architect' : s.roughness < 2 ? 'artist' : 'cartoonist';
+      const current = nearest(ROUGHNESS_PRESETS, s.roughness);
+      const options: [RoughnessPreset, string, React.ReactNode][] = [
+        ['architect', 'Architect', SloppinessArchitectIcon],
+        ['artist', 'Artist', SloppinessArtistIcon],
+        ['cartoonist', 'Cartoonist', SloppinessCartoonistIcon],
+      ];
       return (
-        <div className="space-y-1.5">
-          <div className="flex gap-0.5">
-            {ROUGH_PRESETS.map(([v, label]) => (
-              <IconToggle
-                key={v}
-                active={s.handDrawn && preset === v}
-                label={label}
-                onClick={() => {
-                  if (!s.handDrawn) s.setHandDrawn(true);
-                  s.setRoughness(ROUGHNESS_PRESETS[v]);
-                }}
-              >
-                <svg width="18" height="12" viewBox="0 0 18 12">
-                  {v === 'architect' && <path d="M1 6 L17 6" stroke="currentColor" strokeWidth="1.5" fill="none" />}
-                  {v === 'artist' && <path d="M1 7 Q5 3 9 6 T17 5" stroke="currentColor" strokeWidth="1.5" fill="none" />}
-                  {v === 'cartoonist' && <path d="M1 8 Q4 2 7 7 T13 4 T17 8" stroke="currentColor" strokeWidth="1.5" fill="none" />}
-                </svg>
-              </IconToggle>
-            ))}
-          </div>
-          {!s.handDrawn && (
-            <button type="button" className="text-[10px] text-accent hover:underline" onClick={() => s.setHandDrawn(true)}>
-              Enable hand-drawn
-            </button>
-          )}
-        </div>
+        <ButtonRow>
+          {options.map(([k, label, icon]) => (
+            <PanelButton key={k} label={label} active={current === k} onClick={() => s.setRoughness(ROUGHNESS_PRESETS[k])}>
+              {icon}
+            </PanelButton>
+          ))}
+        </ButtonRow>
       );
     }
 
     case 'cornerRadius':
       return (
-        <div className="flex gap-0.5">
-          <IconToggle active={s.cornerRadius === 0} label="Sharp" onClick={() => s.setCornerRadius(0)}>
-            <span className="w-3.5 h-3.5 border-2 border-current rounded-[1px]" />
-          </IconToggle>
-          <IconToggle active={s.cornerRadius > 0} label="Round" onClick={() => s.setCornerRadius(16)}>
-            <span className="w-3.5 h-3.5 border-2 border-current rounded-md" />
-          </IconToggle>
-        </div>
-      );
-
-    case 'arrowheads': {
-      const both = s.startArrowhead !== 'none' && s.endArrowhead !== 'none';
-      const set = (start: typeof s.startArrowhead, end: typeof s.endArrowhead) => {
-        s.setStartArrowhead(start);
-        s.setEndArrowhead(end);
-      };
-      return (
-        <div className="flex gap-0.5">
-          <IconToggle
-            active={s.endArrowhead === 'none' && s.startArrowhead === 'none'}
-            label="None"
-            onClick={() => set('none', 'none')}
-          >
-            <span className="text-[10px] font-medium">None</span>
-          </IconToggle>
-          <IconToggle
-            active={s.endArrowhead !== 'none' && s.startArrowhead === 'none'}
-            label="End"
-            onClick={() => set('none', 'arrow')}
-          >
-            <span className="text-[10px] font-medium">&rarr;</span>
-          </IconToggle>
-          <IconToggle active={both} label="Double-sided" onClick={() => set('arrow', 'arrow')}>
-            <span className="text-[10px] font-medium">&harr;</span>
-          </IconToggle>
-          <IconToggle
-            active={s.endArrowhead === 'triangle' && s.startArrowhead === 'none'}
-            label="Triangle end"
-            onClick={() => set('none', 'triangle')}
-          >
-            <span className="text-[10px] font-medium">&#9650;</span>
-          </IconToggle>
-        </div>
-      );
-    }
-
-    case 'fontFamily':
-      return (
-        <div className="flex gap-0.5">
-          <IconToggle
-            active={isHandwritten(s.fontFamily)}
-            label="Handwritten"
-            onClick={() => s.setFontFamily(HANDWRITTEN_FONT)}
-          >
-            <span className="text-sm" style={{ fontFamily: HANDWRITTEN_FONT }}>Aa</span>
-          </IconToggle>
-          <IconToggle
-            active={!isHandwritten(s.fontFamily)}
-            label="Standard"
-            onClick={() => s.setFontFamily(STANDARD_FONT)}
-          >
-            <span className="text-xs font-sans">Aa</span>
-          </IconToggle>
-        </div>
-      );
-
-    case 'fontStyle': {
-      const isBold = s.fontStyle.includes('bold');
-      const isItalic = s.fontStyle.includes('italic');
-      const apply = (bold: boolean, italic: boolean) => {
-        // Konva fontStyle is a single string: 'normal' | 'bold' | 'italic' | 'bold italic'.
-        const next = bold && italic ? 'bold italic' : bold ? 'bold' : italic ? 'italic' : 'normal';
-        s.setFontStyle(next);
-      };
-      return (
-        <div className="flex gap-0.5">
-          <IconToggle active={isBold} label="Bold" onClick={() => apply(!isBold, isItalic)}>
-            <span className="text-xs font-bold">B</span>
-          </IconToggle>
-          <IconToggle active={isItalic} label="Italic" onClick={() => apply(isBold, !isItalic)}>
-            <span className="text-xs italic">I</span>
-          </IconToggle>
-        </div>
-      );
-    }
-
-    case 'textAlign':
-      return (
-        <div className="flex gap-0.5">
-          {(['left', 'center', 'right'] as const).map((a) => (
-            <IconToggle
-              key={a}
-              active={s.textAlign === a}
-              label={a[0].toUpperCase() + a.slice(1)}
-              onClick={() => s.setTextAlign(a)}
-            >
-              <svg width="16" height="10" viewBox="0 0 16 10" aria-hidden>
-                <line
-                  x1={a === 'right' ? 4 : 1} y1="1" x2="15" y2="1"
-                  stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-                />
-                <line
-                  x1={a === 'left' ? 1 : a === 'center' ? 4.5 : 7} y1="5" x2="15" y2="5"
-                  stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-                />
-                <line
-                  x1={a === 'left' ? 1 : a === 'center' ? 3 : 10} y1="9" x2="15" y2="9"
-                  stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-                />
-              </svg>
-            </IconToggle>
-          ))}
-        </div>
-      );
-
-    case 'textVerticalAlign':
-      return (
-        <div className="flex gap-0.5">
-          {(['top', 'middle', 'bottom'] as const).map((a) => (
-            <IconToggle
-              key={a}
-              active={s.textVerticalAlign === a}
-              label={a[0].toUpperCase() + a.slice(1)}
-              onClick={() => s.setTextVerticalAlign(a)}
-            >
-              <svg width="16" height="12" viewBox="0 0 16 12" aria-hidden>
-                {(['top', 'middle', 'bottom'] as const).map((row, i) => {
-                  const y = 2 + i * 4;
-                  const active = a === row;
-                  const x1 = active ? 2 : row === 'top' ? 5 : row === 'middle' ? 4 : 3;
-                  return (
-                    <line
-                      key={row}
-                      x1={x1} y1={y} x2="14" y2={y}
-                      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-                      opacity={active ? 1 : 0.4}
-                    />
-                  );
-                })}
-              </svg>
-            </IconToggle>
-          ))}
-        </div>
+        <ButtonRow>
+          <PanelButton label="Sharp" active={s.cornerRadius === 0} onClick={() => s.setCornerRadius(0)}>
+            {EdgeSharpIcon}
+          </PanelButton>
+          <PanelButton label="Round" active={s.cornerRadius > 0} onClick={() => s.setCornerRadius(ROUND_CORNER_RADIUS)}>
+            {EdgeRoundIcon}
+          </PanelButton>
+        </ButtonRow>
       );
 
     case 'arrowPath':
       return (
-        <div className="flex gap-0.5">
-          <IconToggle
-            active={s.arrowPath === 'straight'}
-            label="Straight"
-            onClick={() => s.setArrowPath('straight')}
-          >
-            <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden>
-              <line x1="2" y1="2" x2="16" y2="8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-            </svg>
-          </IconToggle>
-          <IconToggle
-            active={s.arrowPath === 'elbow'}
-            label="Elbow"
-            onClick={() => s.setArrowPath('elbow')}
-          >
-            <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden>
-              <path d="M2 2 H11 V8 H16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </IconToggle>
-        </div>
+        <ButtonRow>
+          <PanelButton label="Sharp arrow" active={s.arrowPath === 'straight'} onClick={() => s.setArrowPath('straight')}>
+            {sharpArrowIcon}
+          </PanelButton>
+          <PanelButton label="Curved arrow" active={s.arrowPath === 'curved'} onClick={() => s.setArrowPath('curved')}>
+            {roundArrowIcon}
+          </PanelButton>
+          <PanelButton label="Elbow arrow" active={s.arrowPath === 'elbow'} onClick={() => s.setArrowPath('elbow')}>
+            {elbowArrowIcon}
+          </PanelButton>
+        </ButtonRow>
       );
+
+    case 'arrowheads':
+      return (
+        <ButtonRow>
+          <ArrowheadPicker label="Start arrowhead" flip value={s.startArrowhead} onChange={s.setStartArrowhead} />
+          <ArrowheadPicker label="End arrowhead" flip={false} value={s.endArrowhead} onChange={s.setEndArrowhead} />
+        </ButtonRow>
+      );
+
+    case 'fontFamily': {
+      const current = fontKind(s.fontFamily);
+      return (
+        <ButtonRow>
+          <PanelButton label="Hand-drawn" active={current === 'hand'} onClick={() => s.setFontFamily(FONT_HAND_DRAWN)}>
+            {FreedrawIcon}
+          </PanelButton>
+          <PanelButton label="Normal" active={current === 'normal'} onClick={() => s.setFontFamily(FONT_NORMAL)}>
+            {FontFamilyNormalIcon}
+          </PanelButton>
+          <PanelButton label="Code" active={current === 'code'} onClick={() => s.setFontFamily(FONT_CODE)}>
+            {FontFamilyCodeIcon}
+          </PanelButton>
+        </ButtonRow>
+      );
+    }
+
+    case 'fontSize': {
+      const current = nearest(FONT_SIZE_PRESETS, s.fontSize);
+      const options: [keyof typeof FONT_SIZE_PRESETS, string, React.ReactNode][] = [
+        ['S', 'Small', FontSizeSmallIcon],
+        ['M', 'Medium', FontSizeMediumIcon],
+        ['L', 'Large', FontSizeLargeIcon],
+        ['XL', 'Very large', FontSizeExtraLargeIcon],
+      ];
+      return (
+        <ButtonRow>
+          {options.map(([k, label, icon]) => (
+            <PanelButton key={k} label={label} active={current === k} onClick={() => s.setFontSize(FONT_SIZE_PRESETS[k])}>
+              {icon}
+            </PanelButton>
+          ))}
+        </ButtonRow>
+      );
+    }
+
+    case 'textAlign': {
+      const options: ['left' | 'center' | 'right', string, React.ReactNode][] = [
+        ['left', 'Left', TextAlignLeftIcon],
+        ['center', 'Center', TextAlignCenterIcon],
+        ['right', 'Right', TextAlignRightIcon],
+      ];
+      return (
+        <ButtonRow>
+          {options.map(([v, label, icon]) => (
+            <PanelButton key={v} label={label} active={s.textAlign === v} onClick={() => s.setTextAlign(v)}>
+              {icon}
+            </PanelButton>
+          ))}
+        </ButtonRow>
+      );
+    }
+
+    case 'textVerticalAlign': {
+      const options: ['top' | 'middle' | 'bottom', string, React.ReactNode][] = [
+        ['top', 'Top', <TextAlignTopIcon key="i" theme="light" />],
+        ['middle', 'Middle', <TextAlignMiddleIcon key="i" theme="light" />],
+        ['bottom', 'Bottom', <TextAlignBottomIcon key="i" theme="light" />],
+      ];
+      return (
+        <ButtonRow>
+          {options.map(([v, label, icon]) => (
+            <PanelButton key={v} label={label} active={s.textVerticalAlign === v} onClick={() => s.setTextVerticalAlign(v)}>
+              {icon}
+            </PanelButton>
+          ))}
+        </ButtonRow>
+      );
+    }
 
     case 'stepNumbering':
       return (
         <div className="space-y-1.5">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <input
               type="number"
               min={0}
               value={s.stepStartNumber}
               onChange={(e) => s.setStepStartNumber(Number(e.target.value))}
               aria-label="Start numbering at"
-              className="h-8 w-16 rounded-lg border border-border bg-transparent px-2 text-xs tabular-nums outline-none focus:ring-1 focus:ring-accent"
+              className="h-8 w-14 rounded-lg border border-border bg-transparent px-2 text-xs tabular-nums outline-none focus:ring-1 focus:ring-accent"
             />
             <button
               type="button"
-              className="h-8 flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-border text-[11px] hover:bg-secondary transition-colors"
+              className="h-8 flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-secondary text-xs hover:bg-border transition-colors"
               onClick={() => s.setStepStartNumber(s.stepStartNumber)}
             >
               <RotateCcw className="w-3 h-3" />
-              Reset to {s.stepStartNumber}
+              Restart at {s.stepStartNumber}
             </button>
           </div>
-          <p className="text-[10px] text-muted-foreground">Next badge: {s.stepCounter}</p>
+          <p className="text-[0.7rem] text-muted-foreground">Next number: {s.stepCounter}</p>
         </div>
       );
 
     default: {
-      // Every remaining setting is a plain numeric slider. A drag is one undo
-      // gesture: changes apply live, history is committed once on release.
+      // Continuous values. A drag is one undo gesture: changes apply live,
+      // history is committed once on release.
       if (spec.kind !== 'slider') return null;
-      const value = (s as unknown as Record<string, number>)[spec.key] ?? spec.min;
-      const onChange = sliderSetterFor(s, spec.key);
+      const setters: Partial<Record<typeof spec.key, (v: number) => void>> = {
+        opacity: s.setOpacity,
+        blurRadius: s.setBlurRadius,
+        pixelSize: s.setPixelSize,
+        highlighterWidth: s.setHighlighterWidth,
+        spotlightDim: s.setSpotlightDim,
+        stepRadius: s.setStepRadius,
+        magnification: s.setMagnification,
+      };
+      const onChange = setters[spec.key];
       if (!onChange) return null;
+      const value = (s as unknown as Record<string, number>)[spec.key] ?? spec.min;
+      // Excalidraw labels the opacity track's ends instead of showing a value.
+      if (spec.key === 'opacity') {
+        return (
+          <div>
+            <Slider
+              value={[value]}
+              min={spec.min}
+              max={spec.max}
+              step={spec.step}
+              aria-label={spec.label}
+              onPointerDown={() => s.beginSettingGesture()}
+              onValueCommit={() => s.endSettingGesture()}
+              onValueChange={([v]) => onChange(v)}
+            />
+            <div className="mt-1.5 flex justify-between text-[0.75rem] text-foreground">
+              <span>0</span>
+              <span>100</span>
+            </div>
+          </div>
+        );
+      }
       return (
-        <Slider
-          value={[value]}
-          min={spec.min}
-          max={spec.max}
-          step={spec.step}
-          onPointerDown={() => s.beginSettingGesture()}
-          onValueCommit={() => s.endSettingGesture()}
-          onValueChange={([v]) => onChange(v)}
-        />
+        <div className="flex items-center gap-2">
+          <Slider
+            value={[value]}
+            min={spec.min}
+            max={spec.max}
+            step={spec.step}
+            aria-label={spec.label}
+            onPointerDown={() => s.beginSettingGesture()}
+            onValueCommit={() => s.endSettingGesture()}
+            onValueChange={([v]) => onChange(v)}
+          />
+          <span className="w-7 text-right text-[0.7rem] tabular-nums text-muted-foreground">
+            {spec.format ? spec.format(value) : Math.round(value)}
+          </span>
+        </div>
       );
     }
   }
-}
-
-/** Right-aligned current value shown next to a slider's label. */
-export function SettingValueBadge({ spec }: { spec: SettingSpec }) {
-  const s = useEditorStore();
-  if (spec.kind !== 'slider') return null;
-  const value = (s as unknown as Record<string, number>)[spec.key] ?? spec.min;
-  return (
-    <span className="text-[10px] font-mono text-muted-foreground tabular-nums">
-      {spec.format ? spec.format(value) : Math.round(value)}
-    </span>
-  );
-}
-
-/**
- * Subscribed value label for the compact rail. A component rather than a bare
- * call so the row re-renders when the setting changes; reading `getState()`
- * during render would show a stale value until something else re-rendered.
- */
-export function SettingChipValue({ settingKey }: { settingKey: SettingKey }) {
-  const s = useEditorStore();
-  const label = settingValueLabel(settingKey, s);
-  if (!label) return null;
-  return <span className="text-[10px] font-mono tabular-nums opacity-80">{label}</span>;
-}
-
-/** Setters for the numeric settings, shared by the slider and the meter. */
-function sliderSetterFor(
-  s: ReturnType<typeof useEditorStore.getState>,
-  key: SettingKey,
-): ((v: number) => void) | undefined {
-  const setters: Partial<Record<SettingKey, (v: number) => void>> = {
-    fontSize: s.setFontSize,
-    opacity: s.setOpacity,
-    blurRadius: s.setBlurRadius,
-    pixelSize: s.setPixelSize,
-    highlighterWidth: s.setHighlighterWidth,
-    stepRadius: s.setStepRadius,
-    magnification: s.setMagnification,
-  };
-  return setters[key];
-}
-
-/**
- * Upright volume-style meter for numeric settings on the compact rail.
- * A vertical track reads faster than a horizontal one in a narrow popover and
- * gives a full-height drag target on touch.
- */
-export function SettingMeter({ spec }: { spec: SettingSpec }) {
-  const s = useEditorStore();
-  if (spec.kind !== 'slider') return null;
-  const onChange = sliderSetterFor(s, spec.key);
-  if (!onChange) return null;
-  const value = (s as unknown as Record<string, number>)[spec.key] ?? spec.min;
-  return (
-    <Slider
-      orientation="vertical"
-      className="h-32"
-      value={[value]}
-      min={spec.min}
-      max={spec.max}
-      step={spec.step}
-      onPointerDown={() => s.beginSettingGesture()}
-      onValueCommit={() => s.endSettingGesture()}
-      onValueChange={([v]) => onChange(v)}
-      aria-label={spec.label}
-    />
-  );
 }

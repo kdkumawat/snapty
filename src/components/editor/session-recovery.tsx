@@ -1,18 +1,15 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { RotateCcw, Trash2 } from 'lucide-react';
+import { RotateCcw, Trash2 } from '@/components/editor/ui/icons';
 import { useEditorStore } from '@/store/editor-store';
 import {
-  listAutosaves, removeAutosave, clearAutosave,
+  listAutosaves, removeAutosave,
   isRecoveryPromptEnabled, setRecoveryPromptEnabled,
   type AutosaveSnapshot,
 } from '@/lib/editor/autosave';
 import { toastInfo, toastSuccess } from '@/lib/app-toast';
 import type { HistorySnapshot } from '@/store/editor-store';
-
-/** Sessions older than this are not worth offering. */
-const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function timeAgo(ts: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -25,8 +22,8 @@ function timeAgo(ts: number): string {
 /**
  * Offers to restore the recent IndexedDB autosaves. Up to three sessions are
  * listed (newest first); each can be recovered or discarded individually. A
- * "Don't ask again" checkbox persists to Settings - drafts are kept either way
- * so re-enabling the prompt brings them back.
+ * "Don't ask again" checkbox persists - drafts are kept either way so
+ * re-enabling the prompt brings them back. The card hides itself after 5s.
  */
 export default function SessionRecovery({ onResolved }: { onResolved: () => void }) {
   const [pending, setPending] = useState<AutosaveSnapshot[]>([]);
@@ -49,9 +46,10 @@ export default function SessionRecovery({ onResolved }: { onResolved: () => void
     }
     void listAutosaves().then((snaps) => {
       if (cancelled) return;
-      const fresh = snaps.filter(
-        (s) => s.imageDataURL && Date.now() - (s.updatedAt ?? 0) < MAX_AGE_MS,
-      );
+      // The project autosave may already have put a session back on the
+      // canvas; offering to recover what is on screen is noise.
+      const current = useEditorStore.getState().imageDataURL;
+      const fresh = snaps.filter((s) => s.imageDataURL && s.imageDataURL !== current);
       if (fresh.length) setPending(fresh);
       else resolve();
     });
@@ -88,13 +86,11 @@ export default function SessionRecovery({ onResolved }: { onResolved: () => void
         _historyIndex: 0,
       });
       setTimeout(() => useEditorStore.getState().resetView(), 30);
-      resolve(() => {
-        void clearAutosave();
-        toastSuccess('Session restored', 'Your image and annotations are back');
-      });
+      // The other saved sessions stay; this one is re-saved as editing goes on.
+      resolve(() => toastSuccess('Session restored', 'Your image and annotations are back'));
     };
     img.onerror = () => {
-      resolve(() => { void clearAutosave(); });
+      resolve(() => { void removeAutosave(snap.updatedAt); });
     };
     img.src = imageDataURL;
   };
@@ -115,10 +111,10 @@ export default function SessionRecovery({ onResolved }: { onResolved: () => void
     <div
       role="dialog"
       aria-label="Recover a recent session"
-      className="fixed bottom-[max(1rem,env(safe-area-inset-bottom,0px)+1rem)] right-3 z-[200] w-[min(24rem,calc(100vw-1.5rem))] rounded-2xl floating-surface shadow-[var(--floating-shadow)] p-3.5"
+      className="group fixed bottom-[max(1rem,env(safe-area-inset-bottom,0px)+1rem)] right-3 z-[200] w-[min(24rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl floating-surface shadow-[var(--floating-shadow)] p-3.5"
     >
       <div className="flex items-start gap-3">
-        <div className="w-9 h-9 rounded-xl bg-accent/12 text-accent flex items-center justify-center shrink-0">
+        <div className="w-9 h-9 rounded-xl bg-[var(--accent-container)] text-[var(--on-accent-container)] flex items-center justify-center shrink-0">
           <RotateCcw className="w-4 h-4" />
         </div>
         <div className="min-w-0 flex-1">
@@ -169,7 +165,7 @@ export default function SessionRecovery({ onResolved }: { onResolved: () => void
                 setDontAsk(checked);
                 setRecoveryPromptEnabled(!checked);
                 toastInfo(checked ? 'Recovery prompt off' : 'Recovery prompt on', checked
-                  ? 'You can re-enable it in Settings'
+                  ? 'You can re-enable it in the main menu'
                   : 'You will be asked again next time');
               }}
               className="w-3.5 h-3.5 accent-[var(--accent)]"
@@ -181,6 +177,13 @@ export default function SessionRecovery({ onResolved }: { onResolved: () => void
       <p className="mt-2 text-[10px] text-muted-foreground flex items-center gap-1">
         <Trash2 className="w-3 h-3" /> Stays on your device - these drafts were never uploaded.
       </p>
+      {/* Auto-hide countdown: hover or focus pauses it; timing out only
+          dismisses, the saved session is kept for the next visit. */}
+      <div
+        aria-hidden
+        onAnimationEnd={() => resolve()}
+        className="absolute inset-x-0 bottom-0 h-1 origin-left bg-accent animate-[recovery-countdown_5s_linear_forwards] motion-reduce:[animation-timing-function:steps(5,end)] group-hover:[animation-play-state:paused] group-focus-within:[animation-play-state:paused]"
+      />
     </div>
   );
 }

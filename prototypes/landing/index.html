@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snapty: mark up a screenshot in your browser</title>
+<meta name="description" content="Snapty is a free, open-source screenshot editor that runs in a browser tab. Paste a screenshot, annotate it, copy it back out. Nothing is uploaded.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="assets/BricolageGrotesque-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/Assistant-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="media/hero.webp" as="image" type="image/webp">
+<script>
+  // Theme before first paint: System (default), Light or Dark. The choice is saved; "system" follows the OS.
+  (function () { var c = 'system'; try { c = localStorage.getItem('snapty-theme-choice') || 'system'; } catch (e) {}
+    var d = document.documentElement; d.dataset.themeChoice = c;
+    d.dataset.theme = c === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : c; })();
+</script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top" aria-label="Snapty home">
+      <img src="assets/logo.svg" width="30" height="30" alt="">
+      <span>Snapty</span>
+    </a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#tools">Tools</a>
+      <a href="#uses">Use cases</a>
+      <a href="#privacy">Privacy</a>
+    </nav>
+    <div class="nav-act">
+      <!-- theme:start --><button class="nav-btn theme-btn" id="theme" type="button" data-choice="system" aria-label="Theme: System. Switch to Dark" title="Theme: System. Switch to Dark">
+        <svg class="t-system" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3 5a1 1 0 0 1 1 -1h16a1 1 0 0 1 1 1v10a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1v-10" /><path d="M7 20h10" /><path d="M9 16v4" /><path d="M15 16v4" /></svg>
+        <svg class="t-dark" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454l0 .008" /></svg>
+        <svg class="t-light" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" /><path d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.1 -.7l-.7 .7" /></svg>
+      </button><!-- theme:end -->
+            <a class="nav-btn" href="https://github.com/kdkumawat/snapty" aria-label="Snapty on GitHub">
+        <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" class="fill"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+      <a class="btn btn-sm" href="http://localhost:3001/editor" data-prod="/editor">Open the editor</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ───────────── Hero ───────────── -->
+<section class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <h1>Point at exactly what you mean.</h1>
+      <p class="lede">Snapty is a free screenshot editor that lives in a browser tab. Paste a screenshot, mark it up, copy it back out. Nothing is uploaded and there is no account.</p>
+      <div class="hero-act">
+        <a class="btn btn-lg" href="http://localhost:3001/editor" data-prod="/editor">Open the editor</a>
+        <p class="paste-hint" id="paste-hint">or paste a screenshot here <kbd>Ctrl</kbd><kbd>V</kbd></p>
+      </div>
+      <p class="paste-result" id="paste-result" role="status" hidden></p>
+    </div>
+
+    <div class="hero-stage">
+      <figure class="shot shot-hero" data-clip>
+        <video width="1920" height="1280" muted playsinline loop preload="metadata" poster="media/hero.webp" data-eager
+          aria-label="Film: the Snapty logo, then a screenshot of a failing webhook page is pasted into the editor and marked up with an arrow, a rectangle, numbered badges, a pixelated secret, a highlighter stroke and a callout, then copied."><source src="media/hero.webm" type="video/webm"><source src="media/hero.mp4" type="video/mp4"></video>
+      </figure>
+      <p class="note note-hero" aria-hidden="true">the real editor, recorded</p>
+      <svg class="mark mark-hero" data-mark="heroArrow" viewBox="0 0 160 104" aria-hidden="true"></svg>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── Tools ───────────── -->
+<section class="tools" id="tools" aria-labelledby="tools-h">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2 id="tools-h">Every tool is one key away.</h2>
+      <p>Press a tool&rsquo;s key right now, or pick it from the list, and watch it work. Every film is the editor itself, recorded in a browser.</p>
+    </div>
+
+    <div class="tour" id="tour">
+      <article class="step" data-step data-keys="ar">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">Arrows and boxes you can write on</span><span class="keys" aria-label="Shortcut: A R"><kbd>A</kbd><kbd>R</kbd></span></button></h3>
+        <p class="step-desc">Drag an arrow, drag a rectangle. Double-click either one to type on it.</p>
+        <figure class="shot" data-clip>
+          <video width="1920" height="1280" muted playsinline preload="none" data-film="arrow"
+            aria-label="Film: an arrow labelled spike is drawn to a chart peak, then a rectangle is drawn under it and Sunday looks wrong is typed inside."></video>
+        </figure>
+      </article>
+      <article class="step" data-step data-keys="opl">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">Ellipse, freehand, line</span><span class="keys" aria-label="Shortcut: O P L"><kbd>O</kbd><kbd>P</kbd><kbd>L</kbd></span></button></h3>
+        <p class="step-desc">Circle a number, scribble around a point, underline a total. Hand-drawn by default, clean if you prefer.</p>
+        <figure class="shot" data-clip>
+          <video width="1920" height="1280" muted playsinline preload="none" data-film="shapes"
+            aria-label="Film: an ellipse circles an order count, a freehand loop goes around a chart point and a line underlines a total."></video>
+        </figure>
+      </article>
+      <article class="step" data-step data-keys="k">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">Highlighter</span><span class="keys" aria-label="Shortcut: K"><kbd>K</kbd></span></button></h3>
+        <p class="step-desc">A translucent stroke that keeps the text underneath readable.</p>
+        <figure class="shot" data-clip>
+          <video width="1920" height="1280" muted playsinline preload="none" data-film="highlighter"
+            aria-label="Film: two lines of text on a product page are highlighted in yellow."></video>
+        </figure>
+      </article>
+      <article class="step" data-step data-keys="n">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">Numbers, letters, stamps</span><span class="keys" aria-label="Shortcut: N"><kbd>N</kbd></span></button></h3>
+        <p class="step-desc">Click to drop 1, 2, 3. Switch to A, B, C and the count starts over. Add a pointing finger or a stamp: ✅ ❌ ⚠️ ❓ ⭐ 🔥.</p>
+        <figure class="shot" data-clip>
+          <video width="1920" height="1280" muted playsinline preload="none" data-film="badges"
+            aria-label="Film: badges 1, 2 and 3 are placed on three steps of a settings page, then the style is switched to letters and A, B and C are placed, then a pointing-finger badge and a check stamp."></video>
+        </figure>
+      </article>
+      <article class="step" data-step data-keys="u">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">Callouts that stay on target</span><span class="keys" aria-label="Shortcut: U"><kbd>U</kbd></span></button></h3>
+        <p class="step-desc">Press on the thing you mean and drag away. The tail stays where you pressed, the bubble lands where you let go, and you type.</p>
+        <figure class="shot" data-clip>
+          <video width="1920" height="1280" muted playsinline preload="none" data-film="callout"
+            aria-label="Film: a callout is pressed on a pale button and dragged out to open space, and a comment about contrast is typed into it."></video>
+        </figure>
+      </article>
+      <article class="step" data-step data-keys="b">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">Hide what should not travel</span><span class="keys" aria-label="Shortcut: B"><kbd>B</kbd></span></button></h3>
+        <p class="step-desc">Drag over an API key or an email address and it is pixelated before the picture goes anywhere.</p>
+        <figure class="shot" data-clip>
+          <video width="1920" height="1280" muted playsinline preload="none" data-film="pixelate"
+            aria-label="Film: a secret API key and an email address on an account page are pixelated."></video>
+        </figure>
+      </article>
+      <article class="step" data-step data-keys="s">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">Spotlight</span><span class="keys" aria-label="Shortcut: S"><kbd>S</kbd></span></button></h3>
+        <p class="step-desc">Dim everything outside one region so nobody has to hunt for it.</p>
+        <figure class="shot" data-clip>
+          <video width="1920" height="1280" muted playsinline preload="none" data-film="spotlight"
+            aria-label="Film: a spotlight is dragged over the product details and the rest of the page dims."></video>
+        </figure>
+      </article>
+      <article class="step" data-step data-keys="m">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">Magnifier</span><span class="keys" aria-label="Shortcut: M"><kbd>M</kbd></span></button></h3>
+        <p class="step-desc">Drag over a small detail. It reappears enlarged in a bubble that stays connected to its source.</p>
+        <figure class="shot" data-clip>
+          <video width="1920" height="1280" muted playsinline preload="none" data-film="magnifier"
+            aria-label="Film: a small percentage under a revenue figure is magnified into a large connected bubble."></video>
+        </figure>
+      </article>
+      <article class="step" data-step data-keys="c">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">Crop, then export</span><span class="keys" aria-label="Shortcut: C then Ctrl E"><kbd>C</kbd><span class="plus">then</span><kbd>Ctrl</kbd><kbd>E</kbd></span></button></h3>
+        <p class="step-desc">Crop to what matters. Copy to the clipboard or download PNG, JPG, WebP or SVG at 1x or 2x, with optional padding, background and a device frame.</p>
+        <figure class="shot" data-clip>
+          <video width="1920" height="1280" muted playsinline preload="none" data-film="export"
+            aria-label="Film: a screenshot is cropped, then the export panel switches to WebP at 2x and copies the image."></video>
+        </figure>
+      </article>
+      <article class="step" data-step data-keys="z">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">Undo, redo, dark mode</span><span class="keys" aria-label="Shortcut: Ctrl Z"><kbd>Ctrl</kbd><kbd>Z</kbd></span></button></h3>
+        <p class="step-desc">A tool stays selected, so three arrows are three drags. Undo and redo freely, flip the theme with Alt Shift D, and reload without losing your work.</p>
+        <figure class="shot" data-clip>
+          <video width="1920" height="1280" muted playsinline preload="none" data-film="flow"
+            aria-label="Film: three arrows are drawn one after another, two are undone and redone, then the editor switches to dark mode."></video>
+        </figure>
+      </article>
+      <article class="step" data-step data-keys="">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">Command palette and every shortcut</span><span class="keys" aria-label="Shortcut: Ctrl K"><kbd>Ctrl</kbd><kbd>K</kbd></span></button></h3>
+        <p class="step-desc">Type three letters and press Enter to run anything. Press ? for the full, searchable list of shortcuts.</p>
+        <figure class="shot" data-clip>
+          <video width="1920" height="1280" muted playsinline preload="none" data-film="keyboard"
+            aria-label="Film: the command palette opens with Control K and finds the callout tool, then the shortcuts list opens with a question mark and is searched for undo."></video>
+        </figure>
+      </article>
+      <article class="step" data-step data-keys="">
+        <h3 class="step-h"><button type="button" class="step-head" aria-expanded="false"><span class="step-title">On a phone too</span><span class="keys keys-plain">Touch</span></button></h3>
+        <p class="step-desc">Same editor, toolbar at your thumb. Useful when the screenshot is already on the phone.</p>
+        <figure class="shot shot-phone" data-clip>
+          <video width="780" height="1560" muted playsinline preload="none" data-film="phone" data-mp4only
+            aria-label="Screen recording at phone size: number badges are tapped onto a settings screenshot, a rectangle is drawn, and the image is copied."></video>
+        </figure>
+      </article>
+    </div>
+
+    <dl class="combos" aria-label="Essential shortcuts">
+      <div><dt><kbd>Ctrl</kbd><kbd>V</kbd></dt><dd>Paste a screenshot</dd></div>
+      <div><dt><kbd>Ctrl</kbd><kbd>C</kbd></dt><dd>Copy the finished image</dd></div>
+      <div><dt><kbd>Ctrl</kbd><kbd>E</kbd></dt><dd>Download options</dd></div>
+      <div><dt><kbd>Ctrl</kbd><kbd>Z</kbd></dt><dd>Undo, with Shift to redo</dd></div>
+      <div><dt><kbd>?</kbd></dt><dd>All shortcuts. On a Mac, Ctrl is ⌘</dd></div>
+    </dl>
+  </div>
+</section>
+
+<!-- ───────────── Use cases ───────────── -->
+<section class="uses" id="uses" aria-labelledby="uses-h">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2 id="uses-h">Four pictures you send every week.</h2>
+      <p>Drag the divider to compare the raw screenshot with what you would actually send.</p>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Use cases">
+      <button role="tab" id="tab-bug" aria-controls="panel-bug" aria-selected="true">Bug report</button>
+      <button role="tab" id="tab-tut" aria-controls="panel-tut" aria-selected="false" tabindex="-1">Step-by-step</button>
+      <button role="tab" id="tab-red" aria-controls="panel-red" aria-selected="false" tabindex="-1">Redaction</button>
+      <button role="tab" id="tab-des" aria-controls="panel-des" aria-selected="false" tabindex="-1">Design feedback</button>
+    </div>
+
+    <div class="panel" role="tabpanel" id="panel-bug" aria-labelledby="tab-bug" tabindex="0">
+      <div class="cmp" data-cmp>
+        <img class="cmp-before" src="media/ex-bug-before.webp" width="2888" height="1808" alt="Dashboard screenshot, unannotated." decoding="async">
+        <img class="cmp-after" src="media/ex-bug-after.webp" width="2888" height="1808" alt="The same dashboard: a magnifier enlarges the revenue figure, a rectangle marks the order total, and two callouts say the numbers disagree." decoding="async">
+        <span class="cmp-tag cmp-tag-b" aria-hidden="true">Before</span><span class="cmp-tag cmp-tag-a" aria-hidden="true">After</span>
+        <span class="cmp-line" aria-hidden="true"></span>
+        <input type="range" min="0" max="100" value="100" aria-label="Divider position between before and after">
+      </div>
+      <div class="panel-text">
+        <p class="panel-line">“The total is wrong” becomes a ticket nobody has to ask about.</p>
+        <p class="panel-tools">Magnifier, rectangle, two callouts.</p>
+      </div>
+    </div>
+
+    <div class="panel" role="tabpanel" id="panel-tut" aria-labelledby="tab-tut" tabindex="0" hidden>
+      <div class="cmp" data-cmp>
+        <img class="cmp-before" loading="lazy" src="media/ex-tut-before.webp" width="2888" height="1808" alt="Notification settings screenshot, unannotated." decoding="async">
+        <img class="cmp-after" loading="lazy" src="media/ex-tut-after.webp" width="2888" height="1808" alt="The same settings screen with numbered badges 1 to 5 and short handwritten instructions next to each control." decoding="async">
+        <span class="cmp-tag cmp-tag-b" aria-hidden="true">Before</span><span class="cmp-tag cmp-tag-a" aria-hidden="true">After</span>
+        <span class="cmp-line" aria-hidden="true"></span>
+        <input type="range" min="0" max="100" value="100" aria-label="Divider position between before and after">
+      </div>
+      <div class="panel-text">
+        <p class="panel-line">Five clicks, five numbers, and the docs page writes itself.</p>
+        <p class="panel-tools">Number badges, text.</p>
+      </div>
+    </div>
+
+    <div class="panel" role="tabpanel" id="panel-red" aria-labelledby="tab-red" tabindex="0" hidden>
+      <div class="cmp" data-cmp>
+        <img class="cmp-before" loading="lazy" src="media/ex-red-before.webp" width="2888" height="1808" alt="Account page showing an email address, a secret API key and card details." decoding="async">
+        <img class="cmp-after" loading="lazy" src="media/ex-red-after.webp" width="2888" height="1808" alt="The same account page with the email, the secret key and the card details pixelated, and a callout reading Hidden before sharing." decoding="async">
+        <span class="cmp-tag cmp-tag-b" aria-hidden="true">Before</span><span class="cmp-tag cmp-tag-a" aria-hidden="true">After</span>
+        <span class="cmp-line" aria-hidden="true"></span>
+        <input type="range" min="0" max="100" value="100" aria-label="Divider position between before and after">
+      </div>
+      <div class="panel-text">
+        <p class="panel-line">Hide the key before the screenshot reaches a chat that never forgets.</p>
+        <p class="panel-tools">Pixelate, callout.</p>
+      </div>
+    </div>
+
+    <div class="panel" role="tabpanel" id="panel-des" aria-labelledby="tab-des" tabindex="0" hidden>
+      <div class="cmp" data-cmp>
+        <img class="cmp-before" loading="lazy" src="media/ex-des-before.webp" width="2888" height="1808" alt="Product page for a table lamp, unannotated." decoding="async">
+        <img class="cmp-after" loading="lazy" src="media/ex-des-after.webp" width="2888" height="1808" alt="The same product page with a spotlight on the details column, the price highlighted, check and cross stamps and handwritten notes about contrast." decoding="async">
+        <span class="cmp-tag cmp-tag-b" aria-hidden="true">Before</span><span class="cmp-tag cmp-tag-a" aria-hidden="true">After</span>
+        <span class="cmp-line" aria-hidden="true"></span>
+        <input type="range" min="0" max="100" value="100" aria-label="Divider position between before and after">
+      </div>
+      <div class="panel-text">
+        <p class="panel-line">Feedback pinned to the pixel it is about, not paragraph four of a message.</p>
+        <p class="panel-tools">Spotlight, highlighter, stamps, text.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── Privacy ───────────── -->
+<section class="privacy" id="privacy" aria-labelledby="privacy-h">
+  <div class="wrap privacy-grid">
+    <div class="privacy-copy">
+      <h2 id="privacy-h">Your screenshot never leaves the tab.</h2>
+      <p>There is no upload to trust, because there is no server that handles images. Pasting, drawing, blurring and exporting all happen in your browser.</p>
+      <ul class="facts">
+        <li><strong>No account.</strong> Nothing to sign up for, nothing to log in to.</li>
+        <li><strong>One optional counter.</strong> The site counts anonymous page views with Google Analytics. It never sees an image, and Settings has an off switch.</li>
+        <li><strong>Open source, MIT.</strong> You do not have to take our word for any of this.</li>
+      </ul>
+      <a class="btn btn-ghost" href="https://github.com/kdkumawat/snapty">
+        <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" class="fill"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Read the source on GitHub
+      </a>
+    </div>
+
+    <figure class="net" id="net">
+      <figcaption>Network activity while a screenshot was pasted, blurred, annotated, copied and exported</figcaption>
+      <div class="net-scroll">
+        <table>
+          <thead><tr><th scope="col">Request</th><th scope="col">Type</th><th scope="col" class="num">Sent</th></tr></thead>
+          <tbody>
+            <tr><td>blob: pasted screenshot <span class="dim">(read from memory)</span></td><td>image</td><td class="num">0 B</td></tr>
+            <tr><td>editor-canvas.js</td><td>script</td><td class="num">0 B</td></tr>
+            <tr><td>konva.js</td><td>script</td><td class="num">0 B</td></tr>
+            <tr><td>annotation-clipboard.js</td><td>script</td><td class="num">0 B</td></tr>
+            <tr><td>6 more chunks of the editor's own code</td><td>script</td><td class="num">0 B</td></tr>
+            <tr><td>Excalifont-Regular.woff2</td><td>font</td><td class="num">0 B</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <dl class="net-sum">
+        <div><dt>Requests</dt><dd>11</dd></div>
+        <div><dt>To another server</dt><dd>0</dd></div>
+        <div class="net-zero"><dt>Image bytes uploaded</dt><dd>0<svg class="mark mark-zero" data-mark="circle" viewBox="0 0 240 88" aria-hidden="true" preserveAspectRatio="none"></svg></dd></div>
+      </dl>
+      <p class="net-foot">Measured in headless Chromium against the development build: every request after the paste, with its body size. Reproduce it with <code>prototypes/landing/tools/netcheck.js</code>, or open DevTools and watch the Network tab yourself.</p>
+    </figure>
+  </div>
+</section>
+
+<!-- ───────────── Closing ───────────── -->
+<section class="close" aria-labelledby="close-h">
+  <div class="wrap close-in">
+    <h2 id="close-h">Your next screenshot is probably already on the clipboard.</h2>
+    <div class="close-act">
+      <span class="note note-close" aria-hidden="true">opens instantly</span>
+      <svg class="mark mark-close" data-mark="ctaArrow" viewBox="0 0 160 84" aria-hidden="true"></svg>
+      <a class="btn btn-lg" href="http://localhost:3001/editor" data-prod="/editor">Open the editor</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <a class="brand" href="#top" aria-label="Snapty, back to top">
+      <img src="assets/logo.svg" width="24" height="24" alt="">
+      <span>Snapty</span>
+    </a>
+    <p>Free and open source under the MIT licence.</p>
+    <nav aria-label="Footer">
+      <a href="http://localhost:3001/guide" data-prod="/guide">Guide</a>
+      <a href="http://localhost:3001/privacy" data-prod="/privacy">Privacy</a>
+      <a href="https://github.com/kdkumawat/snapty">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="marks.js" defer></script>
+<script src="main.js" defer></script>
+</body>
+</html>

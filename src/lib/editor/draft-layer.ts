@@ -19,12 +19,13 @@ import Konva from 'konva';
 import type { FillStyle, StrokeStyle } from '@/types/editor';
 import { calloutPath } from './callout-pointer';
 import { computeFreehandOutline, type FreehandTool } from './freehand';
-import { handDrawnPolyline } from '../hand-drawn';
 import { routeElbow } from './elbow';
 import {
   generateRoughDrawable,
   generateArrowHead,
+  generateLinearDrawables,
   paintDrawable,
+  type LinearArrowhead,
 } from '../rough-renderer';
 import type { GuideLine } from './snap-guides';
 import type { BindingPreview } from './binding-preview';
@@ -64,6 +65,8 @@ export interface DraftSegmentStyle {
   /** Arrowhead width in px (defaults to headSize). */
   pointerWidth?: number;
   showStartHead?: boolean;
+  startArrowhead?: LinearArrowhead;
+  endArrowhead?: LinearArrowhead;
 }
 
 /** Geometry of the current box/segment draft, in image coordinates. */
@@ -83,6 +86,12 @@ export interface DraftBoxGeo {
     pointerLength?: number;
     pointerWidth?: number;
     pointerOffset?: number;
+    /** Free tip relative to the body centre (see CalloutElement.pointerTip). */
+    pointerTip?: { x: number; y: number };
+    /** Where the gesture started: the point the callout points at. */
+    tipAbs?: { x: number; y: number };
+    bodyW?: number;
+    bodyH?: number;
   };
 }
 
@@ -94,6 +103,8 @@ export interface DraftSegmentGeo {
   ey: number;
   /** Orthogonal (elbow) routing for the arrow draft preview. */
   elbowed?: boolean;
+  /** Curved arrow type (a 2-point draft still previews straight). */
+  curved?: boolean;
 }
 
 type DraftState =
@@ -145,6 +156,7 @@ export class DraftLayer {
   private guides: GuideLine[] | null = null;
   private marquee: { x: number; y: number; w: number; h: number; accent?: string; fill?: string } | null = null;
   private eraser: { x1: number; y1: number; x2: number; y2: number } | null = null;
+  private eraserTrail: { points: number[]; zoom: number } | null = null;
   private bindingPreview: { preview: BindingPreview; accent: string; zoom: number } | null = null;
   private hoverOutline: { x: number; y: number; w: number; h: number } | null = null;
   private labelAnchor: { x: number; y: number; zoom: number } | null = null;
@@ -379,7 +391,7 @@ export class DraftLayer {
       const pointerW = d.geo.extra?.pointerWidth ?? 20;
       const pDir = (d.geo.extra?.pointerDirection ?? 'bottom-left') as import('@/types/editor').CalloutPointerDirection;
       const pOffset = d.geo.extra?.pointerOffset ?? 0.5;
-      const pathD = calloutPath(w, h, pDir, pOffset, pointerLen, pointerW, cornerR);
+      const pathD = calloutPath(w, h, pDir, pOffset, pointerLen, pointerW, cornerR, d.geo.extra?.pointerTip);
 
       const node = new Konva.Shape({
         x, y,
@@ -468,129 +480,27 @@ export class DraftLayer {
       for (const p of interior) pts.push(p.x, p.y);
       pts.push(ex, ey);
     }
-    const headSize = s.headSize ?? 0;
-
-    if (d.handDrawn) {
-      // Multi-point (routed) drafts skip the rough drawable — the committed
-      // hand-drawn elbow renders as a jittered plain Arrow, so the preview
-      // mirrors that instead of approximating with a rough line.
-      if (pts.length > 4) {
-        const jittered = handDrawnPolyline(pts, d.seed, s.strokeWidth, 0.2);
-        const node = d.node && d.node.getClassName() === 'Arrow' ? (d.node as Konva.Arrow) : null;
-        const attrs = {
-          points: jittered,
-          stroke: s.stroke,
-          strokeWidth: s.strokeWidth,
-          fill: s.fill,
-          pointerLength: d.kind === 'arrow' ? headSize : 0,
-          pointerWidth: d.kind === 'arrow' ? (s.pointerWidth ?? headSize) : 0,
-          dash: dashOf(s.strokeStyle),
-          opacity: s.opacity,
-        };
-        if (node) node.setAttrs(attrs);
-        else {
-          const arrow = new Konva.Arrow({ ...attrs, listening: false });
-          this.replaceNode(arrow);
-        }
-        this.draw();
-        return;
-      }
-      const drawable = generateRoughDrawable({
-        kind: 'line',
-        seed: d.seed,
-        stroke: s.stroke,
-        strokeWidth: s.strokeWidth,
-        strokeStyle: s.strokeStyle,
-        roughness: s.roughness ?? 1.25,
-        points: pts,
-      });
-      const head = d.kind === 'arrow' && headSize > 0
-        ? generateArrowHead({
-            kind: 'arrow',
-            seed: `${d.seed}-head`,
-            stroke: s.stroke,
-            strokeWidth: s.strokeWidth,
-            strokeStyle: s.strokeStyle,
-            roughness: s.roughness ?? 1.25,
-            points: pts,
-            arrowheadSize: headSize,
-          } as Parameters<typeof generateArrowHead>[0])
-        : null;
-      const startHead = d.kind === 'arrow' && s.showStartHead && headSize > 0
-        ? generateArrowHead({
-            kind: 'arrow',
-            seed: `${d.seed}-start`,
-            stroke: s.stroke,
-            strokeWidth: s.strokeWidth,
-            strokeStyle: s.strokeStyle,
-            roughness: s.roughness ?? 1.25,
-            points: [ex, ey, sx, sy],
-            arrowheadSize: headSize,
-          } as Parameters<typeof generateArrowHead>[0])
-        : null;
-      const node = new Konva.Shape({
-        opacity: s.opacity,
-        listening: false,
-        sceneFunc: (ctx, shape) => {
-          roughSceneFunc(ctx as unknown as CanvasRenderingContext2D, shape as Konva.Shape, drawable, head, startHead);
-        },
-      });
-      this.replaceNode(node);
-      this.draw();
-      return;
-    }
-
-    if (d.kind === 'arrow' && headSize > 0) {
-      const node = d.node && d.node.getClassName() === 'Arrow' ? (d.node as Konva.Arrow) : null;
-      if (node) {
-        node.setAttrs({
-          points: pts,
-          stroke: s.stroke,
-          strokeWidth: s.strokeWidth,
-          fill: s.fill,
-          pointerLength: headSize,
-          pointerWidth: s.pointerWidth ?? headSize,
-          dash: dashOf(s.strokeStyle),
-          opacity: s.opacity,
-        });
-      } else {
-        const arrow = new Konva.Arrow({
-          points: pts,
-          stroke: s.stroke,
-          strokeWidth: s.strokeWidth,
-          fill: s.fill,
-          pointerLength: headSize,
-          pointerWidth: s.pointerWidth ?? headSize,
-          dash: dashOf(s.strokeStyle),
-          opacity: s.opacity,
-          listening: false,
-        });
-        this.replaceNode(arrow);
-      }
-      this.draw();
-      return;
-    }
-
-    const node = d.node && d.node.getClassName() === 'Line' ? (d.node as Konva.Line) : null;
-    if (node) {
-      node.setAttrs({
-        points: pts,
-        stroke: s.stroke,
-        strokeWidth: s.strokeWidth,
-        dash: dashOf(s.strokeStyle),
-        opacity: s.opacity,
-      });
-    } else {
-      const line = new Konva.Line({
-        points: pts,
-        stroke: s.stroke,
-        strokeWidth: s.strokeWidth,
-        dash: dashOf(s.strokeStyle),
-        opacity: s.opacity,
-        listening: false,
-      });
-      this.replaceNode(line);
-    }
+    // Same generator as the committed element, so the preview and the result
+    // are the same drawing.
+    const drawables = generateLinearDrawables({
+      seed: d.seed,
+      points: pts,
+      stroke: s.stroke,
+      strokeWidth: s.strokeWidth,
+      strokeStyle: s.strokeStyle,
+      roughness: s.roughness ?? 1,
+      arrowType: d.geo.elbowed ? 'elbow' : d.geo.curved ? 'round' : 'sharp',
+      startArrowhead: d.kind === 'arrow' ? s.startArrowhead : 'none',
+      endArrowhead: d.kind === 'arrow' ? s.endArrowhead : 'none',
+    });
+    const node = new Konva.Shape({
+      opacity: s.opacity,
+      listening: false,
+      sceneFunc: (ctx) => {
+        for (const drawable of drawables) paintDrawable(ctx as unknown as CanvasRenderingContext2D, drawable, 1);
+      },
+    });
+    this.replaceNode(node);
     this.draw();
   }
 
@@ -600,7 +510,7 @@ export class DraftLayer {
     this.marquee = { x, y, w, h, accent, fill };
     const node = new Konva.Rect({
       x, y, width: Math.max(1, w), height: Math.max(1, h),
-      fill, stroke: accent, strokeWidth: 1, dash: [6, 4],
+      fill, stroke: accent, strokeWidth: 1, strokeScaleEnabled: false,
       listening: false,
     });
     this.setChrome([node]);
@@ -631,6 +541,13 @@ export class DraftLayer {
 
   clearEraser() {
     this.eraser = null;
+    this.eraserTrail = null;
+    this.rebuildChrome();
+  }
+
+  /** Excalidraw's eraser trail: a soft grey stroke following the pointer. */
+  showEraserTrail(points: number[], zoom: number) {
+    this.eraserTrail = { points, zoom };
     this.rebuildChrome();
   }
 
@@ -709,10 +626,18 @@ export class DraftLayer {
       const m = this.marquee;
       nodes.push(new Konva.Rect({
         x: m.x, y: m.y, width: Math.max(1, m.w), height: Math.max(1, m.h),
-        fill: m.fill ?? 'rgba(234,88,12,0.08)',
-        stroke: m.accent ?? '#ea580c',
-        strokeWidth: 1, dash: [6, 4],
+        fill: m.fill ?? 'rgba(0, 0, 200, 0.04)',
+        stroke: m.accent ?? getSelectionTheme().accent,
+        strokeWidth: 1, strokeScaleEnabled: false,
         listening: false,
+      }));
+    }
+    if (this.eraserTrail && this.eraserTrail.points.length >= 4) {
+      const z = this.eraserTrail.zoom > 0 ? this.eraserTrail.zoom : 1;
+      nodes.push(new Konva.Line({
+        points: this.eraserTrail.points,
+        stroke: 'rgba(0,0,0,0.25)', strokeWidth: 5 / z,
+        lineCap: 'round', lineJoin: 'round', tension: 0.4, listening: false,
       }));
     }
     if (this.eraser) {
@@ -735,26 +660,30 @@ export class DraftLayer {
       }
     }
     if (this.bindingPreview) {
-      const { preview, accent, zoom } = this.bindingPreview;
+      const { preview, zoom } = this.bindingPreview;
       const z = zoom > 0 ? zoom : 1;
       const b = preview.bounds;
-      nodes.push(new Konva.Rect({
-        x: b.x,
-        y: b.y,
-        width: Math.max(1, b.w),
-        height: Math.max(1, b.h),
-        stroke: accent,
-        strokeWidth: 1.5 / z,
-        dash: [6 / z, 4 / z],
-        listening: false,
-      }));
-      nodes.push(new Konva.Circle({
+      // A thin trace of the target's own outline in the brand accent,
+      // rotated with it.
+      const w = Math.max(1, b.w);
+      const h = Math.max(1, b.h);
+      const common = {
+        x: b.x + w / 2, y: b.y + h / 2, rotation: preview.rotation,
+        stroke: getSelectionTheme().accent, strokeWidth: 2 / z, listening: false,
+      };
+      if (preview.shape === 'ellipse') {
+        nodes.push(new Konva.Ellipse({ ...common, radiusX: w / 2, radiusY: h / 2 }));
+      } else if (preview.shape === 'diamond') {
+        nodes.push(new Konva.Line({ ...common, points: [0, -h / 2, w / 2, 0, 0, h / 2, -w / 2, 0], closed: true }));
+      } else {
+        nodes.push(new Konva.Rect({ ...common, offsetX: w / 2, offsetY: h / 2, width: w, height: h, cornerRadius: preview.cornerRadius }));
+      }
+      // Excalidraw shows the edge dot only when the end snaps to the outline.
+      if (preview.mode === 'orbit') nodes.push(new Konva.Circle({
         x: preview.anchor.x,
         y: preview.anchor.y,
-        radius: 3.5 / z,
-        fill: accent,
-        stroke: '#ffffff',
-        strokeWidth: 1 / z,
+        radius: 3 / z,
+        fill: '#6f6f6f',
         listening: false,
       }));
     }

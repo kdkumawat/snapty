@@ -4,120 +4,213 @@ import React from 'react';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { useEditorStore } from '@/store/editor-store';
 import { modKey } from '@/hooks/use-keyboard-shortcuts';
-import { TOOL_SHORTCUTS, formatToolKeys } from '@/lib/tool-shortcuts';
-import { Keyboard } from 'lucide-react';
+import { TOOL_SHORTCUTS } from '@/lib/tool-shortcuts';
+import { ALL_TOOLS } from '@/components/editor/toolbar/floating-toolbar';
+import { Kbd } from '@/components/editor/ui/kbd';
+import { Search } from '@/components/editor/ui/icons';
 import { cn } from '@/lib/utils';
 
-const M = modKey;
+// Each alternative is a space-separated key combo; "Mod" is Ctrl or Cmd.
+type Row = { name: string; hint?: string; keys: string[]; icon?: React.ReactNode };
+type Section = { title: string; rows: Row[] };
 
-type Row = { keys: string; name: string; hint: string };
+const toolIcon = Object.fromEntries(ALL_TOOLS.map((t) => [t.id, t.icon]));
 
-const GENERAL: Row[] = [
-  { keys: 'Space', name: 'Pan (hold)', hint: 'Temporary hand tool' },
-  { keys: 'Esc', name: 'Back to selection', hint: 'Clear selection and exit tools' },
-  { keys: '?', name: 'Shortcuts', hint: 'Open this panel' },
-  { keys: `${M}+K`, name: 'Command palette', hint: 'Search tools and actions' },
-  { keys: `${M}+Z`, name: 'Undo', hint: 'Undo last change' },
-  { keys: `${M}+Shift+Z`, name: 'Redo', hint: 'Redo last undo' },
-  { keys: 'Enter', name: 'Add / edit text', hint: 'Type on the selected shape, or edit a text annotation' },
-  { keys: 'Delete', name: 'Delete selected', hint: 'Remove selection' },
-  { keys: 'Arrows', name: 'Nudge', hint: 'Move 1px (Shift moves 10px)' },
-  { keys: `${M}+A`, name: 'Select all', hint: 'Select every annotation' },
-  { keys: `${M}+D`, name: 'Duplicate', hint: 'Clone selection' },
-  { keys: `${M}+G`, name: 'Group', hint: 'Group selection' },
-  { keys: `${M}+Shift+G`, name: 'Ungroup', hint: 'Ungroup selection' },
-  { keys: `${M}+C`, name: 'Copy', hint: 'Copy selected annotations, or the whole image when nothing is selected' },
-  { keys: `${M}+V`, name: 'Paste', hint: 'Paste annotations, or a screenshot from the clipboard' },
-  { keys: `${M}+O`, name: 'Open file', hint: 'Browse a local image' },
-  { keys: `${M}+E`, name: 'Export', hint: 'Open export dialog' },
-  { keys: `${M}+Shift+S`, name: 'Capture screen', hint: 'Grab a window or display' },
-  { keys: `${M}+0`, name: 'Fit to screen', hint: 'Fit image in view' },
-  { keys: `${M}+1`, name: 'Actual size', hint: 'Zoom to 100%' },
-  { keys: 'Shift', name: 'Constrain', hint: 'Square or snap angles' },
-  { keys: 'Alt', name: 'From center', hint: 'Draw from center' },
+// Ordered by how often a screenshot annotator reaches for them. Tool rows come
+// from the shared tool list, so they cannot drift from the toolbar.
+const SECTIONS: Section[] = [
+  {
+    title: 'Tools',
+    rows: TOOL_SHORTCUTS.map((t) => ({
+      name: t.label,
+      hint: t.hint,
+      keys: t.digit ? [t.letter, t.digit] : [t.letter],
+      icon: toolIcon[t.id],
+    })),
+  },
+  {
+    title: 'Drawing',
+    rows: [
+      { name: 'Constrain', hint: 'Square or circle, or lock a line to 15° steps', keys: ['Shift'] },
+      { name: 'From center', hint: 'Draw outward from where you start', keys: ['Alt'] },
+      { name: 'Skip binding', hint: 'Hold to keep an arrow from attaching to shapes', keys: ['Mod'] },
+      { name: 'Arrow type', hint: 'With the Arrow tool: straight, curved, elbow', keys: ['A'] },
+      { name: 'Restore erased', hint: 'With the Eraser: hold to un-mark shapes', keys: ['Alt'] },
+      { name: 'Restart numbering', hint: 'The next Number is 1', keys: ['Mod Shift 0'] },
+    ],
+  },
+  {
+    title: 'Text',
+    rows: [
+      { name: 'Add or edit text', hint: 'On a selected shape or text', keys: ['Enter'] },
+      { name: 'Add text', hint: 'Double-click the canvas or a shape', keys: ['Double-click'] },
+      { name: 'Finish typing', hint: 'Keeps what you typed', keys: ['Enter', 'Esc'] },
+      { name: 'New line', keys: ['Shift Enter', 'Mod Enter'] },
+    ],
+  },
+  {
+    title: 'Selection and editing',
+    rows: [
+      { name: 'Undo', keys: ['Mod Z'] },
+      { name: 'Redo', keys: ['Mod Shift Z', 'Mod Y'] },
+      { name: 'Delete', hint: 'Remove the selection', keys: ['Delete', 'Backspace'] },
+      { name: 'Select all', keys: ['Mod A'] },
+      { name: 'Invert selection', keys: ['Mod Shift A'] },
+      { name: 'Select next', hint: 'Cycle through annotations', keys: ['Tab', 'Shift Tab'] },
+      { name: 'Add to selection', keys: ['Shift Click'] },
+      { name: 'Deselect', hint: 'Also returns to the Selection tool', keys: ['Esc'] },
+      { name: 'Nudge', hint: '1px, or 10px with Shift', keys: ['Arrows', 'Shift Arrows'] },
+      { name: 'Copy', hint: 'The selection, or the whole image when nothing is selected', keys: ['Mod C'] },
+      { name: 'Cut', keys: ['Mod X'] },
+      { name: 'Paste', hint: 'Annotations, or an image from the clipboard', keys: ['Mod V'] },
+      { name: 'Duplicate', keys: ['Mod D', 'Alt Drag'] },
+      { name: 'Duplicate in place', keys: ['Mod Shift D'] },
+      { name: 'Copy style', keys: ['Mod Alt C'] },
+      { name: 'Paste style', keys: ['Mod Alt V'] },
+      { name: 'Clear drawings', hint: 'Removes every annotation, undo brings them back', keys: ['Mod Shift Backspace'] },
+    ],
+  },
+  {
+    title: 'Arrange',
+    rows: [
+      { name: 'Group', keys: ['Mod G'] },
+      { name: 'Ungroup', keys: ['Mod Shift G'] },
+      { name: 'Bring forward', keys: [']'] },
+      { name: 'Send backward', keys: ['['] },
+      { name: 'Flip horizontal', keys: ['Shift H'] },
+      { name: 'Flip vertical', keys: ['Shift V'] },
+    ],
+  },
+  {
+    title: 'View',
+    rows: [
+      { name: 'Pan', hint: 'Hold to use the hand, release to go back', keys: ['Space'] },
+      { name: 'Fit to screen', keys: ['Mod 0'] },
+      { name: 'Actual size', hint: 'Zoom to 100%', keys: ['Mod 1'] },
+      { name: 'Zoom to selection', keys: ['Mod 2'] },
+      { name: 'Zoom in', keys: ['Mod +'] },
+      { name: 'Zoom out', keys: ['Mod -'] },
+    ],
+  },
+  {
+    title: 'File and export',
+    rows: [
+      { name: 'Open image', keys: ['Mod O'] },
+      { name: 'Download', hint: 'Opens the download options', keys: ['Mod E'] },
+      { name: 'Save project', hint: 'A .snapty file you can reopen', keys: ['Mod S'] },
+      { name: 'Capture screen', hint: 'Grab a window or display', keys: ['Mod Shift S'] },
+      { name: 'Close image', hint: 'Removes the image and its drawings, undo brings them back', keys: ['Mod Shift X'] },
+    ],
+  },
+  {
+    title: 'App',
+    rows: [
+      { name: 'Command palette', keys: ['Mod K'] },
+      { name: 'Keyboard shortcuts', keys: ['?'] },
+      { name: 'Toggle dark mode', keys: ['Alt Shift D'] },
+    ],
+  },
 ];
 
-function ShortcutRow({ keys, name, hint }: Row) {
+const tokens = (alt: string) => alt.split(' ').map((k) => (k === 'Mod' ? modKey : k));
+const aliases: Record<string, string> = { ctrl: modKey.toLowerCase(), cmd: modKey.toLowerCase(), command: modKey.toLowerCase(), control: modKey.toLowerCase() };
+
+// Words match the name or hint anywhere; a single character must be a whole
+// key, so "z" finds Undo but not every row containing the letter.
+function matches(row: Row, query: string) {
+  const text = `${row.name} ${row.hint ?? ''}`.toLowerCase();
+  const keys = row.keys.map((a) => tokens(a).map((k) => k.toLowerCase()));
+  return query.toLowerCase().split(/\s+/).filter(Boolean).every((raw) => {
+    const w = aliases[raw] ?? raw;
+    return w.length > 1
+      ? text.includes(w) || keys.some((a) => a.some((k) => k.includes(w)))
+      : keys.some((a) => a.includes(w));
+  });
+}
+
+function Keys({ keys }: { keys: string[] }) {
   return (
-    <div className="flex items-start justify-between gap-4 py-2 px-1 rounded-lg hover:bg-secondary/40 transition-colors">
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-foreground leading-tight">{name}</p>
-        <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{hint}</p>
-      </div>
-      <div className="flex flex-wrap justify-end gap-1 shrink-0 max-w-[9rem]">
-        {keys.split(' / ').map((k) => (
-          <kbd key={k} className="snapty-kbd">{k}</kbd>
-        ))}
-      </div>
-    </div>
+    <span className="flex flex-wrap justify-end items-center gap-x-1.5 gap-y-1 shrink-0 max-w-[55%]">
+      {keys.map((alt, i) => (
+        <React.Fragment key={alt}>
+          {i > 0 && <span className="text-xs text-muted-foreground">or</span>}
+          <span className="inline-flex gap-1">
+            {tokens(alt).map((k, j) => <Kbd key={j} className="!text-foreground">{k}</Kbd>)}
+          </span>
+        </React.Fragment>
+      ))}
+    </span>
   );
 }
 
 export default function HelpDialog() {
   const show = useEditorStore((s) => s.showHelpDialog);
   const setShow = useEditorStore((s) => s.setShowHelpDialog);
+  const [query, setQuery] = React.useState('');
+  const inputRef = React.useRef<HTMLInputElement>(null);
+
+  const sections = SECTIONS
+    .map((s) => ({ ...s, rows: s.rows.filter((r) => matches(r, query)) }))
+    .filter((s) => s.rows.length);
 
   return (
-    <Dialog open={show} onOpenChange={setShow}>
+    <Dialog open={show} onOpenChange={(v) => { setShow(v); if (!v) setQuery(''); }}>
       <DialogContent
         showCloseButton
+        onOpenAutoFocus={(e) => { e.preventDefault(); inputRef.current?.focus(); }}
+        // Escape clears the search first, then closes.
+        onEscapeKeyDown={(e) => { if (query) { e.preventDefault(); setQuery(''); } }}
         className={cn(
-          'bg-surface border-border text-foreground p-0 gap-0 overflow-hidden',
-          'w-[min(40rem,calc(100vw-1.5rem))] max-w-none',
-          'top-[max(1rem,4vh)] translate-y-0',
-          'max-h-[min(90dvh,44rem)] flex flex-col shadow-2xl',
+          'bg-surface border-border text-foreground p-0 gap-0 overflow-hidden flex flex-col rounded-[8px] shadow-[var(--floating-shadow)]',
+          'w-[min(46rem,calc(100vw-1.5rem))] max-w-none sm:max-w-none',
+          'top-[max(1rem,4vh)] translate-y-0 max-h-[min(90dvh,48rem)]',
+          'max-sm:top-0 max-sm:left-0 max-sm:translate-x-0 max-sm:w-full max-sm:h-dvh max-sm:max-h-none max-sm:rounded-none',
         )}
       >
-        <div className="shrink-0 px-5 pt-5 pb-4 border-b border-border bg-surface">
-          <div className="flex items-center gap-3 pr-8">
-            <div className="w-10 h-10 rounded-xl bg-accent/12 text-accent flex items-center justify-center">
-              <Keyboard className="w-5 h-5" strokeWidth={1.75} />
-            </div>
-            <div>
-              <DialogTitle className="text-lg font-semibold tracking-tight">
-                Keyboard shortcuts
-              </DialogTitle>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Double-click the canvas or any annotation to add text
-              </p>
-            </div>
+        <div className="shrink-0 border-b border-border">
+          <DialogTitle className="px-4 pt-3.5 pb-1 text-base font-semibold">Keyboard shortcuts</DialogTitle>
+          <div className="flex items-center gap-2 px-4">
+            <Search className="w-4 h-4 text-muted-foreground shrink-0" />
+            <input
+              ref={inputRef}
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              aria-label="Search shortcuts"
+              placeholder="Search by name or key"
+              className="w-full h-10 text-sm bg-transparent outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:hidden"
+            />
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4">
-          <div className="grid sm:grid-cols-2 gap-6 sm:gap-8">
-            <section>
-              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-                Tools
-              </h3>
-              <div className="divide-y divide-border/60">
-                {TOOL_SHORTCUTS.map((t) => (
-                  <ShortcutRow
-                    key={t.id}
-                    keys={formatToolKeys(t)}
-                    name={t.label}
-                    hint={t.hint}
-                  />
-                ))}
-              </div>
-            </section>
-            <section>
-              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-                General
-              </h3>
-              <div className="divide-y divide-border/60">
-                {GENERAL.map((row) => (
-                  <ShortcutRow key={row.keys + row.name} {...row} />
-                ))}
-              </div>
-            </section>
-          </div>
-        </div>
-
-        <div className="shrink-0 px-5 py-3 border-t border-border bg-secondary/30">
-          <p className="text-[11px] text-muted-foreground text-center">
-            All processing stays in your browser. Nothing is uploaded.
-          </p>
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-3">
+          {sections.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">No shortcuts match &ldquo;{query}&rdquo;</p>
+          ) : (
+            <div className={cn(!query && 'sm:columns-2 sm:gap-8')}>
+              {sections.map((s) => (
+                <section key={s.title} className="mb-4">
+                  {s.rows.map((r, i) => (
+                    // The heading rides inside the first row's unbreakable block,
+                    // so a column never ends on a heading with its rows overleaf.
+                    <div key={r.name} className="break-inside-avoid">
+                    {i === 0 && <h3 className="py-1 text-xs font-medium text-muted-foreground">{s.title}</h3>}
+                    <div className="flex items-start justify-between gap-3 py-1.5">
+                      <div className="flex items-start gap-2 min-w-0">
+                        {r.icon && <span className="mt-0.5 text-muted-foreground shrink-0">{r.icon}</span>}
+                        <div className="min-w-0">
+                          <p className="text-sm text-foreground leading-tight">{r.name}</p>
+                          {r.hint && <p className="mt-0.5 text-xs text-muted-foreground leading-snug">{r.hint}</p>}
+                        </div>
+                      </div>
+                      <Keys keys={r.keys} />
+                    </div>
+                    </div>
+                  ))}
+                </section>
+              ))}
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>

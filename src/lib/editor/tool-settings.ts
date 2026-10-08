@@ -31,6 +31,9 @@ export type SettingKey =
   | 'blurRadius'
   | 'pixelSize'
   | 'highlighterWidth'
+  | 'highlighterColor'
+  | 'spotlightDim'
+  | 'stepStyle'
   | 'stepRadius'
   | 'stepNumbering'
   | 'pointerLength'
@@ -46,7 +49,6 @@ export type SettingSpec =
       min: number;
       max: number;
       step: number;
-      railLabel?: string;
       /**
        * Authored unscaled: the element stores `value * getImageToolScale(...)`.
        * Sliders always show the unscaled value.
@@ -54,27 +56,25 @@ export type SettingSpec =
       scaled?: boolean;
       format?: (v: number) => string;
     }
-  | { kind: 'preset'; key: SettingKey; label: string; railLabel?: string }
-  | { kind: 'action'; key: SettingKey; label: string; railLabel?: string };
+  | { kind: 'preset'; key: SettingKey; label: string }
+  | { kind: 'action'; key: SettingKey; label: string };
 
+// Labels are Excalidraw's own section names.
 export const SETTING_SPECS: Record<SettingKey, SettingSpec> = {
   strokeColor: { kind: 'color', key: 'strokeColor', label: 'Stroke' },
   fillColor: { kind: 'color', key: 'fillColor', label: 'Background', allowTransparent: true },
   strokeWidth: { kind: 'preset', key: 'strokeWidth', label: 'Stroke width' },
   strokeStyle: { kind: 'preset', key: 'strokeStyle', label: 'Stroke style' },
-  fillStyle: { kind: 'preset', key: 'fillStyle', label: 'Fill style' },
+  fillStyle: { kind: 'preset', key: 'fillStyle', label: 'Fill' },
   roughness: { kind: 'preset', key: 'roughness', label: 'Sloppiness' },
   cornerRadius: { kind: 'preset', key: 'cornerRadius', label: 'Edges' },
   arrowheads: { kind: 'preset', key: 'arrowheads', label: 'Arrowheads' },
-  arrowPath: { kind: 'preset', key: 'arrowPath', label: 'Arrow path', railLabel: 'Path' },
-  fontFamily: { kind: 'preset', key: 'fontFamily', label: 'Font style', railLabel: 'Style' },
-  fontStyle: { kind: 'preset', key: 'fontStyle', label: 'Bold / Italic', railLabel: 'Bold' },
-  textAlign: { kind: 'preset', key: 'textAlign', label: 'Alignment', railLabel: 'Align' },
-  textVerticalAlign: { kind: 'preset', key: 'textVerticalAlign', label: 'Vertical', railLabel: 'VAlign' },
-  fontSize: {
-    kind: 'slider', key: 'fontSize', label: 'Font size', railLabel: 'Size',
-    min: 12, max: 72, step: 1, scaled: true,
-  },
+  arrowPath: { kind: 'preset', key: 'arrowPath', label: 'Arrow type' },
+  fontFamily: { kind: 'preset', key: 'fontFamily', label: 'Font family' },
+  fontStyle: { kind: 'preset', key: 'fontStyle', label: 'Bold / Italic' },
+  textAlign: { kind: 'preset', key: 'textAlign', label: 'Text align' },
+  textVerticalAlign: { kind: 'preset', key: 'textVerticalAlign', label: 'Vertical align' },
+  fontSize: { kind: 'preset', key: 'fontSize', label: 'Font size' },
   magnification: {
     kind: 'slider', key: 'magnification', label: 'Zoom',
     min: 1.5, max: 4, step: 0.25, format: (v) => `${v.toFixed(2).replace(/\.?0+$/, '')}x`,
@@ -97,18 +97,24 @@ export const SETTING_SPECS: Record<SettingKey, SettingSpec> = {
   },
   opacity: {
     kind: 'slider', key: 'opacity', label: 'Opacity',
-    min: 0.1, max: 1, step: 0.05, format: (v) => `${Math.round(v * 100)}%`,
+    min: 0, max: 1, step: 0.1, format: (v) => `${Math.round(v * 100)}`,
   },
+  highlighterColor: { kind: 'color', key: 'highlighterColor', label: 'Stroke' },
+  spotlightDim: {
+    kind: 'slider', key: 'spotlightDim', label: 'Dim',
+    min: 0.1, max: 0.9, step: 0.05, format: (v) => `${Math.round(v * 100)}%`,
+  },
+  stepStyle: { kind: 'preset', key: 'stepStyle', label: 'Style' },
   stepNumbering: { kind: 'action', key: 'stepNumbering', label: 'Numbering' },
   pointerLength: {
-    kind: 'slider', key: 'pointerLength', label: 'Pointer length', railLabel: 'Length',
+    kind: 'slider', key: 'pointerLength', label: 'Pointer length',
     min: 8, max: 100, step: 2, scaled: true,
   },
   pointerWidth: {
-    kind: 'slider', key: 'pointerWidth', label: 'Pointer width', railLabel: 'Width',
+    kind: 'slider', key: 'pointerWidth', label: 'Pointer width',
     min: 8, max: 60, step: 2, scaled: true,
   },
-  pointerDirection: { kind: 'preset', key: 'pointerDirection', label: 'Pointer direction', railLabel: 'Direction' },
+  pointerDirection: { kind: 'preset', key: 'pointerDirection', label: 'Pointer direction' },
 };
 
 /**
@@ -121,28 +127,29 @@ export const TOOL_SETTINGS: Record<ToolType, SettingKey[]> = {
   crop: [],
   eraser: [],
 
-  rectangle: ['strokeColor', 'fillColor', 'strokeWidth', 'strokeStyle', 'fillStyle', 'roughness', 'cornerRadius', 'opacity'],
-  'rounded-rect': ['strokeColor', 'fillColor', 'strokeWidth', 'strokeStyle', 'fillStyle', 'roughness', 'cornerRadius', 'opacity'],
-  circle: ['strokeColor', 'fillColor', 'strokeWidth', 'strokeStyle', 'fillStyle', 'roughness', 'opacity'],
-  diamond: ['strokeColor', 'fillColor', 'strokeWidth', 'strokeStyle', 'fillStyle', 'roughness', 'opacity'],
+  rectangle: ['strokeColor', 'fillColor', 'fillStyle', 'strokeWidth', 'strokeStyle', 'roughness', 'cornerRadius', 'opacity'],
+  'rounded-rect': ['strokeColor', 'fillColor', 'fillStyle', 'strokeWidth', 'strokeStyle', 'roughness', 'cornerRadius', 'opacity'],
+  circle: ['strokeColor', 'fillColor', 'fillStyle', 'strokeWidth', 'strokeStyle', 'roughness', 'opacity'],
+  diamond: ['strokeColor', 'fillColor', 'fillStyle', 'strokeWidth', 'strokeStyle', 'roughness', 'cornerRadius', 'opacity'],
 
-  arrow: ['strokeColor', 'strokeWidth', 'strokeStyle', 'roughness', 'arrowheads', 'arrowPath', 'opacity'],
-  line: ['strokeColor', 'strokeWidth', 'strokeStyle', 'roughness', 'arrowheads', 'opacity'],
+  arrow: ['strokeColor', 'strokeWidth', 'strokeStyle', 'roughness', 'arrowPath', 'arrowheads', 'opacity'],
+  line: ['strokeColor', 'strokeWidth', 'strokeStyle', 'roughness', 'opacity'],
 
   // Freehand ignores dash at render, so no strokeStyle.
   pencil: ['strokeColor', 'strokeWidth', 'opacity'],
   // Draws with highlighterWidth, never strokeWidth.
-  highlighter: ['strokeColor', 'highlighterWidth', 'opacity'],
+  highlighter: ['highlighterColor', 'highlighterWidth', 'opacity'],
 
-  text: ['strokeColor', 'fontFamily', 'fontStyle', 'textAlign', 'textVerticalAlign', 'fontSize', 'opacity'],
-  step: ['strokeColor', 'stepRadius', 'stepNumbering', 'opacity'],
-  callout: ['strokeColor', 'fillColor', 'strokeWidth', 'strokeStyle', 'fillStyle', 'roughness', 'cornerRadius', 'pointerLength', 'pointerWidth', 'pointerDirection', 'opacity'],
+  text: ['strokeColor', 'fontFamily', 'fontSize', 'textAlign', 'textVerticalAlign', 'opacity'],
+  step: ['strokeColor', 'stepStyle', 'stepRadius', 'stepNumbering', 'opacity'],
+  // The pointer is aimed with its canvas handle, so it has no panel controls.
+  callout: ['strokeColor', 'fillColor', 'fillStyle', 'strokeWidth', 'strokeStyle', 'roughness', 'cornerRadius', 'opacity'],
 
   magnifier: ['strokeColor', 'strokeWidth', 'strokeStyle', 'roughness', 'magnification', 'opacity'],
 
   blur: ['blurRadius', 'opacity'],
   pixelate: ['pixelSize', 'opacity'],
-  spotlight: ['opacity'],
+  spotlight: ['spotlightDim', 'cornerRadius'],
 };
 
 /** Order-stable union of the settings supported by every given type. */
@@ -161,35 +168,26 @@ export function settingsForTypes(types: ToolType[]): SettingKey[] {
   return out;
 }
 
-/** Short caption under rail icons (avoids duplicate "Font" from label.split). */
-export function settingRailLabel(key: SettingKey): string {
-  const spec = SETTING_SPECS[key];
-  if ('railLabel' in spec && spec.railLabel) return spec.railLabel;
-  return spec.label.split(' ')[0] ?? spec.label;
-}
-
 /** Does this tool/element type expose `key`? */
 export function toolHasSetting(type: ToolType, key: SettingKey): boolean {
   return (TOOL_SETTINGS[type] ?? []).includes(key);
 }
 
 export type SettingVisibilityCtx = {
-  handDrawn: boolean;
   hasClosedLabel: boolean;
   fillIsPainted: boolean;
 };
 
 /**
  * Drop settings that cannot affect the current selection / tool.
- * Registry still lists them so turning hand-drawn on (etc.) brings them back.
+ * Like Excalidraw, Fill only appears once a background color is set.
  */
 export function visibleSettingsFor(
   keys: SettingKey[],
   ctx: SettingVisibilityCtx,
 ): SettingKey[] {
   return keys.filter((k) => {
-    if (k === 'roughness') return ctx.handDrawn;
-    if (k === 'fillStyle') return ctx.handDrawn && ctx.fillIsPainted;
+    if (k === 'fillStyle') return ctx.fillIsPainted;
     if (k === 'textVerticalAlign') return ctx.hasClosedLabel;
     return true;
   });

@@ -24,6 +24,7 @@ export default function CanvasContextMenu({ children }: { children: React.ReactN
   const ungroupSelected = useEditorStore((s) => s.ungroupSelected);
   const alignSelected = useEditorStore((s) => s.alignSelected);
   const distributeSelected = useEditorStore((s) => s.distributeSelected);
+  const flipSelected = useEditorStore((s) => s.flipSelected);
   const bringForward = useEditorStore((s) => s.bringForward);
   const sendBackward = useEditorStore((s) => s.sendBackward);
   const lockSelected = useEditorStore((s) => s.lockSelected);
@@ -153,6 +154,15 @@ export default function CanvasContextMenu({ children }: { children: React.ReactN
             onSelect={() => selectedElementIds.forEach(sendBackward)}
           >
             Send back
+          </ContextMenu.Item>
+          <ContextMenu.Separator className="h-px my-1 bg-border" />
+          <ContextMenu.Item className={itemClass} disabled={!hasSelection} onSelect={() => flipSelected('horizontal')}>
+            Flip horizontal
+            <span className="text-xs text-muted-foreground">Shift+H</span>
+          </ContextMenu.Item>
+          <ContextMenu.Item className={itemClass} disabled={!hasSelection} onSelect={() => flipSelected('vertical')}>
+            Flip vertical
+            <span className="text-xs text-muted-foreground">Shift+V</span>
           </ContextMenu.Item>
           <ContextMenu.Separator className="h-px my-1 bg-border" />
           <ContextMenu.Item className={itemClass} disabled={!hasSelection} onSelect={locked ? unlockSelected : lockSelected}>

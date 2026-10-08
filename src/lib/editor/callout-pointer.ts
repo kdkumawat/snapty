@@ -9,6 +9,100 @@
  */
 import type { CalloutPointerDirection } from '@/types/editor';
 
+/** Pointer tip relative to the centre of the body. */
+export type CalloutTip = { x: number; y: number };
+
+/**
+ * The tip a callout points at, relative to its body centre. Every callout is
+ * drawn from this one value: callouts saved before free tips existed derive
+ * it from their old direction / offset / length fields, and convert for good
+ * the first time they are moved, resized or re-aimed.
+ */
+export function calloutTipOf(co: {
+  width: number; height: number; pointerTip?: CalloutTip;
+  pointerDirection?: CalloutPointerDirection; pointerOffset?: number; pointerLength?: number; pointerWidth?: number;
+}): CalloutTip {
+  if (co.pointerTip) return co.pointerTip;
+  const w = Math.abs(co.width);
+  const h = Math.abs(co.height);
+  const t = calloutPointerTip(w, h, co.pointerDirection ?? 'bottom-left', co.pointerOffset ?? 0.5, co.pointerLength ?? 24, co.pointerWidth ?? 20);
+  return { x: t.x - w / 2, y: t.y - h / 2 };
+}
+
+/**
+ * Keep callout tips on their targets. When a commit moves or resizes a
+ * callout's body on its own, the tip (stored relative to the body centre)
+ * is rewritten so its absolute position does not change: the bubble moves,
+ * the thing it points at does not. A callout that travels with other
+ * elements (multi-select drag, select-all nudge) keeps its tail rigid.
+ */
+export function pinCalloutTips<T extends { id: string; type: string; x: number; y: number; groupId?: string }>(prev: T[], next: T[]): T[] {
+  if (prev === next) return next;
+  const before = new Map(prev.map((el) => [el.id, el]));
+  type Box = T & { width: number; height: number; pointerTip?: CalloutTip };
+  const moved = (a: T, b: T) => a.x !== b.x || a.y !== b.y;
+  let out: T[] | null = null;
+  next.forEach((el, i) => {
+    if (el.type !== 'callout') return;
+    const old = before.get(el.id) as Box | undefined;
+    const cur = el as Box;
+    if (!old || old === cur) return;
+    const geometryChanged = moved(old, cur) || old.width !== cur.width || old.height !== cur.height;
+    // An explicit re-aim (a new pointerTip object) is left exactly as given.
+    if (!geometryChanged || old.pointerTip !== cur.pointerTip) return;
+    const others = next.some((o) => {
+      if (o.id === el.id || (el.groupId && o.groupId === el.groupId)) return false;
+      const p = before.get(o.id);
+      return !!p && p !== o && moved(p, o);
+    });
+    if (others) return;
+    const tip = calloutTipOf(old as never);
+    const absX = old.x + old.width / 2 + tip.x;
+    const absY = old.y + old.height / 2 + tip.y;
+    out = out ?? next.slice();
+    out[i] = { ...cur, pointerTip: { x: absX - (cur.x + cur.width / 2), y: absY - (cur.y + cur.height / 2) } };
+  });
+  return out ?? next;
+}
+
+/**
+ * Callout with a free tip: a rounded rectangle whose tail leaves the side
+ * facing the tip and runs straight to it. The tail's base slides along that
+ * side to follow the tip, staying clear of the rounded corners. A tip inside
+ * the body yields a plain rounded rectangle (nothing to point at).
+ */
+function freeCalloutPath(w: number, h: number, tip: CalloutTip, pointerWidth: number, cornerRadius: number): string {
+  // Leave a straight run on every side wide enough for the tail's base, so a
+  // pill-shaped body never has the tail crossing a corner arc.
+  const r = Math.max(0, Math.min(cornerRadius, w / 2, h / 2, (Math.min(w, h) - pointerWidth) / 2));
+  const tx = w / 2 + tip.x;
+  const ty = h / 2 + tip.y;
+  const inside = tx >= 0 && tx <= w && ty >= 0 && ty <= h;
+  // The side the centre-to-tip ray leaves through.
+  const horizontal = Math.abs(tip.x) * h > Math.abs(tip.y) * w;
+  const side = inside ? null : horizontal ? (tip.x > 0 ? 'right' : 'left') : (tip.y > 0 ? 'bottom' : 'top');
+  // Base centre: where that ray crosses the side, kept off the corners.
+  const base = (len: number, along: number) => {
+    const room = Math.max(0, len - r * 2);
+    const half = Math.min(pointerWidth / 2, room > 0 ? room / 2 : len / 4);
+    const lo = (room > 0 ? r : 0) + half;
+    const hi = len - lo;
+    return { c: Math.max(lo, Math.min(hi, along)), half };
+  };
+  const bx = base(w, w / 2 + (tip.y !== 0 ? tip.x * ((h / 2) / Math.abs(tip.y)) : 0));
+  const by = base(h, h / 2 + (tip.x !== 0 ? tip.y * ((w / 2) / Math.abs(tip.x)) : 0));
+  const p: string[] = [`M ${r} 0`];
+  if (side === 'top') p.push(`L ${bx.c - bx.half} 0`, `L ${tx} ${ty}`, `L ${bx.c + bx.half} 0`);
+  p.push(`L ${w - r} 0`, `A ${r} ${r} 0 0 1 ${w} ${r}`);
+  if (side === 'right') p.push(`L ${w} ${by.c - by.half}`, `L ${tx} ${ty}`, `L ${w} ${by.c + by.half}`);
+  p.push(`L ${w} ${h - r}`, `A ${r} ${r} 0 0 1 ${w - r} ${h}`);
+  if (side === 'bottom') p.push(`L ${bx.c + bx.half} ${h}`, `L ${tx} ${ty}`, `L ${bx.c - bx.half} ${h}`);
+  p.push(`L ${r} ${h}`, `A ${r} ${r} 0 0 1 0 ${h - r}`);
+  if (side === 'left') p.push(`L 0 ${by.c + by.half}`, `L ${tx} ${ty}`, `L 0 ${by.c - by.half}`);
+  p.push(`L 0 ${r}`, `A ${r} ${r} 0 0 1 ${r} 0`, 'Z');
+  return p.join(' ');
+}
+
 /**
  * Generate the SVG path for a callout shape.
  * The path starts at the top-left and traces clockwise.
@@ -30,7 +124,9 @@ export function calloutPath(
   pointerLength: number,
   pointerWidth: number,
   cornerRadius: number,
+  tip?: CalloutTip,
 ): string {
+  if (tip) return freeCalloutPath(w, h, tip, pointerWidth, cornerRadius);
   const r = Math.min(cornerRadius, w / 2, h / 2);
   const halfW = pointerWidth / 2;
   const t = Math.max(0, Math.min(1, offset));
@@ -246,7 +342,9 @@ export function calloutPointerTip(
   offset: number,
   pointerLength: number,
   _pointerWidth: number,
+  tip?: CalloutTip,
 ): { x: number; y: number } {
+  if (tip) return { x: w / 2 + tip.x, y: h / 2 + tip.y };
   const t = Math.max(0, Math.min(1, offset));
 
   switch (direction) {
@@ -276,11 +374,19 @@ export function calloutFullBounds(
   h: number,
   direction: CalloutPointerDirection,
   pointerLength: number,
+  tip?: CalloutTip,
 ): { x: number; y: number; w: number; h: number } {
   let minX = x;
   let minY = y;
   let maxX = x + w;
   let maxY = y + h;
+  if (tip) {
+    const tx = x + w / 2 + tip.x;
+    const ty = y + h / 2 + tip.y;
+    minX = Math.min(minX, tx); maxX = Math.max(maxX, tx);
+    minY = Math.min(minY, ty); maxY = Math.max(maxY, ty);
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
 
   switch (direction) {
     case 'bottom':

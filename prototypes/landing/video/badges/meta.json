@@ -1,0 +1,41 @@
+{
+ "fps": 30,
+ "w": 1600,
+ "h": 1000,
+ "beats": [
+  {
+   "f": 0,
+   "label": "Number badges",
+   "keys": [
+    "N"
+   ],
+   "cam": null
+  },
+  {
+   "f": 106,
+   "label": "Switch to letters",
+   "keys": [
+    "N"
+   ],
+   "cam": null
+  },
+  {
+   "f": 235,
+   "label": "Pointing badge",
+   "keys": [
+    "N"
+   ],
+   "cam": null
+  },
+  {
+   "f": 312,
+   "label": "Stamp",
+   "keys": [
+    "N"
+   ],
+   "cam": null
+  }
+ ],
+ "keys": [],
+ "frames": 449
+}

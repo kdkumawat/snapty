@@ -11,39 +11,31 @@ export type ToolShortcutDef = {
 };
 
 /**
- * Digits follow the floating toolbar's arrangement (1..9,0 in toolbar order)
- * so the number badge on a tool always matches the key that activates it.
+ * Digits 1-9 follow the toolbar's main bar left to right; every tool also has
+ * a letter. Tools in the More menu have letters only. The order is the toolbar's, then the More menu's.
  */
 export const TOOL_SHORTCUTS: ToolShortcutDef[] = [
   { id: 'select', label: 'Selection', hint: 'Select and move shapes', letter: 'V', digit: '1' },
   { id: 'arrow', label: 'Arrow', hint: 'Point at details', letter: 'A', digit: '2' },
   { id: 'rectangle', label: 'Rectangle', hint: 'Box a region', letter: 'R', digit: '3' },
-  { id: 'text', label: 'Text', hint: 'Add a handwritten label', letter: 'T', digit: '4' },
-  { id: 'step', label: 'Number', hint: 'Step callouts', letter: 'N', digit: '5' },
-  { id: 'blur', label: 'Blur', hint: 'Blur a sensitive region', letter: 'B', digit: '6' },
-  { id: 'pencil', label: 'Draw', hint: 'Freehand draw', letter: 'P', digit: '7' },
-  { id: 'circle', label: 'Ellipse', hint: 'Ellipse or circle', letter: 'O', digit: '8' },
-  { id: 'line', label: 'Line', hint: 'Draw a straight line', letter: 'L', digit: '9' },
-  { id: 'magnifier', label: 'Magnifier', hint: 'Circle a detail to enlarge it', letter: 'M', digit: '0' },
+  { id: 'text', label: 'Text', hint: 'Add a label', letter: 'T', digit: '4' },
+  { id: 'step', label: 'Number', hint: 'Number or stamp steps', letter: 'N', digit: '5' },
+  { id: 'blur', label: 'Blur', hint: 'Blur or pixelate a sensitive region', letter: 'B', digit: '6' },
+  { id: 'highlighter', label: 'Highlighter', hint: 'Semi-transparent stroke', letter: 'K', digit: '7' },
+  { id: 'callout', label: 'Callout', hint: 'Speech bubble with configurable pointer', letter: 'U', digit: '8' },
+  { id: 'crop', label: 'Crop', hint: 'Crop the image', letter: 'C', digit: '9' },
+  { id: 'line', label: 'Line', hint: 'Draw a straight line', letter: 'L' },
+  { id: 'circle', label: 'Ellipse', hint: 'Ellipse or circle', letter: 'O' },
+  { id: 'pencil', label: 'Draw', hint: 'Freehand draw', letter: 'P' },
+  { id: 'eraser', label: 'Eraser', hint: 'Remove annotations', letter: 'E', digit: '0' },
+  { id: 'magnifier', label: 'Magnifier', hint: 'Circle a detail to enlarge it', letter: 'M' },
+  { id: 'spotlight', label: 'Spotlight', hint: 'Dim everything outside a region', letter: 'S' },
   { id: 'hand', label: 'Hand', hint: 'Pan the canvas', letter: 'H' },
-  { id: 'diamond', label: 'Diamond', hint: 'Diamond shape', letter: 'D' },
-  { id: 'highlighter', label: 'Highlighter', hint: 'Semi-transparent stroke', letter: 'K' },
-  { id: 'pixelate', label: 'Pixelate', hint: 'Pixelate a region', letter: 'X' },
-  { id: 'crop', label: 'Crop', hint: 'Crop the image', letter: 'C' },
-  { id: 'eraser', label: 'Eraser', hint: 'Remove annotations', letter: 'E' },
-  // No 'rounded-rect' tool/shortcut: rounding is configured on the Rectangle
-  // tool (Edges setting). Legacy rounded-rect elements still render; the
-  // ToolType stays for backward compatibility.
-  { id: 'spotlight', label: 'Spotlight', hint: 'Dim around a focus area', letter: 'S' },
-  { id: 'callout', label: 'Callout', hint: 'Speech bubble with configurable pointer', letter: 'U' },
 ];
 
 export const letterToTool: Record<string, ToolType> = Object.fromEntries(
   TOOL_SHORTCUTS.map((t) => [t.letter.toLowerCase(), t.id]),
 );
-
-/** Extra letter aliases (legacy). */
-letterToTool.i = 'highlighter';
 
 export const digitToTool: Record<string, ToolType> = Object.fromEntries(
   TOOL_SHORTCUTS.filter((t) => t.digit != null).map((t) => [t.digit!, t.id]),

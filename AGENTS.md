@@ -31,6 +31,15 @@ npm run build        # static export to out/
 - `src/components/editor/` is organized into subdirs (`canvas/`, `chrome/`, `dialogs/`, `empty/`, `menus/`, `panels/`, `shell/`, `toolbar/`, `ui/`) — the structure table in README.md is stale (it still lists the old flat layout and a removed `api/import-url` route).
 - Privacy-first: there is **no server-side image proxy**; images load entirely client-side (`functions/[[path]].ts`).
 
+## Look
+
+- One "sharp" visual language for the whole app, defined as tokens in the last block of `globals.css` (`html.editor-accent`, set on `<html>` by the root layout): ink `#17171a` on white paper, `--border` hairlines, floating surfaces drawn with a 1px rule plus a tight shadow (`--floating-shadow`), one keycap style for every `kbd` / `.snapty-kbd`, Bricolage Grotesque (`--font-display`, self-hosted in `public/fonts`) for h1/h2 and dialog titles, Assistant for UI.
+- Colour: the accent is `NEXT_PUBLIC_EDITOR_ACCENT` (optional `NEXT_PUBLIC_EDITOR_ACCENT_DARK`), read in `src/config/brand.ts`, default `#f97316`. It is for tints, selected/pressed states and focus only. Anything solid that carries white content (primary buttons, logo square, favicon, PWA icons, manifest `theme_color`) uses the deepened form `--button-fill` = `oklch(0.52 0.19 47)` = `#b93300` (white on it is 5.9:1; white on `#f97316` is 2.8:1 and is not allowed). The static SVG/PNG icons hard-code `#b93300`; if the accent env changes, regenerate them.
+- The selected tool stays a soft orange tint with a dark icon (`--accent-container`), never a solid fill.
+- Editor icons and canvas rendering still follow Excalidraw: `src/components/editor/ui/excalidraw-icons.tsx`, Tabler icons under lucide's names in `ui/icons.tsx` (editor files import icons from `ui/icons`, not `lucide-react`), rough.js options and fonts.
+- Theme: one control, `src/components/theme-toggle.tsx`: a single button that cycles System, Dark, Light and shows the current mode's icon (next-themes). Used by the landing nav and the editor main menu; Alt+Shift+D and the `snapty-toggle-theme` event cycle the same three states.
+- Landing page: `src/components/landing/` is generated from the prototype in `prototypes/landing` by `prototypes/landing/tools/port.js` (`landing-page.tsx`, `landing.css` scoped under `.lp`, `marks.ts`), with behaviour in `use-landing-motion.ts`. Do not edit the generated files: change the prototype, run the port, then `tools/compare.js` (it must stay at 0 % difference). Films and before/after images live in `public/landing/`; `prototypes/landing/README.md` explains how they are recorded (real editor via Playwright) and composed (Hyperframes).
+
 ## Static export constraints
 
 - No server routes/API/dynamic rendering. `images.unoptimized: true`.

@@ -8,7 +8,7 @@ import { toastError, toastInfo, toastSuccess } from '@/lib/app-toast';
 import { captureScreenRegion, isScreenCaptureSupported } from '@/lib/screen-capture';
 import type { ToolType } from '@/types/editor';
 import { letterToTool, digitToTool } from '@/lib/tool-shortcuts';
-import { cycleToolSetting } from '@/lib/editor/tool-setting-cycle';
+import { copyStyleToClipboard, getClipboardStyle } from '@/lib/editor/clipboard-style';
 import { copySelectedAnnotations, pasteAnnotationsFromClipboard, hasAnnotationClipboard, suppressNextImagePaste, isImagePasteSuppressed } from '@/lib/editor/annotation-clipboard';
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.userAgent);
@@ -22,25 +22,56 @@ export function useKeyboardShortcuts() {
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       const tgt = e.target as HTMLElement;
+      // The palette's own search box must still close it.
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        const st = useEditorStore.getState();
+        st.setShowCommandPalette(!st.showCommandPalette);
+        return;
+      }
       if (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable) return;
+      if (document.documentElement.dataset.textEdit) return;
+      // Dialogs own their keys (Tab, Escape, arrows), and shortcuts must not act on the canvas behind them.
+      if (tgt.closest('[data-slot="dialog-content"]')) return;
       const isCtrl = e.ctrlKey || e.metaKey;
       const isShift = e.shiftKey;
       const key = e.key.toLowerCase();
       const st = useEditorStore.getState();
+
+      // Excalidraw: Ctrl/Cmd+Alt+C / V copy and paste styles.
+      if (isCtrl && e.altKey && (key === 'c' || key === 'v')) {
+        e.preventDefault();
+        const first = st.elements.find((el) => el.id === st.selectedElementIds[0]);
+        if (key === 'c' && first) {
+          copyStyleToClipboard(first);
+          toastSuccess('Styles copied', `Paste with ${modKey}+Alt+V`);
+        } else if (key === 'v') {
+          const style = getClipboardStyle();
+          if (style && first) st.updateSelectedElements(style);
+        }
+        return;
+      }
+      // Excalidraw: Alt+Shift+D toggles dark mode.
+      if (e.altKey && isShift && key === 'd') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('snapty-toggle-theme'));
+        return;
+      }
+      // Excalidraw: Shift+H / Shift+V flip the selection.
+      if (!isCtrl && isShift && (key === 'h' || key === 'v') && st.selectedElementIds.length) {
+        e.preventDefault();
+        st.flipSelected(key === 'h' ? 'horizontal' : 'vertical');
+        return;
+      }
 
       if (isCtrl && key === 'o') {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('snapty-open-file'));
         return;
       }
-      if (isCtrl && key === 'k') {
-        e.preventDefault();
-        st.setShowCommandPalette(!st.showCommandPalette);
-        return;
-      }
       if (isCtrl && !isShift && key === 'z') { e.preventDefault(); st.undo(); return; }
-      if (isCtrl && isShift && key === 'z') { e.preventDefault(); st.redo(); return; }
-      if (isCtrl && key === 'd') { e.preventDefault(); st.duplicateSelected(); return; }
+      if (isCtrl && ((isShift && key === 'z') || (!isShift && key === 'y'))) { e.preventDefault(); st.redo(); return; }
+      if (isCtrl && !isShift && key === 'd') { e.preventDefault(); st.duplicateSelected(); return; }
       if (isCtrl && !isShift && key === 'g') { e.preventDefault(); st.groupSelected(); return; }
       if (isCtrl && isShift && key === 'g') { e.preventDefault(); st.ungroupSelected(); return; }
       if ((e.key === 'Delete' || e.key === 'Backspace') && !isCtrl) {
@@ -53,7 +84,6 @@ export function useKeyboardShortcuts() {
       if (e.key === 'Escape') {
         st.setSelectedElementIds([]);
         st.setActiveTool('select');
-        st.setStickyTool(false);
         st.setShowCommandPalette(false);
         return;
       }
@@ -67,7 +97,7 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      if (!isCtrl && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && st.selectedElementIds.length) {
+      if (!isCtrl && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && st.selectedElementIds.length && !tgt.closest('[role="slider"]')) {
         if (st.annotationsLocked) return;
         e.preventDefault();
         const step = isShift ? 10 : 1;
@@ -84,8 +114,13 @@ export function useKeyboardShortcuts() {
         const tool = letterToTool[key] || digitToTool[key];
         if (tool) {
           e.preventDefault();
-          if (st.activeTool === tool) cycleToolSetting(tool);
-          else st.setActiveTool(tool);
+          // Excalidraw: pressing A with the arrow tool active cycles its type.
+          if (tool === 'arrow' && st.activeTool === 'arrow') {
+            const order = ['straight', 'curved', 'elbow'] as const;
+            st.setArrowPath(order[(order.indexOf(st.arrowPath) + 1) % order.length]);
+            return;
+          }
+          st.setActiveTool(tool);
           return;
         }
       }
@@ -93,7 +128,7 @@ export function useKeyboardShortcuts() {
         // Enter edits the selected annotation's text in place: text elements
         // are edited directly, any other shape gets (or edits) an attached
         // text label — Excalidraw-style "Enter to type text".
-        const anyModal = st.showHelpDialog || st.showExportDialog || st.showCommandPalette || st.showSettings;
+        const anyModal = st.showHelpDialog || st.showExportDialog || st.showCommandPalette;
         if (!anyModal && !st.annotationsLocked && st.selectedElementIds.length === 1) {
           const el = st.elements.find((x) => x.id === st.selectedElementIds[0]);
           if (el && !el.locked) {
@@ -122,7 +157,8 @@ export function useKeyboardShortcuts() {
         return;
       }
       // Slice A: Tab / Shift+Tab cycle selection in z-order
-      if (!isCtrl && e.key === 'Tab') {
+      // Only from the canvas: on a toolbar or panel control Tab keeps moving focus.
+      if (!isCtrl && e.key === 'Tab' && (tgt === document.body || tgt.tagName === 'MAIN')) {
         e.preventDefault();
         st.cycleSelection(isShift ? -1 : 1);
         return;
@@ -132,6 +168,19 @@ export function useKeyboardShortcuts() {
       if (isCtrl && isShift && key === 'd') {
         e.preventDefault();
         st.duplicateInPlace();
+        return;
+      }
+      // Close image: the toolbar X, which asks the action cluster (it checks the image lock).
+      if (isCtrl && isShift && key === 'x') {
+        e.preventDefault();
+        if (st.backgroundImage) window.dispatchEvent(new CustomEvent('snapty-clear'));
+        return;
+      }
+      if (isCtrl && !isShift && key === 'x' && st.selectedElementIds.length && !st.annotationsLocked) {
+        e.preventDefault();
+        const ids = st.selectedElementIds;
+        const copied = copySelectedAnnotations();
+        if (copied > 0) st.removeElements(ids);
         return;
       }
       if (isCtrl && isShift && (e.key === 'Backspace' || e.key === 'Delete')) {
@@ -222,24 +271,46 @@ export function useKeyboardShortcuts() {
       }
     };
 
+    // Back to the tool that was active before Space turned it into the hand.
+    const releaseSpace = () => {
+      const restore = preSpaceTool.current;
+      if (restore) {
+        useEditorStore.getState().setActiveTool(restore, { clearSelection: false });
+        preSpaceTool.current = null;
+      }
+    };
+
     const up = (e: KeyboardEvent) => {
       const tgt = e.target as HTMLElement;
       if (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable) return;
       if (e.key === ' ') {
         e.preventDefault();
-        const restore = preSpaceTool.current;
-        if (restore) {
-          useEditorStore.getState().setActiveTool(restore, { clearSelection: false });
-          preSpaceTool.current = null;
-        }
+        releaseSpace();
+      }
+    };
+
+    // Excalidraw: holding Ctrl/Cmd while drawing or dragging an arrow keeps
+    // it from binding to shapes.
+    const binding = (e: KeyboardEvent | FocusEvent) => {
+      const held = 'ctrlKey' in e && (e.ctrlKey || e.metaKey);
+      if (useEditorStore.getState().isBindingEnabled === held) {
+        useEditorStore.setState({ isBindingEnabled: !held });
       }
     };
 
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
+    window.addEventListener('keydown', binding);
+    window.addEventListener('keyup', binding);
+    window.addEventListener('blur', binding);
+    window.addEventListener('blur', releaseSpace);
     return () => {
       window.removeEventListener('keydown', down);
       window.removeEventListener('keyup', up);
+      window.removeEventListener('keydown', binding);
+      window.removeEventListener('keyup', binding);
+      window.removeEventListener('blur', binding);
+    window.removeEventListener('blur', releaseSpace);
     };
   }, [backgroundImage]);
 }

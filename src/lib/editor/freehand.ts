@@ -44,18 +44,15 @@ function strokeOptionsFor(tool: FreehandTool, strokeWidth: number): StrokeOption
       last: true,
     };
   }
-  // Pencil: width tracks the chosen stroke width closely (thinning 0.25) so
-  // a pencil at "3" reads the same thickness as an arrow or rectangle at "3"
-  // — Excalidraw's default thinning (0.6) renders fast strokes at roughly
-  // half the nominal width (measured 1.6px vs 3px at size 3), which looks
-  // thinner than every other tool. The reduced thinning keeps the speed-based
-  // hand-drawn variance without collapsing fast scribbles. Smoothing and
-  // streamline still match Excalidraw (issue #4802).
+  // Pencil: Excalidraw's freedraw, value for value. Its freedraw stroke widths
+  // are half the shape presets (0.5 / 1 / 2) and the outline size is 4.25x
+  // that, so size = strokeWidth / 2 * 4.25.
   return {
-    size: strokeWidth,
-    thinning: 0.25,
+    size: (strokeWidth / 2) * 4.25,
+    thinning: 0.6,
     smoothing: 0.5,
     streamline: 0.5,
+    easing: (t) => Math.sin((t * Math.PI) / 2), // easeOutSine
     simulatePressure: true,
     last: true,
   };

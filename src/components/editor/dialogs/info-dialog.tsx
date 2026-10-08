@@ -4,7 +4,7 @@ import React from 'react';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { useEditorStore } from '@/store/editor-store';
 import { openInBrowser } from '@/lib/open-external';
-import { Scissors, ShieldCheck, Sparkles, Github, BookOpen } from 'lucide-react';
+import { Scissors, ShieldCheck, Sparkles, Github, BookOpen } from '@/components/editor/ui/icons';
 import { cn } from '@/lib/utils';
 
 const LOCAL_FACTS: [string, string][] = [
